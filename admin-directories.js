@@ -1,0 +1,467 @@
+/**
+ * admin-directories.js - directories and the grants that govern them.
+ *
+ * A directory restricts who may create beneath it. Two privileges exist:
+ * "create" lets a user add links inside, and "manage" makes them a directory
+ * administrator who can also edit and delete other users' links in there and
+ * hand the privileges to others.
+ */
+
+import { adminPage, back, denied, flashFrom, formToken, readForm } from './admin.js';
+import { audit, EVENTS } from './audit.js';
+import { checkCsrf } from './auth.js';
+import {
+  deleteDirectory,
+  deleteGrant,
+  getDirectory,
+  getGrant,
+  listDirectories,
+  listGrants,
+  newDirectory,
+  newGrant,
+  putDirectory,
+  putGrant,
+} from './directories.js';
+import { resolveDomain } from './domains.js';
+import { clientIp } from './geo.js';
+import { getLink, listLinks } from './links.js';
+import { normalizeEmail, parsePath, RESERVED_PATHS, ValidationError } from './paths.js';
+import { canCreateDirectory, canManageDirectory, canSetReadonly, requireAdmin } from './permissions.js';
+import { getUserByNorm, isAdmin } from './users.js';
+import { esc, fmtTime } from './util.js';
+import { alert, checkbox, csrfField, field, hidden, textarea } from './views.js';
+
+function dirHref(host, pathLc) {
+  return `/admin/directories/edit?host=${encodeURIComponent(host)}&path=${encodeURIComponent(pathLc)}`;
+}
+
+/* ----------------------------------------------------------------- list */
+
+async function listPage(ctx) {
+  const { cfg, url } = ctx;
+  const host = url.searchParams.get('host') || ctx.host;
+  const all = await listDirectories(cfg, host);
+
+  // A non-administrator sees only the directories they hold a grant on.
+  let visible = all;
+  if (!ctx.isAdmin) {
+    const checked = await Promise.all(
+      all.map(async (dir) => ((await getGrant(cfg, host, dir.pathLc, ctx.session.user.id)) ? dir : null))
+    );
+    visible = checked.filter(Boolean);
+  }
+
+  const rows = visible
+    .map(
+      (dir) => `<tr>
+      <td><a href="${esc(dirHref(host, dir.pathLc))}">${esc(host)}/${esc(dir.path)}</a>
+        ${dir.readonly ? '<span class="badge ro">read-only</span>' : ''}
+        ${dir.open ? '<span class="badge">open</span>' : ''}
+        ${dir.enabled === false ? '<span class="badge off">disabled</span>' : ''}</td>
+      <td>${esc(dir.note || '—')}</td>
+      <td class="num">${esc(fmtTime(dir.createdAt))}</td>
+    </tr>`
+    )
+    .join('');
+
+  const hostOptions = cfg.knownHosts
+    .map((h) => `<option value="${esc(h)}"${h === host ? ' selected' : ''}>${esc(h)}</option>`)
+    .join('');
+
+  const token = await formToken(ctx, 'dir.create');
+
+  const body = `
+${flashFrom(url)}
+<h1>Directories</h1>
+<p class="sub">A directory such as <code>${esc(host)}/pub</code> restricts who may create links beneath it.</p>
+
+<div class="card">
+  <form method="get" action="/admin/directories" class="row" data-no-busy>
+    <div class="field">
+      <label for="f_host">Domain</label>
+      <select id="f_host" name="host">${hostOptions}</select>
+    </div>
+    <div class="field"><label>&nbsp;</label><button type="submit" class="secondary">Show</button></div>
+  </form>
+  ${
+    visible.length
+      ? `<div class="tablewrap"><table><thead><tr><th>Directory</th><th>Note</th><th>Created</th></tr></thead>
+         <tbody>${rows}</tbody></table></div>`
+      : '<div class="empty">No directories here.</div>'
+  }
+</div>
+
+${
+  ctx.isAdmin
+    ? `<div class="card">
+  <h2>Create a directory</h2>
+  <p class="hint">Only administrators create directories. Afterwards you can appoint directory administrators to run them.</p>
+  <form method="post" action="/admin/directories/new">
+    ${csrfField(token)}${hidden('host', host)}
+    ${field({
+      name: 'path',
+      label: 'Path',
+      required: true,
+      placeholder: 'pub',
+      attrs: 'data-slink-slug spellcheck="false"',
+      note: 'Nested paths such as pub/eng are allowed.',
+    })}
+    ${textarea({ name: 'note', label: 'Note (optional)' })}
+    ${checkbox({ name: 'open', label: 'Open', note: '(anyone who may create at the root may also create here)' })}
+    ${checkbox({ name: 'readonly', label: 'Read-only', note: '(only administrators may change anything inside)' })}
+    <div class="actions"><button type="submit">Create directory</button></div>
+  </form>
+</div>`
+    : ''
+}`;
+
+  return adminPage(ctx, { title: 'Directories', nav: 'directories', body });
+}
+
+/* --------------------------------------------------------------- create */
+
+async function createSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/directories', 'csrf');
+  const guard = await checkCsrf(ctx, 'dir.create', body);
+  if (!guard.ok) return back('/admin/directories', 'csrf');
+
+  const host = String(body.get('host') || ctx.host);
+  if (!ctx.cfg.knownHosts.includes(host)) return back('/admin/directories', 'notfound');
+  const domain = await resolveDomain(ctx.cfg, host);
+
+  let parsed;
+  try {
+    parsed = parsePath(body.get('path'), {
+      reserved: host === ctx.cfg.hubHost ? RESERVED_PATHS : ['__slink'],
+    });
+  } catch (err) {
+    if (err instanceof ValidationError) return denied(ctx, err.message);
+    throw err;
+  }
+
+  const permit = await canCreateDirectory(ctx.cfg, {
+    user: ctx.session.user,
+    domain,
+    host,
+    pathLc: parsed.pathLc,
+  });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  if (await getDirectory(ctx.cfg, host, parsed.pathLc)) {
+    return back(dirHref(host, parsed.pathLc), 'dir.created');
+  }
+  if (await getLink(ctx.cfg, host, parsed.pathLc)) {
+    return denied(ctx, 'A link already uses that path.');
+  }
+
+  const dir = newDirectory(host, parsed.path, parsed.pathLc, {
+    ownerId: ctx.session.user.id,
+    note: String(body.get('note') || '').slice(0, 500),
+    open: body.get('open') === '1',
+    readonly: canSetReadonly(ctx.cfg, ctx.session.user) && body.get('readonly') === '1',
+  });
+  await putDirectory(ctx.cfg, dir);
+
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.dirCreated,
+      actor: ctx.session.user,
+      host,
+      ip: clientIp(ctx.request),
+      object: parsed.pathLc,
+    })
+  );
+  return back(dirHref(host, parsed.pathLc), 'dir.created');
+}
+
+/* ----------------------------------------------------------------- edit */
+
+async function editForm(ctx, { error } = {}) {
+  const { cfg, url } = ctx;
+  const host = url.searchParams.get('host') || ctx.host;
+  const pathLc = String(url.searchParams.get('path') || '').toLowerCase();
+  const dir = await getDirectory(cfg, host, pathLc);
+  if (!dir) return back('/admin/directories', 'notfound');
+
+  const permit = await canManageDirectory(cfg, { user: ctx.session.user, dir });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  const grants = await listGrants(cfg, host, pathLc);
+  const contents = await listLinks(cfg, host, { dirPathLc: pathLc, limit: 100 });
+  const settingsToken = await formToken(ctx, 'dir.update');
+  const grantToken = await formToken(ctx, 'grant.save');
+  const revokeToken = await formToken(ctx, 'grant.remove');
+  const deleteToken = await formToken(ctx, 'dir.delete');
+  const mayAdmin = isAdmin(cfg, ctx.session.user);
+
+  const grantRows = grants
+    .map(
+      (g) => `<tr>
+      <td>${esc(g.userEmail)}</td>
+      <td>${g.canCreate ? 'create' : ''}${g.canManage ? (g.canCreate ? ', manage' : 'manage') : ''}</td>
+      <td class="num">${esc(fmtTime(g.createdAt))}</td>
+      <td class="tools">
+        <form method="post" action="/admin/directories/grant">
+          ${csrfField(grantToken)}${hidden('host', host)}${hidden('path', pathLc)}
+          ${hidden('email', g.userEmail)}${hidden('canCreate', '1')}
+          ${hidden('canManage', g.canManage ? '' : '1')}
+          <button type="submit" class="link">${g.canManage ? 'Demote' : 'Make administrator'}</button>
+        </form>
+        <form method="post" action="/admin/directories/revoke" data-confirm="Remove access for ${esc(g.userEmail)}?">
+          ${csrfField(revokeToken)}${hidden('host', host)}${hidden('path', pathLc)}${hidden('email', g.userEmail)}
+          <button type="submit" class="link">Remove</button>
+        </form>
+      </td>
+    </tr>`
+    )
+    .join('');
+
+  const contentRows = contents.items
+    .map((row) => {
+      const meta = row.meta || {};
+      return `<tr>
+        <td><a href="/admin/links/edit?host=${encodeURIComponent(host)}&path=${encodeURIComponent(
+        row.pathLc
+      )}">${esc(host)}/${esc(meta.p || row.pathLc)}</a></td>
+        <td><span class="target">${esc(meta.t || '')}</span></td>
+      </tr>`;
+    })
+    .join('');
+
+  const body = `
+${flashFrom(url)}${alert('error', error)}
+<h1>${esc(host)}/${esc(dir.path)}</h1>
+<p class="sub">Directory &middot; created ${esc(fmtTime(dir.createdAt))}</p>
+
+<div class="card">
+  <h2>Access</h2>
+  <p class="hint">"Create" lets a user add links here. "Manage" makes them a directory administrator: they can also edit and delete other people's links in this directory and change this list.</p>
+  ${
+    grants.length
+      ? `<div class="tablewrap"><table><thead><tr><th>User</th><th>Privileges</th><th>Granted</th><th></th></tr></thead>
+         <tbody>${grantRows}</tbody></table></div>`
+      : '<div class="empty">Nobody has been granted access yet.</div>'
+  }
+  <form method="post" action="/admin/directories/grant">
+    ${csrfField(grantToken)}${hidden('host', host)}${hidden('path', pathLc)}
+    ${field({
+      name: 'email',
+      label: 'Grant access to',
+      type: 'email',
+      required: true,
+      placeholder: 'colleague@example.com',
+      note: 'The user must have signed in at least once.',
+    })}
+    ${checkbox({ name: 'canCreate', label: 'May create links in this directory', checked: true })}
+    ${checkbox({ name: 'canManage', label: 'Directory administrator' })}
+    <div class="actions"><button type="submit">Save access</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Settings</h2>
+  <form method="post" action="/admin/directories/edit">
+    ${csrfField(settingsToken)}${hidden('host', host)}${hidden('path', pathLc)}
+    ${textarea({ name: 'note', label: 'Note', value: dir.note || '' })}
+    ${checkbox({ name: 'enabled', label: 'Enabled', checked: dir.enabled !== false })}
+    ${checkbox({
+      name: 'open',
+      label: 'Open',
+      checked: !!dir.open,
+      note: '(anyone who may create at the root may also create here)',
+    })}
+    ${checkbox({
+      name: 'readonly',
+      label: 'Read-only',
+      checked: !!dir.readonly,
+      disabled: !mayAdmin,
+      note: mayAdmin ? '(only administrators may change anything inside)' : '(administrators only)',
+    })}
+    <div class="actions"><button type="submit">Save settings</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Links in this directory</h2>
+  ${
+    contents.items.length
+      ? `<div class="tablewrap"><table><thead><tr><th>Short link</th><th>Destination</th></tr></thead>
+         <tbody>${contentRows}</tbody></table></div>`
+      : '<div class="empty">No links here yet.</div>'
+  }
+</div>
+
+${
+  mayAdmin
+    ? `<div class="card">
+  <h2>Delete</h2>
+  <p class="hint">Removes the directory and every grant on it. Links inside are left in place and fall back to the domain's root policy.</p>
+  <form method="post" action="/admin/directories/delete" data-confirm="Delete the directory ${esc(dir.path)}?">
+    ${csrfField(deleteToken)}${hidden('host', host)}${hidden('path', pathLc)}
+    <div class="actions"><button type="submit" class="danger">Delete directory</button></div>
+  </form>
+</div>`
+    : ''
+}`;
+
+  return adminPage(ctx, { title: dir.path, nav: 'directories', body });
+}
+
+async function editSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/directories', 'csrf');
+  const guard = await checkCsrf(ctx, 'dir.update', body);
+  if (!guard.ok) return back('/admin/directories', 'csrf');
+
+  const host = String(body.get('host') || '');
+  const pathLc = String(body.get('path') || '').toLowerCase();
+  const dir = await getDirectory(ctx.cfg, host, pathLc);
+  if (!dir) return back('/admin/directories', 'notfound');
+
+  const permit = await canManageDirectory(ctx.cfg, { user: ctx.session.user, dir });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  dir.note = String(body.get('note') || '').slice(0, 500);
+  dir.enabled = body.get('enabled') === '1';
+  dir.open = body.get('open') === '1';
+  if (canSetReadonly(ctx.cfg, ctx.session.user)) dir.readonly = body.get('readonly') === '1';
+  await putDirectory(ctx.cfg, dir);
+
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.dirUpdated,
+      actor: ctx.session.user,
+      host,
+      ip: clientIp(ctx.request),
+      object: pathLc,
+    })
+  );
+  return back(dirHref(host, pathLc), 'dir.updated');
+}
+
+async function grantSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/directories', 'csrf');
+  const guard = await checkCsrf(ctx, 'grant.save', body);
+  if (!guard.ok) return back('/admin/directories', 'csrf');
+
+  const host = String(body.get('host') || '');
+  const pathLc = String(body.get('path') || '').toLowerCase();
+  const dir = await getDirectory(ctx.cfg, host, pathLc);
+  if (!dir) return back('/admin/directories', 'notfound');
+
+  const permit = await canManageDirectory(ctx.cfg, { user: ctx.session.user, dir });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  ctx.url.searchParams.set('host', host);
+  ctx.url.searchParams.set('path', pathLc);
+
+  let target;
+  try {
+    const parsed = normalizeEmail(body.get('email'), ctx.cfg.emailOpts);
+    target = await getUserByNorm(ctx.cfg, parsed.emailNorm);
+  } catch (err) {
+    if (err instanceof ValidationError) return editForm(ctx, { error: err.message });
+    throw err;
+  }
+  if (!target) {
+    return editForm(ctx, { error: 'No such user. They must sign in once before they can be granted access.' });
+  }
+
+  const canManage = body.get('canManage') === '1';
+  const canCreate = body.get('canCreate') === '1' || canManage;
+  if (!canCreate && !canManage) {
+    return editForm(ctx, { error: 'Choose at least one privilege.' });
+  }
+
+  const existing = await getGrant(ctx.cfg, host, pathLc, target.id);
+  const grant = existing
+    ? { ...existing, canCreate, canManage }
+    : newGrant(host, pathLc, target, { canCreate, canManage, grantedBy: ctx.session.user.emailNorm });
+  await putGrant(ctx.cfg, grant);
+
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.grantAdded,
+      actor: ctx.session.user,
+      host,
+      ip: clientIp(ctx.request),
+      object: pathLc,
+      detail: { user: target.emailNorm, canCreate, canManage },
+    })
+  );
+  return back(dirHref(host, pathLc), 'grant.saved');
+}
+
+async function revokeSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/directories', 'csrf');
+  const guard = await checkCsrf(ctx, 'grant.remove', body);
+  if (!guard.ok) return back('/admin/directories', 'csrf');
+
+  const host = String(body.get('host') || '');
+  const pathLc = String(body.get('path') || '').toLowerCase();
+  const dir = await getDirectory(ctx.cfg, host, pathLc);
+  if (!dir) return back('/admin/directories', 'notfound');
+
+  const permit = await canManageDirectory(ctx.cfg, { user: ctx.session.user, dir });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  const parsed = normalizeEmail(body.get('email'), ctx.cfg.emailOpts);
+  const target = await getUserByNorm(ctx.cfg, parsed.emailNorm);
+  if (target) {
+    await deleteGrant(ctx.cfg, host, pathLc, target.id);
+    ctx.waitUntil(
+      audit(ctx.cfg, {
+        event: EVENTS.grantRemoved,
+        actor: ctx.session.user,
+        host,
+        ip: clientIp(ctx.request),
+        object: pathLc,
+        detail: { user: target.emailNorm },
+      })
+    );
+  }
+  return back(dirHref(host, pathLc), 'grant.removed');
+}
+
+async function deleteSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/directories', 'csrf');
+  const guard = await checkCsrf(ctx, 'dir.delete', body);
+  if (!guard.ok) return back('/admin/directories', 'csrf');
+
+  const gate = requireAdmin(ctx.cfg, ctx.session.user);
+  if (!gate.allowed) return denied(ctx, gate.reason);
+
+  const host = String(body.get('host') || '');
+  const pathLc = String(body.get('path') || '').toLowerCase();
+  const dir = await getDirectory(ctx.cfg, host, pathLc);
+  if (!dir) return back('/admin/directories', 'notfound');
+
+  await deleteDirectory(ctx.cfg, dir);
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.dirDeleted,
+      actor: ctx.session.user,
+      host,
+      ip: clientIp(ctx.request),
+      object: pathLc,
+    })
+  );
+  return back('/admin/directories?host=' + encodeURIComponent(host), 'dir.deleted');
+}
+
+/* --------------------------------------------------------------- router */
+
+export async function adminDirectories(ctx, path) {
+  const method = ctx.request.method;
+  if (path === '/admin/directories') return listPage(ctx);
+  if (path === '/admin/directories/new' && method === 'POST') return createSubmit(ctx);
+  if (path === '/admin/directories/edit') return method === 'POST' ? editSubmit(ctx) : editForm(ctx);
+  if (path === '/admin/directories/grant' && method === 'POST') return grantSubmit(ctx);
+  if (path === '/admin/directories/revoke' && method === 'POST') return revokeSubmit(ctx);
+  if (path === '/admin/directories/delete' && method === 'POST') return deleteSubmit(ctx);
+  return back('/admin/directories');
+}

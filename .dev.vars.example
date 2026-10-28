@@ -1,0 +1,5 @@
+# Local development only. Copy to .dev.vars, which is git-ignored.
+# Never put real production secrets in a file that is committed.
+AUTH_SECRET="generate-with-openssl-rand-base64-48"
+turnstile-sitekey="your-existing-widget-sitekey"
+turnstile-secret="your-existing-widget-secret"

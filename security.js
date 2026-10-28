@@ -1,0 +1,232 @@
+/**
+ * security.js - crypto primitives, cookies, CSRF and response hardening.
+ *
+ * Every signed value in the app (sessions, SSO tokens, CSRF tokens, OTP hashes)
+ * is derived from AUTH_SECRET through a labelled HKDF-ish sub-key so that a
+ * token minted for one purpose can never be replayed as another.
+ */
+
+import { b64urlDecode, b64urlEncode, randomId, te } from './util.js';
+
+const keyCache = new Map();
+
+/** Import a purpose-scoped HMAC key derived from the master secret. */
+async function hmacKey(secret, purpose) {
+  const cacheKey = purpose;
+  const cached = keyCache.get(cacheKey);
+  if (cached) return cached;
+  const master = await crypto.subtle.importKey(
+    'raw',
+    te.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const derived = await crypto.subtle.sign('HMAC', master, te.encode('slink/v1/' + purpose));
+  const key = await crypto.subtle.importKey(
+    'raw',
+    derived,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign', 'verify']
+  );
+  keyCache.set(cacheKey, key);
+  return key;
+}
+
+/** Raw HMAC-SHA256 over `message`, returned base64url. */
+export async function hmac(secret, purpose, message) {
+  const key = await hmacKey(secret, purpose);
+  const sig = await crypto.subtle.sign('HMAC', key, te.encode(message));
+  return b64urlEncode(new Uint8Array(sig));
+}
+
+/** Constant-time string comparison. */
+export function timingSafeEqualStr(a, b) {
+  const ab = te.encode(String(a ?? ''));
+  const bb = te.encode(String(b ?? ''));
+  if (ab.byteLength !== bb.byteLength) {
+    // Still burn a comparison so length leaks nothing beyond the length itself.
+    try {
+      crypto.subtle.timingSafeEqual(ab, ab);
+    } catch {
+      /* not available locally */
+    }
+    return false;
+  }
+  if (crypto.subtle && typeof crypto.subtle.timingSafeEqual === 'function') {
+    return crypto.subtle.timingSafeEqual(ab, bb);
+  }
+  let diff = 0;
+  for (let i = 0; i < ab.length; i++) diff |= ab[i] ^ bb[i];
+  return diff === 0;
+}
+
+/** Sign an arbitrary payload object into a compact `body.sig` token. */
+export async function signToken(secret, purpose, payload) {
+  const body = b64urlEncode(te.encode(JSON.stringify(payload)));
+  const sig = await hmac(secret, purpose, body);
+  return body + '.' + sig;
+}
+
+/** Verify and decode a token produced by signToken. Returns null when invalid. */
+export async function verifyToken(secret, purpose, token, { maxAgeSeconds } = {}) {
+  if (typeof token !== 'string' || token.length > 4096) return null;
+  const dot = token.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const body = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  const expected = await hmac(secret, purpose, body);
+  if (!timingSafeEqualStr(sig, expected)) return null;
+  let payload;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(b64urlDecode(body)));
+  } catch {
+    return null;
+  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp === 'number' && payload.exp < nowSec) return null;
+  if (maxAgeSeconds && typeof payload.iat === 'number' && payload.iat + maxAgeSeconds < nowSec) {
+    return null;
+  }
+  return payload;
+}
+
+/* ------------------------------------------------------------------ cookies */
+
+/** Parse a Cookie header into a plain object. */
+export function parseCookies(request) {
+  const header = request.headers.get('Cookie') || '';
+  const out = Object.create(null);
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx < 1) continue;
+    const name = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    if (!name) continue;
+    try {
+      out[name] = decodeURIComponent(value);
+    } catch {
+      out[name] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * Serialize a cookie. Defaults are the hardened set: Host-prefixed cookies are
+ * Secure, Path=/ and carry no Domain, so they cannot be injected by a sibling
+ * subdomain.
+ */
+export function serializeCookie(name, value, opts = {}) {
+  const { maxAge, sameSite = 'Lax', httpOnly = true, secure = true, path = '/' } = opts;
+  let out = name + '=' + encodeURIComponent(value);
+  out += '; Path=' + path;
+  if (maxAge !== undefined) out += '; Max-Age=' + Math.max(0, Math.floor(maxAge));
+  if (httpOnly) out += '; HttpOnly';
+  if (secure) out += '; Secure';
+  if (sameSite) out += '; SameSite=' + sameSite;
+  return out;
+}
+
+/** Expire a cookie immediately. */
+export function clearCookie(name, opts = {}) {
+  return serializeCookie(name, '', { ...opts, maxAge: 0 });
+}
+
+/* --------------------------------------------------------------------- CSRF */
+
+/**
+ * CSRF uses a signed double-submit token bound to a browser-held nonce cookie
+ * (and to the session id once one exists), plus a strict Origin check. The
+ * token is scoped by `form` so a token minted for one action cannot be
+ * replayed against another.
+ */
+export async function csrfToken(secret, binding, form) {
+  return hmac(secret, 'csrf', (binding || '-') + '|' + (form || '-'));
+}
+
+export async function csrfValid(secret, binding, form, submitted) {
+  if (!submitted) return false;
+  const expected = await csrfToken(secret, binding, form);
+  return timingSafeEqualStr(submitted, expected);
+}
+
+/** The value a browser must echo back; created fresh when absent. */
+export function csrfNonce(cookies, cookieName) {
+  return cookies[cookieName] || randomId(18);
+}
+
+/**
+ * Reject cross-origin state changes. Returns null when the request is fine, or
+ * a reason string when it must be refused.
+ */
+export function originCheck(request, expectedOrigin) {
+  const origin = request.headers.get('Origin');
+  if (origin) {
+    return origin === expectedOrigin ? null : 'origin-mismatch';
+  }
+  // No Origin header on a same-origin form post is legal for some clients;
+  // fall back to Referer, and refuse when neither is present.
+  const referer = request.headers.get('Referer');
+  if (!referer) return 'missing-origin';
+  try {
+    return new URL(referer).origin === expectedOrigin ? null : 'referer-mismatch';
+  } catch {
+    return 'bad-referer';
+  }
+}
+
+/* ---------------------------------------------------------------- responses */
+
+/**
+ * Apply the standard security headers.
+ *
+ * The CSP is strict where it matters: no inline script at all. Every script
+ * and stylesheet this app serves is a same-origin asset, and page-specific
+ * values reach the client through `data-` attributes rather than an inline
+ * script block, so `script-src` needs neither 'unsafe-inline' nor a nonce.
+ *
+ * `style-src` does allow 'unsafe-inline' because the Turnstile widget sets
+ * inline styles on the container it injects. All HTML this app emits is
+ * escaped, so there is no path by which a user-supplied value becomes a style
+ * attribute; the real injection risk, script execution, stays locked down.
+ */
+export function harden(response, { turnstile = false, store = false } = {}) {
+  const h = response.headers;
+  h.set('X-Content-Type-Options', 'nosniff');
+  h.set('Referrer-Policy', 'no-referrer');
+  h.set('X-Frame-Options', 'DENY');
+  h.set('Cross-Origin-Opener-Policy', 'same-origin');
+  h.set('Cross-Origin-Resource-Policy', 'same-origin');
+  h.set('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+  h.set(
+    'Permissions-Policy',
+    'accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), ' +
+      'fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), ' +
+      'midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), usb=(), xr-spatial-tracking=()'
+  );
+  if (!store) h.set('Cache-Control', 'no-store, max-age=0');
+  h.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+
+  const CF = 'https://challenges.cloudflare.com';
+  h.set(
+    'Content-Security-Policy',
+    [
+      `default-src 'none'`,
+      `base-uri 'none'`,
+      `form-action 'self'`,
+      `frame-ancestors 'none'`,
+      `script-src 'self'` + (turnstile ? ' ' + CF : ''),
+      `style-src 'self' 'unsafe-inline'`,
+      `img-src 'self' data:`,
+      `font-src 'self'`,
+      `connect-src 'self'` + (turnstile ? ' ' + CF : ''),
+      `frame-src ` + (turnstile ? CF : `'none'`),
+      `object-src 'none'`,
+      `manifest-src 'none'`,
+      `upgrade-insecure-requests`,
+    ].join('; ')
+  );
+  return response;
+}

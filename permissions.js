@@ -75,6 +75,20 @@ export async function resolveGovernor(cfg, host, pathLc, user, { dirSet } = {}) 
   return { dir, grant, parentLc };
 }
 
+/**
+ * Does an administrator act with administrator authority at this spot?
+ *
+ * Scoping only withdraws the blanket reach into directories. Outside any
+ * directory, and inside one they hold a grant on, a scoped administrator is
+ * an administrator like any other; inside one they do not, they are shut out
+ * rather than demoted to an ordinary user.
+ */
+export function adminActsHere(cfg, user, dir, grant) {
+  if (!dir) return true;
+  if (adminReachesAllDirectories(cfg, user)) return true;
+  return !!grant;
+}
+
 /** Does the user satisfy the host's root-level create policy? */
 export function rootCreateAllowed(cfg, domain, user) {
   const policy = (domain && domain.rootCreatePolicy) || 'email_domain';
@@ -98,8 +112,7 @@ export async function canCreate(cfg, { user, domain, host, pathLc, dirSet }) {
   if (domain && domain.enabled === false && !admin) return deny(DENY.domainDisabled);
 
   const { dir, grant } = await resolveGovernor(cfg, host, pathLc, user, { dirSet });
-  const reaches = !dir || adminReachesAllDirectories(cfg, user);
-  if (admin && reaches) return allow({ dir, grant, asAdmin: true });
+  if (admin && adminActsHere(cfg, user, dir, grant)) return allow({ dir, grant, asAdmin: true });
 
   if (domain && domain.readonly) return deny(DENY.domainReadonly, { dir, grant });
 
@@ -124,7 +137,7 @@ export async function canManageLink(cfg, { user, link, host, dirSet }) {
   if (user.disabled) return deny(DENY.disabled);
   const admin = isAdmin(cfg, user);
   const { dir, grant } = await resolveGovernor(cfg, host || link.host, link.pathLc, user, { dirSet });
-  if (admin && (!dir || adminReachesAllDirectories(cfg, user))) return allow({ asAdmin: true, dir });
+  if (admin && adminActsHere(cfg, user, dir, grant)) return allow({ asAdmin: true, dir });
 
   if (link.readonly) return deny(DENY.linkReadonly);
   if (link.ownerId && link.ownerId === user.id) return allow({ asOwner: true });
@@ -137,10 +150,15 @@ export async function canManageLink(cfg, { user, link, host, dirSet }) {
 export async function canManageDirectory(cfg, { user, dir }) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
-  if (isAdmin(cfg, user) && adminReachesAllDirectories(cfg, user)) return allow({ asAdmin: true });
-  if (!dir) return deny(DENY.notDirAdmin);
-  if (dir.readonly) return deny(DENY.dirReadonly);
+  const admin = isAdmin(cfg, user);
+  if (admin && adminReachesAllDirectories(cfg, user)) return allow({ asAdmin: true });
+  if (!dir) return deny(admin ? DENY.notDirAdmin : DENY.notDirAdmin);
   const grant = await getGrant(cfg, dir.host, dir.pathLc, user.id);
+  // A scoped administrator keeps administrator authority inside the
+  // directories they were granted; what scoping removed is the blanket
+  // reach into the ones they were not.
+  if (admin && grant) return allow({ asAdmin: true, grant });
+  if (dir.readonly) return deny(DENY.dirReadonly);
   if (grant && grant.canManage) return allow({ asDirAdmin: true, grant });
   return deny(DENY.notDirAdmin);
 }
@@ -158,10 +176,15 @@ export async function canManageDirectory(cfg, { user, dir }) {
 export async function canCreateDirectory(cfg, { user, domain, host, pathLc, dirSet }) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
-  if (isAdmin(cfg, user) && adminReachesAllDirectories(cfg, user)) return allow({ asAdmin: true });
-  if (domain && domain.readonly) return deny(DENY.domainReadonly);
+  const admin = isAdmin(cfg, user);
+  if (admin && adminReachesAllDirectories(cfg, user)) return allow({ asAdmin: true });
 
   const { dir, grant } = await resolveGovernor(cfg, host, pathLc, user, { dirSet });
+  // A scoped administrator is still an administrator at the host root, which
+  // is not a directory, and inside any directory they were granted.
+  if (admin && (!dir || (grant && grant.canManage))) return allow({ asAdmin: true, dir });
+  if (domain && domain.readonly) return deny(DENY.domainReadonly);
+
   if (dir) {
     // Inside a directory, only its administrator may nest another.
     if (dir.readonly) return deny(DENY.dirReadonly);
@@ -179,7 +202,7 @@ export async function canCreateDirectory(cfg, { user, domain, host, pathLc, dirS
  */
 export async function mayCreateAnyDirectory(cfg, { user, host }) {
   if (!user || user.disabled) return false;
-  if (isAdmin(cfg, user) && adminReachesAllDirectories(cfg, user)) return true;
+  if (isAdmin(cfg, user)) return true;
   if (user.dirCreate && user.dirCreate[host]) return true;
   const grants = await listUserGrants(cfg, user.id);
   return grants.some((g) => g.host === host && g.canManage);

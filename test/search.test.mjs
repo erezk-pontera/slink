@@ -201,31 +201,29 @@ section('a batch re-checks every row');
   const stillOpen = await (await S(uma, 'uma-own')).text();
   ok('and nothing was marked read-only', !stillOpen.includes('read-only'));
 
-  // Bulk directory ownership only moves directories the actor owns. Root
-  // created this one, so the first pass succeeds and the second does not.
+  // An administrator may move any directory in bulk, owned or not.
   const tok3 = Harness.csrfFor(await (await S(root, '', '&type=directories')).text(), '/admin/search/batch');
   const mine = await root.req('https://ptra.dev/admin/search/batch', {
     form: { _csrf: tok3, op: 'transfer', email: 'vic@pontera.com', sel: 'dir:ptra.cc:eng' },
   });
-  ok('a directory the actor owns moves in bulk', (await mine.text()).includes('1 changed'));
+  ok('a directory moves in bulk', (await mine.text()).includes('1 changed'));
 
   const tok4 = Harness.csrfFor(await (await S(root, '', '&type=directories')).text(), '/admin/search/batch');
   const notMine = await root.req('https://ptra.dev/admin/search/batch', {
     form: { _csrf: tok4, op: 'transfer', email: 'uma@pontera.com', sel: 'dir:ptra.cc:eng' },
   });
   const text = await notMine.text();
-  ok('one they no longer own is skipped in bulk',
-     text.includes('0 changed') && text.includes('use the directory screen'), text.slice(0, 220));
+  ok('one they do not own moves too', text.includes('1 changed'), text.slice(0, 220));
 
-  // The single-directory screen still lets an administrator move anything.
+  // The single-directory screen is unrestricted for an administrator as well.
   const dirPage = await (await root.req(
     'https://ptra.dev/admin/directories/edit?host=ptra.cc&path=eng'
   )).text();
   const oneTok = Harness.csrfFor(dirPage, '/admin/directories/transfer');
   const oneOff = await root.req('https://ptra.dev/admin/directories/transfer', {
-    form: { _csrf: oneTok, host: 'ptra.cc', path: 'eng', owner: 'uma@pontera.com' },
+    form: { _csrf: oneTok, host: 'ptra.cc', path: 'eng', owner: 'vic@pontera.com' },
   });
-  ok('but the directory screen is unrestricted for an administrator',
+  ok('and so is the directory screen',
      oneOff.status !== 403 && !(oneOff.headers.get('Location') || '').includes('csrf'),
      oneOff.status + ' ' + oneOff.headers.get('Location'));
 }

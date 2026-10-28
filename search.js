@@ -213,7 +213,6 @@ export async function search(cfg, { user, hosts, query, type = 'all' }) {
       row.enabled = rec.enabled !== false;
       row.detail = rec.target || '';
       row.mine = !!(rec.ownerId && rec.ownerId === user.id);
-      row.manage = admin || row.mine || !!row.dirPathLc;
     }
   }
 

@@ -111,7 +111,59 @@ section('a scoped administrator may still change ownership of anything');
      dirMoved.status !== 403, String(dirMoved.status));
 }
 
-/* ------------------------------------------------- 4. the root admin is fixed */
+/* ------------------- 4. scoping removes reach, it does not demote */
+section('a scoped administrator keeps full authority where they are granted');
+{
+  // Grant sam the ops directory, and mark it read-only: a read-only mark
+  // exists to stop non-administrators, so it must not stop this one.
+  await root.req('https://ptra.dev/admin/directories/new', {
+    form: {
+      _csrf: Harness.csrfFor(
+        await (await root.req('https://ptra.dev/admin/directories')).text(),
+        '/admin/directories/new'
+      ),
+      host: 'ptra.cc', path: 'ops',
+    },
+  });
+  const opsEdit = 'https://ptra.dev/admin/directories/edit?host=ptra.cc&path=ops';
+  const grantTok = Harness.csrfFor(await (await root.req(opsEdit)).text(), '/admin/directories/grant');
+  await root.req('https://ptra.dev/admin/directories/grant', {
+    form: { _csrf: grantTok, host: 'ptra.cc', path: 'ops', email: 'sam@pontera.com', canManage: '1' },
+  });
+  const roTok = Harness.csrfFor(await (await root.req(opsEdit)).text(), '/admin/directories/edit');
+  await root.req('https://ptra.dev/admin/directories/edit', {
+    form: { _csrf: roTok, host: 'ptra.cc', path: 'ops', enabled: '1', readonly: '1' },
+  });
+
+  const page = await sam.req(opsEdit);
+  ok('a granted directory is reachable', page.status === 200, String(page.status));
+  const text = await page.text();
+  ok('and read-only does not stop an administrator there',
+     text.includes('name="readonly"'), 'no admin-only control');
+
+  // The host root is not a directory, so scoping never reaches it.
+  const newDir = await sam.req('https://ptra.dev/admin/directories');
+  ok('they may still create directories at the root',
+     (await newDir.text()).includes('/admin/directories/new'), String(newDir.status));
+  const made = await sam.req('https://ptra.dev/admin/directories/new', {
+    form: {
+      _csrf: Harness.csrfFor(
+        await (await sam.req('https://ptra.dev/admin/directories')).text(),
+        '/admin/directories/new'
+      ),
+      host: 'ptra.cc', path: 'sam-root-dir',
+    },
+  });
+  ok('and the creation goes through',
+     (made.headers.get('Location') || '').includes('dir.created'),
+     made.status + ' ' + made.headers.get('Location'));
+
+  // A directory they hold nothing on stays shut.
+  const shut = await sam.req(DIR);
+  ok('an ungranted directory is still refused', shut.status === 403, String(shut.status));
+}
+
+/* ------------------------------------------------- 5. the root admin is fixed */
 section('a root administrator can never be scoped');
 {
   const form = await (await root.req('https://ptra.dev/admin/users')).text();

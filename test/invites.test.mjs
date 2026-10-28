@@ -157,6 +157,36 @@ section('a locked host ignores directory narrowing');
   ok('the host list still applies', partner.location.includes('link.moved'), partner.location);
 }
 
+/* --------------------------------------------- 5. the bulk path agrees */
+section('a batch cannot route around the policy');
+{
+  await setDomain({ inviteMode: 'off', inviteDomains: '' });
+  const page = await (await root.req('https://ptra.dev/admin/search?q=crew')).text();
+  const tok = Harness.csrfFor(page, '/admin/search/batch');
+
+  const refused = await root.req('https://ptra.dev/admin/search/batch', {
+    form: { _csrf: tok, op: 'transfer', email: 'oleg@partner.com', sel: 'link:ptra.cc:crew/doc' },
+  });
+  const text = await refused.text();
+  ok('a bulk transfer honours the policy',
+     text.includes('0 changed') && text.includes('cannot be given access here'), text.slice(0, 220));
+
+  const tok2 = Harness.csrfFor(await (await root.req('https://ptra.dev/admin/search?q=crew')).text(),
+                               '/admin/search/batch');
+  const granted = await root.req('https://ptra.dev/admin/search/batch', {
+    form: { _csrf: tok2, op: 'grant', email: 'oleg@partner.com', sel: 'dir:ptra.cc:crew' },
+  });
+  ok('so does a bulk directory grant',
+     (await granted.text()).includes('cannot be given access here'));
+
+  const tok3 = Harness.csrfFor(await (await root.req('https://ptra.dev/admin/search?q=crew')).text(),
+                               '/admin/search/batch');
+  const inside = await root.req('https://ptra.dev/admin/search/batch', {
+    form: { _csrf: tok3, op: 'transfer', email: 'ida@pontera.com', sel: 'link:ptra.cc:crew/doc' },
+  });
+  ok('and an allowed address still goes through', (await inside.text()).includes('1 changed'));
+}
+
 console.log(`\ninvite domains: ${passed} passed, ${failed} failed`);
 root.restore();
 export default { passed, failed };

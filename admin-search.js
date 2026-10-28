@@ -13,15 +13,21 @@ import { audit, EVENTS } from './audit.js';
 import { checkCsrf } from './auth.js';
 import {
   deleteGrant,
+  directoryPathSet,
   getDirectory,
   getGrant,
+  governingDirectory,
   newGrant,
   putDirectory,
   putGrant,
 } from './directories.js';
+import { resolveDomain } from './domains.js';
+import { inviteAllowed } from './invites.js';
 import { getLink, putLink } from './links.js';
 import { normalizeEmail, ValidationError } from './paths.js';
 import {
+  canManageDirectory,
+  canManageLink,
   canReceiveTransfer,
   canSetReadonly,
   canTransferDirectory,
@@ -90,7 +96,7 @@ function resultRows(rows, pickable) {
 function batchBar(token) {
   return `<div class="card">
   <h2>Act on the selected rows</h2>
-  <p class="hint">Ownership and read-only apply to links and directories. Directory administrators apply to selected directories only. A row you may not change is reported and skipped rather than failing the rest.</p>
+  <p class="hint">Ownership and read-only apply to links and directories alike. Directory administrators apply to selected directories only. A row you may not change is reported and skipped rather than failing the rest.</p>
   ${csrfField(token)}
   <div class="row">
     ${select({
@@ -221,12 +227,20 @@ async function batchSubmit(ctx) {
     }
   }
 
+  // One directory-path listing per host, shared by every row on it, rather
+  // than one per row.
+  const dirSets = new Map();
+  const dirSetFor = async (host) => {
+    if (!dirSets.has(host)) dirSets.set(host, await directoryPathSet(cfg, host));
+    return dirSets.get(host);
+  };
+
   const done = [];
   const skipped = [];
   for (const row of picked) {
     const label = row.host + '/' + row.pathLc;
     try {
-      const outcome = await applyOne(ctx, op, row, person);
+      const outcome = await applyOne(ctx, op, row, person, await dirSetFor(row.host));
       if (outcome.ok) done.push(label);
       else skipped.push(label + ' (' + outcome.reason + ')');
     } catch (err) {
@@ -239,7 +253,7 @@ async function batchSubmit(ctx) {
   return searchPage(ctx, skipped.length ? { error: summary } : { info: summary });
 }
 
-async function applyOne(ctx, op, row, person) {
+async function applyOne(ctx, op, row, person, dirSet) {
   const { cfg, session } = ctx;
   const actor = session.user;
 
@@ -249,15 +263,22 @@ async function applyOne(ctx, op, row, person) {
     if (!link) return { ok: false, reason: 'gone' };
 
     if (op.value === 'transfer') {
-      const permit = await canTransferLink(cfg, { user: actor, link, host: row.host });
+      const permit = await canTransferLink(cfg, { user: actor, link, host: row.host, dirSet });
       if (!permit.allowed) return { ok: false, reason: permit.reason };
       const fit = await canReceiveTransfer(cfg, {
         actor,
         recipient: person,
         host: row.host,
         pathLc: row.pathLc,
+        dirSet,
       });
       if (!fit.allowed) return { ok: false, reason: fit.reason };
+      const invite = inviteAllowed(cfg, {
+        domain: await resolveDomain(cfg, row.host),
+        dir: await governingDirectory(cfg, row.host, row.pathLc),
+        emailNorm: person.emailNorm,
+      });
+      if (!invite.allowed) return { ok: false, reason: invite.reason };
       const previousOwnerId = link.ownerId;
       const from = link.ownerEmail;
       link.ownerId = person.id;
@@ -276,7 +297,11 @@ async function applyOne(ctx, op, row, person) {
       return { ok: true };
     }
 
+    // Read-only is an administrator-only field, but it is still a change to
+    // the link, so it needs the same management right as any other.
     if (!canSetReadonly(cfg, actor)) return { ok: false, reason: 'not permitted' };
+    const may = await canManageLink(cfg, { user: actor, link, host: row.host, dirSet });
+    if (!may.allowed) return { ok: false, reason: may.reason };
     link.readonly = op.value === 'readonly';
     await putLink(cfg, link);
     ctx.waitUntil(
@@ -296,13 +321,14 @@ async function applyOne(ctx, op, row, person) {
   if (!dir) return { ok: false, reason: 'gone' };
 
   if (op.value === 'transfer') {
-    // In bulk, a directory only changes hands if the person running the
-    // batch owns it. Reassigning someone else's directory stays a deliberate
-    // act on its own screen, where the consequences are in front of you.
-    const owns = dir.ownerId && dir.ownerId === actor.id;
-    if (!owns) return { ok: false, reason: 'not yours; use the directory screen' };
     const permit = canTransferDirectory(cfg, { user: actor, dir });
     if (!permit.allowed) return { ok: false, reason: permit.reason };
+    const invite = inviteAllowed(cfg, {
+      domain: await resolveDomain(cfg, row.host),
+      dir,
+      emailNorm: person.emailNorm,
+    });
+    if (!invite.allowed) return { ok: false, reason: invite.reason };
     const from = dir.ownerEmail;
     dir.ownerId = person.id;
     dir.ownerEmail = person.emailNorm;
@@ -321,7 +347,15 @@ async function applyOne(ctx, op, row, person) {
   }
 
   if (op.value === 'grant' || op.value === 'revoke') {
+    const may = await canManageDirectory(cfg, { user: actor, dir });
+    if (!may.allowed) return { ok: false, reason: may.reason };
     if (op.value === 'grant') {
+      const invite = inviteAllowed(cfg, {
+        domain: await resolveDomain(cfg, row.host),
+        dir,
+        emailNorm: person.emailNorm,
+      });
+      if (!invite.allowed) return { ok: false, reason: invite.reason };
       const existing = await getGrant(cfg, row.host, row.pathLc, person.id);
       const grant = existing
         ? { ...existing, canCreate: true, canManage: true }
@@ -359,7 +393,11 @@ async function applyOne(ctx, op, row, person) {
     return { ok: true };
   }
 
+  // An administrator is never refused by the read-only mark itself, so this
+  // still clears a mark they set; what it does enforce is directory scope.
   if (!canSetReadonly(cfg, actor)) return { ok: false, reason: 'not permitted' };
+  const mayDir = await canManageDirectory(cfg, { user: actor, dir });
+  if (!mayDir.allowed) return { ok: false, reason: mayDir.reason };
   dir.readonly = op.value === 'readonly';
   await putDirectory(cfg, dir);
   ctx.waitUntil(

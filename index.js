@@ -416,7 +416,14 @@ async function route(request, env, exec) {
         }
         ctx.impersonator = ctx.session.user;
         ctx.prefix = imp.prefix;
-        target.impersonatedBy = ctx.session.user.emailNorm;
+        // Non-enumerable so it is readable by the audit log but invisible
+        // to JSON.stringify, and therefore can never be written back into
+        // the stored user record by a later putUser.
+        Object.defineProperty(target, 'impersonatedBy', {
+          value: ctx.session.user.emailNorm,
+          enumerable: false,
+          configurable: true,
+        });
         ctx.session = { ...ctx.session, user: target };
         ctx.url = new URL(imp.path + url.search, url.origin);
         ctx.isAdmin = isAdmin(cfg, target);

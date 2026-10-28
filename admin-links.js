@@ -12,6 +12,14 @@ import { audit, EVENTS } from './audit.js';
 import { checkCsrf } from './auth.js';
 import { creatableDirectories, getDirectory, governingDirectory } from './directories.js';
 import { policyFor, resolveLink, userExemption, MAX_DELAY } from './interstitial.js';
+import {
+  emptyPreview,
+  normalizePreview,
+  previewAllowed,
+  previewBlockedReason,
+  previewCard,
+} from './preview.js';
+import { ALL_SLOTS, normalizeRouting, SLOT_LABELS } from './targets.js';
 import { resolveDomain } from './domains.js';
 import { clientIp } from './geo.js';
 import {
@@ -87,6 +95,89 @@ function countdownControls(behaviour, link) {
     }
   }
   return parts.join('\n');
+}
+
+
+/**
+ * Country rules are edited as one line each, `IL,US https://example.com/x`,
+ * which keeps a five-slot form manageable and needs no JavaScript to add or
+ * remove rows.
+ */
+function rulesToText(rules) {
+  return (rules || []).map((r) => r.countries.join(',') + ' ' + r.url).join('\n');
+}
+
+function textToRules(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const gap = line.search(/\s/);
+      if (gap < 0) return null;
+      return {
+        countries: line.slice(0, gap).split(',').map((c) => c.trim().toUpperCase()).filter(Boolean),
+        url: line.slice(gap + 1).trim(),
+      };
+    })
+    .filter((r) => r && r.url && r.countries.length);
+}
+
+/** The five destination slots, with their optional country rules. */
+function routingFields(routing, { blockedSchemes } = {}) {
+  const r = normalizeRouting(routing);
+  const slot = (key) => {
+    const isDefault = key === 'default';
+    return `<fieldset class="grants">
+      <legend class="note">${esc(SLOT_LABELS[key])}${isDefault ? '' : ' (optional)'}</legend>
+      ${
+        isDefault
+          ? ''
+          : field({
+              name: 'url__' + key,
+              label: 'Destination',
+              value: r[key].url,
+              placeholder: 'leave blank to use the main destination',
+            })
+      }
+      ${textarea({
+        name: 'rules__' + key,
+        label: 'Country rules (optional)',
+        value: rulesToText(r[key].rules),
+        placeholder: 'IL,US https://example.com/local',
+        note: 'One per line: comma-separated two-letter codes, a space, then the destination. The first match wins; anything else falls through.',
+      })}
+    </fieldset>`;
+  };
+  return ALL_SLOTS.map(slot).join('');
+}
+
+/** Read the five slots back out of a submitted form. */
+function readRouting(body) {
+  const out = {};
+  for (const key of ALL_SLOTS) {
+    out[key] = {
+      url: String(body.get('url__' + key) || '').trim(),
+      rules: textToRules(body.get('rules__' + key)),
+    };
+  }
+  return out;
+}
+
+/**
+ * Validate and canonicalise every URL in a routing table, so a device or
+ * country branch cannot smuggle in a scheme the main destination forbids.
+ */
+function cleanRouting(raw, opts) {
+  const r = normalizeRouting(raw);
+  for (const key of ALL_SLOTS) {
+    if (r[key].url) r[key].url = parseDestination(r[key].url, opts).target;
+    r[key].rules = r[key].rules.map((rule) => ({
+      countries: rule.countries,
+      url: parseDestination(rule.url, opts).target,
+    }));
+  }
+  return r;
 }
 
 function linkEditHref(host, pathLc) {
@@ -190,7 +281,7 @@ ${flashFrom(url)}
 
 /* --------------------------------------------------------------- create */
 
-async function newForm(ctx, { error, values = {} } = {}) {
+async function newForm(ctx, { error, info, values = {} } = {}) {
   const { cfg } = ctx;
   const token = await formToken(ctx, 'link.create');
   const chosenHost = values.host || ctx.host;
@@ -200,8 +291,12 @@ async function newForm(ctx, { error, values = {} } = {}) {
     .map((h) => `<option value="${esc(h)}"${h === chosenHost ? ' selected' : ''}>${esc(h)}</option>`)
     .join('');
 
+  const parentDomain = await resolveDomain(cfg, chosenHost);
+  const preview = normalizePreview(values.preview);
+  const previewBlocked = previewBlockedReason(parentDomain);
+
   const body = `
-${alert('error', error)}
+${alert('error', error)}${alert('ok', info)}
 <h1>Create a link</h1>
 <p class="sub">Shortcuts use letters, digits, underscore and hyphen. They are case-insensitive, so <code>Deck</code> and <code>deck</code> are the same link.</p>
 
@@ -252,6 +347,21 @@ ${alert('error', error)}
       ${textarea({ name: 'note', label: 'Note (optional)', value: values.note || '' })}
     </div>
     ${checkbox({ name: 'forwardQuery', label: 'Append the incoming query string to the destination', checked: !!values.forwardQuery })}
+
+    <h2>Where different visitors go</h2>
+    <p class="hint">All optional. A device slot left blank falls through to the main destination.</p>
+    ${routingFields(values.routing)}
+
+    <h2>Preview card</h2>
+    ${
+      previewBlocked
+        ? `<p class="note">${esc(previewBlocked)}</p>`
+        : `<p class="hint">Shown when something like Slack or Twitter unfurls this link.</p>
+    ${checkbox({ name: 'previewEnabled', label: 'Use a preview card for this link', checked: !!preview.enabled })}
+    ${field({ name: 'previewTitle', label: 'Title', value: preview.title })}
+    ${textarea({ name: 'previewDescription', label: 'Description', value: preview.description })}
+    ${field({ name: 'previewImage', label: 'Image URL', value: preview.image, placeholder: 'https://example.com/card.png', note: 'Must be https.' })}`
+    }
     ${
       canSetReadonly(ctx.cfg, ctx.session.user)
         ? checkbox({
@@ -307,15 +417,27 @@ async function createSubmit(ctx) {
     note: body.get('note') || '',
     forwardQuery: body.get('forwardQuery') === '1',
     readonly: body.get('readonly') === '1',
+    routing: readRouting(body),
+    preview: {
+      enabled: body.get('previewEnabled') === '1',
+      title: body.get('previewTitle'),
+      description: body.get('previewDescription'),
+      image: String(body.get('previewImage') || '').trim(),
+    },
   };
 
   let parsed;
   let destination;
   let expiresAt;
+  let routing;
   try {
     parsed = parsePath(values.path, { reserved: reservedFor(ctx, host) });
     destination = parseDestination(values.target, { blockedSchemes: ctx.cfg.settings.blockedSchemes });
     expiresAt = parseExpiry(values.expires);
+    routing = cleanRouting(values.routing, { blockedSchemes: ctx.cfg.settings.blockedSchemes });
+    if (values.preview.image && !/^https:\/\//i.test(values.preview.image)) {
+      throw new ValidationError('The preview image must be an https URL.', 'previewImage');
+    }
   } catch (err) {
     if (err instanceof ValidationError) return newForm(ctx, { error: err.message, values });
     throw err;
@@ -354,6 +476,8 @@ async function createSubmit(ctx) {
     expiresAt,
     forwardQuery: values.forwardQuery,
     readonly: canSetReadonly(ctx.cfg, ctx.session.user) ? values.readonly : false,
+    routing,
+    preview: previewBlockedReason(domain) ? emptyPreview() : normalizePreview(values.preview),
   });
   await putLink(ctx.cfg, link);
 
@@ -394,6 +518,10 @@ async function editForm(ctx, { error, info } = {}) {
   const dir = await governingDirectory(cfg, host, pathLc);
   const policy = policyFor(await resolveDomain(cfg, host), dir);
   const behaviour = resolveLink(policy, link, userExemption(ctx.session.user, host));
+  const parentDomain = await resolveDomain(cfg, host);
+  const preview = normalizePreview(link.preview);
+  const previewBlocked = previewBlockedReason(parentDomain);
+  const dupToken = await formToken(ctx, 'link.duplicate');
   const shortUrl = 'https://' + host + '/' + link.path;
   const mayReadonly = canSetReadonly(cfg, ctx.session.user);
 
@@ -416,7 +544,7 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
       attrs: 'data-slink-slug spellcheck="false"',
       note: 'Renaming changes the short link; the old one stops working.',
     })}
-    ${field({ name: 'target', label: 'Destination', value: link.target, required: true })}
+    ${field({ name: 'target', label: 'Destination', value: link.target, required: true, note: 'Used when nothing more specific matches.' })}
     ${select({ name: 'status', label: 'Redirect code', value: link.status, options: STATUS_OPTIONS })}
     ${countdownControls(behaviour, link)}
     <div class="row">
@@ -425,6 +553,23 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
     </div>
     ${checkbox({ name: 'enabled', label: 'Enabled', checked: link.enabled !== false })}
     ${checkbox({ name: 'forwardQuery', label: 'Append the incoming query string to the destination', checked: !!link.forwardQuery })}
+
+    <h2>Where different visitors go</h2>
+    <p class="hint">All optional. A device slot left blank falls through to the main destination, so configuring only one is perfectly normal.</p>
+    ${routingFields(link.routing)}
+
+    <h2>Preview card</h2>
+    ${
+      previewBlocked
+        ? `<p class="note">${esc(previewBlocked)}</p>`
+        : `<p class="hint">Shown when something like Slack or Twitter unfurls this link. Leave it off and the unfurler reads the destination's own tags instead.</p>
+    ${checkbox({ name: 'previewEnabled', label: 'Use a preview card for this link', checked: !!preview.enabled })}
+    ${field({ name: 'previewTitle', label: 'Title', value: preview.title, placeholder: 'Required for a card to show' })}
+    ${textarea({ name: 'previewDescription', label: 'Description', value: preview.description })}
+    ${field({ name: 'previewImage', label: 'Image URL', value: preview.image, placeholder: 'https://example.com/card.png', note: 'Must be https. Saved and shown as entered; it is not copied or hosted here.' })}
+    <p class="note">How it will look:</p>
+    ${previewCard(host, link, preview)}`
+    }
     ${checkbox({
       name: 'readonly',
       label: 'Read-only',
@@ -451,6 +596,15 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
 </div>
 
 <div class="card">
+  <h2>Duplicate</h2>
+  <p class="hint">Copies everything on this link except the shortcut, and opens a new one for you to name.</p>
+  <form method="post" action="/admin/links/duplicate">
+    ${csrfField(dupToken)}${hidden('host', host)}${hidden('path', pathLc)}
+    <div class="actions"><button type="submit" class="secondary">Duplicate</button></div>
+  </form>
+</div>
+
+<div class="card">
   <h2>Delete</h2>
   <p class="hint">This cannot be undone. The shortcut becomes available again.</p>
   <form method="post" action="/admin/links/delete" data-confirm="Delete ${esc(host)}/${esc(link.path)}?">
@@ -459,7 +613,8 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
   </form>
 </div>`;
 
-  return adminPage(ctx, { title: link.path, nav: 'links', body });
+  // The editor renders the card's image, which is an arbitrary https URL.
+  return adminPage(ctx, { title: link.path, nav: 'links', body, externalImages: true });
 }
 
 async function editSubmit(ctx) {
@@ -486,6 +641,7 @@ async function editSubmit(ctx) {
       blockedSchemes: ctx.cfg.settings.blockedSchemes,
     });
     expiresAt = parseExpiry(body.get('expires'));
+    cleanRouting(readRouting(body), { blockedSchemes: ctx.cfg.settings.blockedSchemes });
   } catch (err) {
     if (err instanceof ValidationError) {
       ctx.url.searchParams.set('host', host);
@@ -531,6 +687,25 @@ async function editSubmit(ctx) {
   const effective = resolveLink(policy, link, userExemption(ctx.session.user, host));
   link.countdown = effective.countdownLocked ? null : body.get('countdown') === '1';
   link.showTarget = effective.targetLocked ? null : body.get('showTarget') === '1';
+  link.routing = cleanRouting(readRouting(body), {
+    blockedSchemes: ctx.cfg.settings.blockedSchemes,
+  });
+  if (previewBlockedReason(domain)) {
+    link.preview = emptyPreview();
+  } else {
+    const img = String(body.get('previewImage') || '').trim();
+    if (img && !/^https:\/\//i.test(img)) {
+      ctx.url.searchParams.set('host', host);
+      ctx.url.searchParams.set('path', pathLc);
+      return editForm(ctx, { error: 'The preview image must be an https URL.' });
+    }
+    link.preview = normalizePreview({
+      enabled: body.get('previewEnabled') === '1',
+      title: body.get('previewTitle'),
+      description: body.get('previewDescription'),
+      image: img,
+    });
+  }
   link.note = String(body.get('note') || '').slice(0, 500);
   link.expiresAt = expiresAt;
   link.enabled = body.get('enabled') === '1';
@@ -645,6 +820,41 @@ async function transferSubmit(ctx) {
   return back(linkEditHref(host, pathLc), 'link.moved');
 }
 
+async function duplicateSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/links', 'csrf');
+  const guard = await checkCsrf(ctx, 'link.duplicate', body);
+  if (!guard.ok) return back('/admin/links', 'csrf');
+
+  const host = String(body.get('host') || '');
+  const pathLc = String(body.get('path') || '').toLowerCase();
+  const source = await getLink(ctx.cfg, host, pathLc);
+  if (!source) return back('/admin/links', 'notfound');
+
+  // Duplicating reveals everything the link holds, so it needs the same
+  // standing as editing it, not merely permission to create.
+  const permit = await canManageLink(ctx.cfg, { user: ctx.session.user, link: source, host });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  return newForm(ctx, {
+    info: 'Copied from ' + host + '/' + source.path + '. Give it a shortcut to save it.',
+    values: {
+      host,
+      path: '',
+      target: source.target,
+      status: source.status,
+      delay: source.delay,
+      countdown: source.countdown,
+      showTarget: source.showTarget,
+      note: source.note,
+      forwardQuery: !!source.forwardQuery,
+      readonly: !!source.readonly,
+      routing: source.routing,
+      preview: source.preview,
+    },
+  });
+}
+
 /* --------------------------------------------------------------- router */
 
 export async function adminLinks(ctx, path) {
@@ -654,5 +864,6 @@ export async function adminLinks(ctx, path) {
   if (path === '/admin/links/edit') return method === 'POST' ? editSubmit(ctx) : editForm(ctx);
   if (path === '/admin/links/delete' && method === 'POST') return deleteSubmit(ctx);
   if (path === '/admin/links/transfer' && method === 'POST') return transferSubmit(ctx);
+  if (path === '/admin/links/duplicate' && method === 'POST') return duplicateSubmit(ctx);
   return back('/admin/links');
 }

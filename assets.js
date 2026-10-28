@@ -10,7 +10,7 @@ import { LOGO_SVG } from './logo.js';
 export const ASSET_PREFIX = '/__slink';
 
 /** Bumped whenever the asset bodies change; used for immutable caching. */
-export const ASSET_VERSION = '5';
+export const ASSET_VERSION = '6';
 
 export const CSS = `
 :root{
@@ -109,6 +109,14 @@ footer.foot div+div{margin-top:4px}
 .kv dd{margin:0;word-break:break-word}
 .grants{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:0 0 10px}
 .grants legend{padding:0 6px}
+.ogcard{border:1px solid var(--line);border-radius:10px;overflow:hidden;max-width:520px;background:var(--bg)}
+.ogimg{aspect-ratio:1.91/1;background:var(--line);display:flex;align-items:center;justify-content:center}
+.ogimg img{width:100%;height:100%;object-fit:cover;display:block}
+.ogimg-none{color:var(--muted);font-size:13px}
+.ogbody{padding:10px 12px}
+.oghost{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.ogtitle{font-weight:600;margin:2px 0}
+.ogdesc{font-size:13px;color:var(--muted)}
 .tools{display:flex;gap:7px;flex-wrap:wrap}
 .tools form{display:inline}
 @media (max-width:620px){

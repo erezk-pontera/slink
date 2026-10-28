@@ -11,6 +11,7 @@ const suites = [
   'test/routing.test.mjs',
   'test/grants.test.mjs',
   'test/interstitial.test.mjs',
+  'test/variants.test.mjs',
 ];
 
 let bad = 0;

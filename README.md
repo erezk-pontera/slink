@@ -368,6 +368,53 @@ Redirect codes are 301, 302 (default), 303, 307 and 308. 301 and 308
 responses are cacheable for five minutes; the rest are `no-store`, so a
 changed destination takes effect at once.
 
+## Where a visitor ends up
+
+A link always has one mandatory destination, and may carry four more: Android
+phone, iPhone, Android tablet and iPad. Any of those five slots, including
+the default, may also carry country rules.
+
+Resolution is deliberately simple:
+
+1. Pick the slot for the visitor's device. A slot left blank is skipped, so
+   configuring only "Android phone" is normal and everything else falls
+   through.
+2. Inside that slot, the first country rule that matches wins.
+3. Otherwise the slot's own URL.
+4. Otherwise the same two steps against the default slot.
+
+Device class comes from `Sec-CH-UA-Mobile` and `Sec-CH-UA-Platform` where the
+browser sends them, which Chromium does by default and which beats reading
+the user-agent; Safari sends neither, so the user-agent is the fallback. One
+honest limitation: an iPad on iPadOS 13 or later presents itself as a Mac, so
+it is seen as a desktop unless the visitor asked for the mobile site.
+
+Country rules are edited one per line, `IL,US https://example.com/local`.
+Every URL in the table goes through the same validation as the main
+destination, so a device or country branch cannot smuggle in a scheme the
+main one forbids.
+
+**Duplicating** a link copies everything except the shortcut and opens the
+create form. It needs the same standing as editing the original, since the
+copy reveals everything the original holds.
+
+## Preview cards
+
+When something like Slack or Twitter unfurls a short link it follows the
+redirect and reads the destination's own tags. A link can instead carry its
+own card — title, description and an https image — and then a crawler is
+served that card rather than a redirect, while people still get the redirect.
+The editor shows how the card will look.
+
+**Only public domains get cards.** On a domain that requires sign-in a
+crawler cannot authenticate and is bounced anyway, and emitting a title and
+description for an internal link would publish exactly what the sign-in
+requirement exists to protect. The editor says so rather than offering fields
+that would be ignored, and nothing is stored.
+
+A card needs a title. Without one the crawler is better served by the
+destination's own tags, so no card is emitted.
+
 ## The countdown
 
 Before opening a link, visitors can be held on a countdown page. Whether that
@@ -464,7 +511,7 @@ The page works without JavaScript via a meta refresh.
 
 ```sh
 npm run check   # syntax-check every module as an ES module
-npm test        # 315 checks across nine suites
+npm test        # 351 checks across ten suites
 wrangler dev    # local run; see the note below
 ```
 

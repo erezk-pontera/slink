@@ -10,6 +10,8 @@
 
 import { K } from './kv.js';
 import { REDIRECT_STATUSES } from './domains.js';
+import { emptyPreview } from './preview.js';
+import { emptyRouting } from './targets.js';
 import { now } from './util.js';
 
 export const MAX_DELAY_SECONDS = 60;
@@ -27,6 +29,10 @@ export function newLink(host, parsed, target, owner, overrides = {}) {
     /** null inherits the policy; true or false overrides it where allowed. */
     countdown: null,
     showTarget: null,
+    /** Optional per-device and per-country destinations. See targets.js. */
+    routing: emptyRouting(),
+    /** Optional unfurling card, public domains only. See preview.js. */
+    preview: emptyPreview(),
     ownerId: owner ? owner.id : null,
     ownerEmail: owner ? owner.emailNorm : null,
     /** Read-only links may only be changed by administrators. */

@@ -76,12 +76,12 @@ ${turnstile ? turnstileScriptTag() : ''}
 }
 
 /** Build an HTML response with the hardened header set. */
-export function html(bodyHtml, { status = 200, turnstile = false, headers } = {}) {
+export function html(bodyHtml, { status = 200, turnstile = false, store = false, externalImages = false, headers } = {}) {
   const res = new Response(bodyHtml, {
     status,
     headers: { 'Content-Type': 'text/html; charset=utf-8', ...(headers || {}) },
   });
-  return harden(res, { turnstile });
+  return harden(res, { turnstile, store, externalImages });
 }
 
 export function alert(kind, message) {

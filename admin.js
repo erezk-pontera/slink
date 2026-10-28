@@ -220,7 +220,7 @@ function hostPicker(ctx) {
 }
 
 /** Render an admin page inside the shared chrome. */
-export function adminPage(ctx, { title, nav, body, status = 200 }) {
+export function adminPage(ctx, { title, nav, body, status = 200, externalImages = false }) {
   return html(
     layout({
       title: title + ' - ' + ctx.cfg.appName,
@@ -231,7 +231,7 @@ export function adminPage(ctx, { title, nav, body, status = 200 }) {
       headerExtra: hostPicker(ctx),
       body,
     }),
-    { status }
+    { status, externalImages }
   );
 }
 

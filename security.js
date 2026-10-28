@@ -205,7 +205,10 @@ export function originCheck(request, expectedOrigin) {
  * escaped, so there is no path by which a user-supplied value becomes a style
  * attribute; the real injection risk, script execution, stays locked down.
  */
-export function harden(response, { turnstile = false, store = false, referrerPolicy = 'same-origin' } = {}) {
+export function harden(
+  response,
+  { turnstile = false, store = false, referrerPolicy = 'same-origin', externalImages = false } = {}
+) {
   const h = response.headers;
   h.set('X-Content-Type-Options', 'nosniff');
   // 'same-origin' keeps the referrer off every cross-origin request while
@@ -236,7 +239,10 @@ export function harden(response, { turnstile = false, store = false, referrerPol
       `frame-ancestors 'none'`,
       `script-src 'self'` + (turnstile ? ' ' + CF : ''),
       `style-src 'self' 'unsafe-inline'`,
-      `img-src 'self' data:`,
+      // The link editor renders the card's image, which is an arbitrary
+      // https URL by nature. Images cannot execute, and this is not relaxed
+      // anywhere else.
+      externalImages ? `img-src 'self' data: https:` : `img-src 'self' data:`,
       `font-src 'self'`,
       `connect-src 'self'` + (turnstile ? ' ' + CF : ''),
       `frame-src ` + (turnstile ? CF : `'none'`),

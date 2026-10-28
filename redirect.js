@@ -10,6 +10,8 @@
 import { governingDirectory } from './directories.js';
 import { GO_PARAM, needsExemption, policyFor, resolveLink, userExemption } from './interstitial.js';
 import { bumpClicks, getLink, isExpired, isServable } from './links.js';
+import { isCrawler, previewAllowed, previewPage } from './preview.js';
+import { deviceClass, resolveTarget } from './targets.js';
 import { getUserById } from './users.js';
 import { harden } from './security.js';
 import { adminUrl, html, interstitialPage, landingPage, messagePage } from './views.js';
@@ -131,7 +133,13 @@ export async function handleRedirect(ctx) {
   const behaviour = resolveLink(policy, link, exempt);
 
   const incoming = stripGoParam(url.search);
-  const target = link.forwardQuery ? applyQuery(link.target, incoming) : link.target;
+  // Which destination this particular visitor gets: their device first, then
+  // any country rule inside that slot, falling back to the default.
+  const chosen = resolveTarget(link, {
+    device: deviceClass(ctx.request),
+    country: (ctx.request.cf && ctx.request.cf.country) || '',
+  }).url;
+  const target = link.forwardQuery ? applyQuery(chosen, incoming) : chosen;
   const status = link.status || domain.defaultStatus || 302;
   const skip = url.searchParams.get(GO_PARAM) === '1';
 
@@ -139,6 +147,12 @@ export async function handleRedirect(ctx) {
   // comes back through us a second time is not counted twice.
   if (cfg.settings.countClicks !== false && !skip) {
     ctx.waitUntil(bumpClicks(cfg, host, key));
+  }
+
+  // A crawler that would unfurl this link is served the card instead of a
+  // redirect, and never a countdown page.
+  if (previewAllowed(domain, link) && isCrawler(ctx.request)) {
+    return html(previewPage(cfg, { host, link, url: target }), { store: true });
   }
 
   if (behaviour.show && !skip) {

@@ -25,6 +25,7 @@ import {
 import { clientIp } from './geo.js';
 import { describePolicy, normalizePolicy } from './interstitial.js';
 import { clampStatus } from './links.js';
+import { MISSING_MODES, normalizeMissingPolicy } from './dirmissing.js';
 import { canonicalHost, parseDestination, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
 import { esc, listEnv } from './util.js';
@@ -142,6 +143,7 @@ async function editForm(ctx, { error } = {}) {
   const isHub = host === ctx.cfg.hubHost;
   const routed = ctx.cfg.knownHosts.includes(host);
   const policy = normalizePolicy(domain.interstitial);
+  const missingPolicy = normalizeMissingPolicy(domain.dirMissingPolicy);
 
   const body = `
 ${flashFrom(url)}${alert('error', error)}
@@ -203,6 +205,26 @@ ${routed ? '' : alert('error', 'This host is not in the DOMAINS variable, so the
         ? 'Blank falls back to MISSING: ' + ctx.cfg.missingUrl
         : 'Blank shows a not-found page, because MISSING is not set.',
     })}
+    <h2>Directory MISSING destinations</h2>
+    <p class="hint">A directory can answer its own root, and unknown shortcuts under it, with a destination of its own. This decides whether directories may set one.</p>
+    ${select({
+      name: 'dirMissingMode',
+      label: 'Directories may set their own',
+      value: missingPolicy.mode,
+      options: [
+        { value: 'optional', label: 'Yes, each directory decides' },
+        { value: 'locked', label: 'No, use the destination below for all of them' },
+        { value: 'off', label: 'No, they all use this domain MISSING' },
+      ],
+      note: 'An administrator can still exempt one directory on its own screen.',
+    })}
+    ${field({
+      name: 'dirMissingTarget',
+      label: 'Destination for directories that set none (optional)',
+      value: missingPolicy.target || '',
+      placeholder: 'https://example.com/teams',
+      note: 'Used when a directory has nothing of its own, and for every directory when the choice above is locked.',
+    })}
     ${textarea({ name: 'note', label: 'Note', value: domain.note || '' })}
     ${checkbox({ name: 'enabled', label: 'Enabled', checked: domain.enabled !== false })}
     ${checkbox({ name: 'readonly', label: 'Read-only', checked: !!domain.readonly, note: '(only administrators may create or change anything on this host)' })}
@@ -244,11 +266,14 @@ async function editSubmit(ctx) {
 
   let rootRedirect = null;
   let notFoundUrl = null;
+  let dirMissingTarget = null;
   try {
     const rr = String(body.get('rootRedirect') || '').trim();
     const nf = String(body.get('notFoundUrl') || '').trim();
     if (rr) rootRedirect = parseDestination(rr, { blockedSchemes: ctx.cfg.settings.blockedSchemes }).target;
     if (nf) notFoundUrl = parseDestination(nf, { blockedSchemes: ctx.cfg.settings.blockedSchemes }).target;
+    const dm = String(body.get('dirMissingTarget') || '').trim();
+    if (dm) dirMissingTarget = parseDestination(dm, { blockedSchemes: ctx.cfg.settings.blockedSchemes }).target;
   } catch (err) {
     if (err instanceof ValidationError) return editForm(ctx, { error: err.message });
     throw err;
@@ -263,6 +288,11 @@ async function editSubmit(ctx) {
   domain.interstitial = readPolicy(body, 'it');
   domain.rootRedirect = rootRedirect;
   domain.notFoundUrl = notFoundUrl;
+  const dirMissingMode = String(body.get('dirMissingMode') || 'optional');
+  domain.dirMissingPolicy = normalizeMissingPolicy({
+    mode: MISSING_MODES.includes(dirMissingMode) ? dirMissingMode : 'optional',
+    target: dirMissingTarget || '',
+  });
   domain.note = String(body.get('note') || '').slice(0, 500);
   domain.enabled = body.get('enabled') === '1';
   domain.readonly = body.get('readonly') === '1';

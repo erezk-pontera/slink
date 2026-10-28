@@ -32,6 +32,7 @@ import { serveAsset } from './assets.js';
 import { loadConfig, saveSettings } from './config.js';
 import { ensureBootstrapDomains, resolveDomain } from './domains.js';
 import { clientIp, geoCheck, geoMessage } from './geo.js';
+import { IMP_DENY, openImpersonation, splitImpersonation } from './impersonate.js';
 import { canonicalHost } from './paths.js';
 import { rootCreateAllowed } from './permissions.js';
 import { getChallenge } from './otp.js';
@@ -356,6 +357,10 @@ async function route(request, env, exec) {
     session: null,
     isAdmin: false,
     canCreateRoot: false,
+    /** Set only inside an impersonated view: who is really signed in. */
+    impersonator: null,
+    /** URL prefix that keeps an impersonated view in its own namespace. */
+    prefix: '',
   };
 
   ctx.session = await readSession(cfg, request, host);
@@ -392,6 +397,31 @@ async function route(request, env, exec) {
     if (path === '/sso/authorize') return ssoAuthorizeGet(ctx);
 
     if (path === '/admin' || path.startsWith('/admin/')) {
+      // An impersonated view lives under /admin/as/<token>/. Resolve it to
+      // the plain path first so the rest of the hub never has to know.
+      const imp = splitImpersonation(path);
+      if (imp && ctx.session) {
+        const target = await openImpersonation(cfg, { token: imp.token, session: ctx.session });
+        if (!target) {
+          const page = messagePage({
+            cfg,
+            host,
+            title: 'Impersonation ended',
+            heading: 'That view is no longer available',
+            message: IMP_DENY.expired,
+            status: 403,
+            actions: [{ href: '/admin', label: 'Back to overview' }],
+          });
+          return html(page.body, { status: 403 });
+        }
+        ctx.impersonator = ctx.session.user;
+        ctx.prefix = imp.prefix;
+        target.impersonatedBy = ctx.session.user.emailNorm;
+        ctx.session = { ...ctx.session, user: target };
+        ctx.url = new URL(imp.path + url.search, url.origin);
+        ctx.isAdmin = isAdmin(cfg, target);
+        ctx.canCreateRoot = ctx.isAdmin || rootCreateAllowed(cfg, domain, target);
+      }
       if (!ctx.session) {
         if (path === '/admin') {
           return request.method === 'POST' ? signInPost(ctx) : signInGet(ctx);

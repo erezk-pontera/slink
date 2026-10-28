@@ -44,7 +44,13 @@ import {
 } from './interstitial.js';
 import { clientIp } from './geo.js';
 import { getLink, listLinks } from './links.js';
-import { normalizeEmail, parsePath, RESERVED_PATHS, ValidationError } from './paths.js';
+import {
+  normalizeEmail,
+  parseDestination,
+  parsePath,
+  RESERVED_PATHS,
+  ValidationError,
+} from './paths.js';
 import {
   canCreateDirectory,
   canManageDirectory,
@@ -53,6 +59,7 @@ import {
   mayCreateAnyDirectory,
   requireAdmin,
 } from './permissions.js';
+import { describeMissingPolicy, directoryMaySetMissing, resolveMissing } from './dirmissing.js';
 import { getUserByNorm, isAdmin } from './users.js';
 import { esc, fmtTime } from './util.js';
 import { alert, checkbox, csrfField, field, hidden, textarea } from './views.js';
@@ -256,6 +263,8 @@ async function editForm(ctx, { error } = {}) {
   const domainPolicy = normalizePolicy(parentDomain && parentDomain.interstitial);
   const exempt = normalizeExempt(dir.interstitialExempt);
   const exemptions = EXEMPTIBLE.filter((k) => exempt[k]);
+  const maySetMissing = directoryMaySetMissing(parentDomain, dir);
+  const effectiveMissing = resolveMissing(parentDomain, dir);
   const mayOverride = directoryMayOverride(domainPolicy, dir);
   const dirPolicy = dir.interstitial
     ? narrow(domainPolicy, dir.interstitial, dir.interstitialExempt)
@@ -374,6 +383,12 @@ ${
     ${checkbox({ name: 'ex_countdown', label: 'Exempt from the domain countdown lock', checked: !!exempt.countdown })}
     ${checkbox({ name: 'ex_destination', label: 'Exempt from the domain destination lock', checked: !!exempt.destination })}
     ${checkbox({ name: 'ex_minDelay', label: 'Exempt from the domain minimum delay', checked: !!exempt.minDelay })}
+    ${checkbox({
+      name: 'ex_missing',
+      label: 'Let this directory set its own MISSING destination',
+      checked: !!dir.missingExempt,
+      note: '(domain policy: ' + describeMissingPolicy(parentDomain) + ')',
+    })}
     <div class="actions"><button type="submit">Save exemptions</button></div>
   </form>
 </div>`
@@ -385,6 +400,21 @@ ${
   <form method="post" action="/admin/directories/edit">
     ${csrfField(settingsToken)}${hidden('host', host)}${hidden('path', pathLc)}
     ${textarea({ name: 'note', label: 'Note', value: dir.note || '' })}
+    ${
+      maySetMissing
+        ? field({
+            name: 'missingUrl',
+            label: 'MISSING destination',
+            value: dir.missingUrl || '',
+            placeholder: 'https://example.com/team',
+            note:
+              'Where to send someone who browses this directory, or a shortcut under it that does not exist. Leave empty to use the domain default' +
+              (effectiveMissing.source === 'domain' ? ' (' + effectiveMissing.target + ').' : '.'),
+          })
+        : `<p class="note">MISSING destination: ${esc(
+            effectiveMissing.target || 'the domain default'
+          )}. ${esc(describeMissingPolicy(parentDomain))}</p>`
+    }
     ${checkbox({ name: 'enabled', label: 'Enabled', checked: dir.enabled !== false })}
     ${checkbox({
       name: 'open',
@@ -447,6 +477,27 @@ async function editSubmit(ctx) {
   dir.enabled = body.get('enabled') === '1';
   dir.open = body.get('open') === '1';
   if (canSetReadonly(ctx.cfg, ctx.session.user)) dir.readonly = body.get('readonly') === '1';
+
+  // A validation failure re-renders this directory's screen, which reads the
+  // record it is editing from the query string.
+  ctx.url.searchParams.set('host', host);
+  ctx.url.searchParams.set('path', pathLc);
+
+  // The field only renders where the domain allows it, so a submission that
+  // carries it anyway is ignored rather than trusted.
+  if (directoryMaySetMissing(await resolveDomain(ctx.cfg, host), dir)) {
+    const raw = String(body.get('missingUrl') || '').trim();
+    if (!raw) {
+      dir.missingUrl = '';
+    } else {
+      try {
+        dir.missingUrl = parseDestination(raw, { blockedSchemes: ctx.cfg.settings.blockedSchemes }).target;
+      } catch (err) {
+        if (err instanceof ValidationError) return editForm(ctx, { error: err.message });
+        throw err;
+      }
+    }
+  }
   await putDirectory(ctx.cfg, dir);
 
   ctx.waitUntil(
@@ -602,6 +653,7 @@ async function exemptSubmit(ctx) {
   if (!dir) return back('/admin/directories', 'notfound');
 
   dir.allowInterstitialOverride = body.get('allowOverride') === '1';
+  dir.missingExempt = body.get('ex_missing') === '1';
   dir.interstitialExempt = normalizeExempt({
     countdown: body.get('ex_countdown') === '1',
     destination: body.get('ex_destination') === '1',

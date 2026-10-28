@@ -26,6 +26,13 @@ export function newDirectory(host, path, pathLc, overrides = {}) {
     readonly: false,
     enabled: true,
     note: '',
+    /** Where to send someone who browses this directory's root, or a
+     *  shortcut under it that does not exist. Empty uses the domain's
+     *  MISSING destination. See dirmissing.js. */
+    missingUrl: '',
+    /** Set by a Shrink Link administrator only: lets this directory set its
+     *  own MISSING even where the domain says otherwise. */
+    missingExempt: false,
     /** Countdown override, used only when the domain delegates or an
      *  administrator enabled it on this directory. See interstitial.js. */
     interstitial: null,

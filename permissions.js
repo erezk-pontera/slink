@@ -16,7 +16,20 @@
 import { getDirectory, getGrant, directoryPathSet, listUserGrants } from './directories.js';
 import { createDomainsFor } from './domains.js';
 import { domainAllowed, parentDirectory } from './paths.js';
-import { isAdmin } from './users.js';
+import { isAdmin, isRootAdmin } from './users.js';
+
+/**
+ * Administrators reach every directory by default. An administrator may turn
+ * that off for themselves or for another administrator, which scopes them to
+ * the directories they hold a grant on while leaving the rest of their
+ * powers intact. A root administrator's access is never removable.
+ */
+export function adminReachesAllDirectories(cfg, user) {
+  if (!user) return false;
+  if (isRootAdmin(cfg, user.emailNorm)) return true;
+  if (!isAdmin(cfg, user)) return false;
+  return user.allDirectories !== false;
+}
 
 export const DENY = {
   anonymous: 'You must sign in.',
@@ -85,7 +98,8 @@ export async function canCreate(cfg, { user, domain, host, pathLc, dirSet }) {
   if (domain && domain.enabled === false && !admin) return deny(DENY.domainDisabled);
 
   const { dir, grant } = await resolveGovernor(cfg, host, pathLc, user, { dirSet });
-  if (admin) return allow({ dir, grant, asAdmin: true });
+  const reaches = !dir || adminReachesAllDirectories(cfg, user);
+  if (admin && reaches) return allow({ dir, grant, asAdmin: true });
 
   if (domain && domain.readonly) return deny(DENY.domainReadonly, { dir, grant });
 
@@ -109,12 +123,11 @@ export async function canManageLink(cfg, { user, link, host, dirSet }) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
   const admin = isAdmin(cfg, user);
-  if (admin) return allow({ asAdmin: true });
+  const { dir, grant } = await resolveGovernor(cfg, host || link.host, link.pathLc, user, { dirSet });
+  if (admin && (!dir || adminReachesAllDirectories(cfg, user))) return allow({ asAdmin: true, dir });
 
   if (link.readonly) return deny(DENY.linkReadonly);
   if (link.ownerId && link.ownerId === user.id) return allow({ asOwner: true });
-
-  const { dir, grant } = await resolveGovernor(cfg, host || link.host, link.pathLc, user, { dirSet });
   if (dir && !dir.readonly && grant && grant.canManage) return allow({ asDirAdmin: true, dir, grant });
 
   return deny(DENY.notOwner);
@@ -124,7 +137,7 @@ export async function canManageLink(cfg, { user, link, host, dirSet }) {
 export async function canManageDirectory(cfg, { user, dir }) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
-  if (isAdmin(cfg, user)) return allow({ asAdmin: true });
+  if (isAdmin(cfg, user) && adminReachesAllDirectories(cfg, user)) return allow({ asAdmin: true });
   if (!dir) return deny(DENY.notDirAdmin);
   if (dir.readonly) return deny(DENY.dirReadonly);
   const grant = await getGrant(cfg, dir.host, dir.pathLc, user.id);
@@ -145,7 +158,7 @@ export async function canManageDirectory(cfg, { user, dir }) {
 export async function canCreateDirectory(cfg, { user, domain, host, pathLc, dirSet }) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
-  if (isAdmin(cfg, user)) return allow({ asAdmin: true });
+  if (isAdmin(cfg, user) && adminReachesAllDirectories(cfg, user)) return allow({ asAdmin: true });
   if (domain && domain.readonly) return deny(DENY.domainReadonly);
 
   const { dir, grant } = await resolveGovernor(cfg, host, pathLc, user, { dirSet });
@@ -166,7 +179,7 @@ export async function canCreateDirectory(cfg, { user, domain, host, pathLc, dirS
  */
 export async function mayCreateAnyDirectory(cfg, { user, host }) {
   if (!user || user.disabled) return false;
-  if (isAdmin(cfg, user)) return true;
+  if (isAdmin(cfg, user) && adminReachesAllDirectories(cfg, user)) return true;
   if (user.dirCreate && user.dirCreate[host]) return true;
   const grants = await listUserGrants(cfg, user.id);
   return grants.some((g) => g.host === host && g.canManage);
@@ -181,6 +194,9 @@ export async function mayCreateAnyDirectory(cfg, { user, host }) {
 export function canTransferDirectory(cfg, { user, dir }) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
+  // Reassigning ownership is an administrative act in its own right, so it
+  // stays available to every administrator regardless of read-only marks or
+  // whether their directory access has been scoped.
   if (isAdmin(cfg, user)) return allow({ asAdmin: true });
   if (!dir) return deny(DENY.notDirAdmin);
   if (dir.readonly) return deny(DENY.dirReadonly);
@@ -202,6 +218,19 @@ export function requireAdmin(cfg, user) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
   return isAdmin(cfg, user) ? allow({ asAdmin: true }) : deny(DENY.adminOnly);
+}
+
+/**
+ * May `user` hand this link to someone else? Administrators always may, for
+ * the same reason as directories: ownership is an administrative matter, not
+ * a content one. Everyone else needs the ordinary management right.
+ */
+export async function canTransferLink(cfg, args) {
+  const { user } = args;
+  if (!user) return deny(DENY.anonymous);
+  if (user.disabled) return deny(DENY.disabled);
+  if (isAdmin(cfg, user)) return allow({ asAdmin: true });
+  return canManageLink(cfg, args);
 }
 
 /**

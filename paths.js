@@ -73,8 +73,11 @@ export function parsePath(raw, { reserved = RESERVED_PATHS, allowReserved = fals
     if (seg.length > MAX_SEGMENT) throw new ValidationError('Shortcut segment is too long.', 'path');
   }
 
-  const path = segments.join('/');
-  const pathLc = path.toLowerCase();
+  // Shortcuts are case-agnostic, so the stored form is the lowercase one and
+  // that is what gets displayed too: a shortcut never renders in a case that
+  // differs from the one the redirect actually matches on.
+  const path = segments.join('/').toLowerCase();
+  const pathLc = path;
   if (!allowReserved && reserved.includes(segments[0].toLowerCase())) {
     throw new ValidationError('That name is reserved.', 'path');
   }
@@ -98,7 +101,12 @@ export function parseDestination(raw, { blockedSchemes = [] } = {}) {
   else if (value.startsWith('//')) out = 'https:' + value;
   else out = 'https://' + value;
 
+  // The scheme and the host are case-insensitive, so they are normalised to
+  // lowercase. Everything after the host is left exactly as typed, because a
+  // path, query or fragment is case-sensitive and lowercasing it would send
+  // people somewhere other than where the link was meant to go.
   const scheme = out.slice(0, out.indexOf(':')).toLowerCase();
+  out = scheme + out.slice(scheme.length);
   if (HARD_BLOCKED_SCHEMES.includes(scheme)) {
     throw new ValidationError('That destination scheme is not allowed.', 'target');
   }

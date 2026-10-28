@@ -30,6 +30,7 @@ export const EVENTS = {
   domainUpdated: 'domain.updated',
   domainDeleted: 'domain.deleted',
   userUpdated: 'user.updated',
+  impersonationStarted: 'user.impersonated',
   userDeleted: 'user.deleted',
   settingsUpdated: 'settings.updated',
   denied: 'access.denied',
@@ -52,6 +53,9 @@ export async function audit(cfg, { event, actor, host, ip, object, detail, outco
       object: object || null,
       detail: detail || null,
       ipHash: ip ? (await sha256Hex(ip)).slice(0, 32) : null,
+      // An action taken inside an impersonated view records both identities,
+      // so the log never credits it to the person being viewed alone.
+      via: actor && actor.impersonatedBy ? actor.impersonatedBy : null,
     };
     const ttl = Math.max(3600, (cfg.settings.auditRetentionDays || 180) * 86400);
     await cfg.store.put(K.audit(invTs(ts), randomId(6)), entry, { ttl, metadata: {

@@ -88,7 +88,12 @@ export class Harness {
 
     if (form) {
       init.method = 'POST';
-      const body = new URLSearchParams(form);
+      // An array value means the same field repeated, which is how a set of
+      // checkboxes actually arrives.
+      const body = new URLSearchParams();
+      for (const [k, v] of Object.entries(form)) {
+        for (const one of Array.isArray(v) ? v : [v]) body.append(k, one);
+      }
       init.body = body.toString();
       init.headers['Content-Type'] = 'application/x-www-form-urlencoded';
       if (!('Origin' in init.headers) && init.headers.Origin !== null) {

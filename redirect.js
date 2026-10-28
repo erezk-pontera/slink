@@ -7,7 +7,8 @@
  * seconds first.
  */
 
-import { governingDirectory } from './directories.js';
+import { getDirectory, governingDirectory } from './directories.js';
+import { resolveMissing } from './dirmissing.js';
 import { GO_PARAM, needsExemption, policyFor, resolveLink, userExemption } from './interstitial.js';
 import { bumpClicks, getLink, isExpired, isServable } from './links.js';
 import { isCrawler, previewAllowed, previewPage } from './preview.js';
@@ -82,10 +83,28 @@ export function redirectResponse(target, status) {
  * Where to send someone when there is nothing to show: the per-domain
  * override if the administrator set one, otherwise the global MISSING URL.
  */
-export function fallbackFor(ctx, kind) {
+export function fallbackFor(ctx, kind, dir = null) {
   const { cfg, domain } = ctx;
+  // A directory's own MISSING is the most specific answer there is, so it
+  // comes before the domain's and before the global one.
+  if (dir) {
+    const own = resolveMissing(domain, dir).target;
+    if (own) return own;
+  }
   const perDomain = kind === 'root' ? domain.rootRedirect : domain.notFoundUrl;
   return perDomain || cfg.missingUrl || '';
+}
+
+/**
+ * The directory a missing path belongs to: the path itself when it names a
+ * directory root, otherwise the directory that governs it. Only consulted on
+ * the miss path, so an ordinary redirect pays nothing for it.
+ */
+async function missingDirectory(cfg, host, pathLc) {
+  if (!pathLc) return null;
+  const self = await getDirectory(cfg, host, pathLc);
+  if (self) return self;
+  return governingDirectory(cfg, host, pathLc);
 }
 
 /**
@@ -109,10 +128,14 @@ export async function handleRedirect(ctx) {
 
   // The hot path tolerates a short edge cache; admin views read fresh.
   const link = await getLink(cfg, host, key, { fresh: false });
-  if (!link) return notFound(ctx);
+  if (!link) return notFound(ctx, await missingDirectory(cfg, host, key));
 
   if (!isServable(link)) {
-    return gone(ctx, isExpired(link) ? 'This link has expired.' : 'This link is disabled.');
+    return gone(
+      ctx,
+      isExpired(link) ? 'This link has expired.' : 'This link is disabled.',
+      await missingDirectory(cfg, host, key)
+    );
   }
 
 
@@ -175,9 +198,9 @@ export async function handleRedirect(ctx) {
   return redirectResponse(target, status);
 }
 
-function notFound(ctx) {
+function notFound(ctx, dir = null) {
   const { cfg, host } = ctx;
-  const target = fallbackFor(ctx, 'missing');
+  const target = fallbackFor(ctx, 'missing', dir);
   if (target) return redirectResponse(target, 302);
   const page = messagePage({
     cfg,
@@ -191,11 +214,11 @@ function notFound(ctx) {
   return html(page.body, { status: 404 });
 }
 
-function gone(ctx, message) {
+function gone(ctx, message, dir = null) {
   const { cfg, host } = ctx;
   // A disabled or expired shortcut is "nothing to show" too, so it lands in
   // the same place as an unknown one rather than on a dead end.
-  const target = fallbackFor(ctx, 'missing');
+  const target = fallbackFor(ctx, 'missing', dir);
   if (target) return redirectResponse(target, 302);
   const page = messagePage({
     cfg,

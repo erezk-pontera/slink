@@ -54,6 +54,11 @@ nav.main a[aria-current=page]{background:var(--bg);color:var(--ink);font-weight:
 .badge.ok{color:var(--ok);border-color:currentColor}
 .badge.ro{color:var(--warn);border-color:currentColor}
 .badge.off{color:var(--danger);border-color:currentColor}
+.impbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  margin:0 0 18px;padding:10px 14px;border:1px solid var(--warn);border-radius:8px;
+  color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent)}
+.impbar strong{color:inherit}
+.impbar .btn{flex:none}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:var(--shadow);padding:18px;margin:0 0 16px}
 .card h2{margin:0 0 4px;font-size:16px;font-weight:600}
@@ -141,6 +146,20 @@ export const JS = `
       var form = picker.form;
       if (form) form.submit();
     });
+  }
+
+  // Bulk selection on the search page. Without JavaScript the checkboxes
+  // still work one by one; these only save the clicking.
+  var batch = document.querySelector('[data-slink-batch]');
+  if (batch) {
+    var setAll = function (on) {
+      var boxes = batch.querySelectorAll('[data-slink-pick]');
+      for (var i = 0; i < boxes.length; i++) boxes[i].checked = on;
+    };
+    var all = batch.querySelector('[data-slink-pick-all]');
+    var none = batch.querySelector('[data-slink-pick-none]');
+    if (all) all.addEventListener('click', function () { setAll(true); });
+    if (none) none.addEventListener('click', function () { setAll(false); });
   }
 
   // Delayed-redirect interstitial. The destination is carried in a data

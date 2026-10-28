@@ -15,6 +15,7 @@ import { ANY_HOST, EXEMPTIBLE, normalizeExempt } from './interstitial.js';
 import { PROVIDERS } from './mailer.js';
 import { HARD_BLOCKED_SCHEMES, normalizeEmail, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
+import { canImpersonate, mintImpersonation } from './impersonate.js';
 import { deleteUser, getUserByNorm, isRootAdmin, listUsers, putUser } from './users.js';
 import { esc, fmtTime, intEnv, listEnv } from './util.js';
 import { alert, checkbox, csrfField, field, hidden, select, textarea } from './views.js';
@@ -47,6 +48,7 @@ async function usersPage(ctx, { error } = {}) {
   const all = await listUsers(cfg);
   const users = all.filter((u) => !isRootAdmin(cfg, u.emailNorm));
   const hidden = all.length - users.length;
+  const impToken = await formToken(ctx, 'user.impersonate');
 
   const rows = users
     .map((u) => {
@@ -59,6 +61,7 @@ async function usersPage(ctx, { error } = {}) {
       <td class="num">${esc(fmtTime(u.lastLoginAt))}</td>
       <td class="num">${esc(u.loginCount || 0)}</td>
       <td><a href="/admin/users/edit?u=${encodeURIComponent(u.emailNorm)}">Manage</a></td>
+      <td>${impersonateButton(ctx, u, impToken)}</td>
     </tr>`;
     })
     .join('');
@@ -76,7 +79,7 @@ ${
 <div class="card">
   ${
     users.length
-      ? `<div class="tablewrap"><table><thead><tr><th>User</th><th>Last sign-in</th><th>Sign-ins</th><th></th></tr></thead>
+      ? `<div class="tablewrap"><table><thead><tr><th>User</th><th>Last sign-in</th><th>Sign-ins</th><th></th><th></th></tr></thead>
          <tbody>${rows}</tbody></table></div>`
       : '<div class="empty">No users yet.</div>'
   }
@@ -160,6 +163,17 @@ ${flashFrom(url)}${alert('error', error)}
       note: root ? '(set by the ADMIN variable)' : '(full control over everything)',
     })}
     ${checkbox({
+      name: 'allDirectories',
+      label: 'Reaches every directory',
+      checked: root || user.allDirectories !== false,
+      disabled: root || !isAdminAccount,
+      note: root
+        ? '(a root administrator always reaches every directory)'
+        : isAdminAccount
+          ? '(turn off to scope this administrator to the directories they are granted on; they keep every other administrative power, ownership changes included)'
+          : '(administrators only)',
+    })}
+    ${checkbox({
       name: 'disabled',
       label: 'Disabled',
       checked: !!user.disabled,
@@ -232,6 +246,10 @@ async function userEditSubmit(ctx) {
   if (!root) {
     user.isAdmin = body.get('isAdmin') === '1';
     user.disabled = body.get('disabled') === '1';
+    // Only an administrator can be scoped, and the box only renders for one.
+    // An ordinary account keeps the default so a later promotion starts with
+    // the full reach rather than a silent restriction.
+    user.allDirectories = user.isAdmin ? body.get('allDirectories') === '1' : true;
   }
   // An administrator's boxes render disabled, so a browser submits none of
   // them. Leaving the stored grants untouched keeps them intact if the
@@ -563,6 +581,47 @@ ${flashFrom(ctx.url)}
 
 /* --------------------------------------------------------------- router */
 
+/**
+ * Opens a view of the hub as this person, in a new tab. It is a POST because
+ * it is a privileged act that belongs in the audit log, and the new tab is
+ * what keeps each impersonation to itself.
+ */
+function impersonateButton(ctx, user, token) {
+  const permit = canImpersonate(ctx.cfg, { actor: ctx.session.user, target: user });
+  if (!permit.allowed) return `<span class="note">${esc(permit.reason)}</span>`;
+  return `<form method="post" action="/admin/users/impersonate" target="_blank" rel="noopener">
+    ${csrfField(token)}${hidden('u', user.emailNorm)}
+    <button type="submit" class="link">View as</button>
+  </form>`;
+}
+
+async function impersonateSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/users', 'csrf');
+  const guard = await checkCsrf(ctx, 'user.impersonate', body);
+  if (!guard.ok) return back('/admin/users', 'csrf');
+
+  const emailNorm = String(body.get('u') || '').toLowerCase();
+  const target = await getUserByNorm(ctx.cfg, emailNorm);
+  const permit = canImpersonate(ctx.cfg, {
+    actor: ctx.session.user,
+    target,
+    impersonating: !!ctx.impersonator,
+  });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.impersonationStarted,
+      actor: ctx.session.user,
+      host: ctx.host,
+      ip: ctx.ip,
+      object: target.emailNorm,
+    })
+  );
+  return back(await mintImpersonation(ctx.cfg, { session: ctx.session, target }));
+}
+
 export async function adminUsers(ctx, path) {
   const gate = requireAdmin(ctx.cfg, ctx.session.user);
   if (!gate.allowed) return denied(ctx, gate.reason);
@@ -572,6 +631,7 @@ export async function adminUsers(ctx, path) {
   if (path === '/admin/users/edit') return method === 'POST' ? userEditSubmit(ctx) : userEditForm(ctx);
   if (path === '/admin/users/revoke' && method === 'POST') return userRevokeSubmit(ctx);
   if (path === '/admin/users/delete' && method === 'POST') return userDeleteSubmit(ctx);
+  if (path === '/admin/users/impersonate' && method === 'POST') return impersonateSubmit(ctx);
   if (path === '/admin/settings') return method === 'POST' ? settingsSubmit(ctx) : settingsPage(ctx);
   if (path === '/admin/audit') return auditPage(ctx);
   return back('/admin');

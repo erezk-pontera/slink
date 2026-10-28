@@ -63,6 +63,20 @@ ok('invalid shortcuts all rejected', accepted.length === 0, 'accepted: ' + JSON.
 ok('trailing slash normalised away', parsePath('a/').pathLc === 'a');
 ok('leading slash normalised away', parsePath('/a/b').pathLc === 'a/b');
 ok('valid shortcut lowercases', parsePath('Pub/Deck_1-x').pathLc === 'pub/deck_1-x');
+// The displayed form is the stored form, so a shortcut is never shown in a
+// case that differs from the one the redirect matches on.
+ok('the displayed shortcut is lowercase too', parsePath('Pub/Deck_1-X').path === 'pub/deck_1-x');
+ok('shortcut segments agree', parsePath('MiXeD').path === parsePath('MiXeD').pathLc);
+
+// Scheme and host are case-insensitive and get normalised; a path, query or
+// fragment is case-sensitive and must survive exactly as typed.
+ok('destination scheme lowercases', parseDestination('HTTPS://Example.COM/a').target.startsWith('https://'));
+ok('destination host lowercases', parseDestination('HTTPS://Example.COM/a').target.includes('example.com'));
+ok('destination path keeps its case',
+   parseDestination('https://example.com/MyPage?Token=AbC#Frag').target === 'https://example.com/MyPage?Token=AbC#Frag');
+ok('opaque scheme lowercases', parseDestination('MAILTO:Someone@Example.com').target.startsWith('mailto:'));
+ok('opaque body keeps its case',
+   parseDestination('MAILTO:Someone@Example.com').target === 'mailto:Someone@Example.com');
 
 const dangerous = ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,<script>', 'vbscript:x', 'file:///etc/passwd'];
 ok('dangerous schemes all rejected',

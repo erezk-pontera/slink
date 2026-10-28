@@ -17,6 +17,9 @@ export function newUser(email, emailNorm, overrides = {}) {
     emailNorm,
     isAdmin: false,
     disabled: false,
+    /** Administrators only: false scopes them to directories they are
+     *  granted on. Never applies to a root administrator. */
+    allDirectories: true,
     note: '',
     /** Per-host explicit permission to create links at the root. */
     rootCreate: {},

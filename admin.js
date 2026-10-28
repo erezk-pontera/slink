@@ -9,7 +9,9 @@
 import { adminDirectories } from './admin-directories.js';
 import { adminDomains } from './admin-domains.js';
 import { adminLinks } from './admin-links.js';
+import { adminSearch } from './admin-search.js';
 import { adminUsers } from './admin-users.js';
+import { EXIT_HREF, impersonationNotice, withPrefix, withoutPrefix } from './impersonate.js';
 import { tokenFor } from './auth.js';
 import { creatableDirectories } from './directories.js';
 import { resolveDomain } from './domains.js';
@@ -172,6 +174,7 @@ export function adminNav(ctx, current) {
     { href: '/admin', label: 'Overview', key: 'overview' },
     { href: '/admin/links', label: 'Links', key: 'links' },
     { href: '/admin/directories', label: 'Directories', key: 'directories' },
+    { href: '/admin/search', label: 'Search', key: 'search' },
   ];
   if (ctx.isAdmin) {
     items.push(
@@ -181,7 +184,13 @@ export function adminNav(ctx, current) {
       { href: '/admin/audit', label: 'Audit', key: 'audit' }
     );
   }
-  items.push({ href: '/logout', label: 'Sign out', key: 'logout' });
+  // While impersonating, signing out means leaving this tab's view rather
+  // than ending the administrator's own session in every other tab.
+  items.push(
+    ctx.impersonator
+      ? { href: EXIT_HREF, label: 'Sign out', key: 'logout' }
+      : { href: '/logout', label: 'Sign out', key: 'logout' }
+  );
   return items.map((i) => ({ ...i, current: i.key === current }));
 }
 
@@ -221,18 +230,19 @@ function hostPicker(ctx) {
 
 /** Render an admin page inside the shared chrome. */
 export function adminPage(ctx, { title, nav, body, status = 200, externalImages = false }) {
-  return html(
-    layout({
-      title: title + ' - ' + ctx.cfg.appName,
-      appName: ctx.cfg.appName,
-      host: ctx.host,
-      user: ctx.session.user,
-      nav: adminNav(ctx, nav),
-      headerExtra: hostPicker(ctx),
-      body,
-    }),
-    { status, externalImages }
-  );
+  const markup = layout({
+    title: title + ' - ' + ctx.cfg.appName,
+    appName: ctx.cfg.appName,
+    host: ctx.host,
+    user: ctx.session.user,
+    nav: adminNav(ctx, nav),
+    headerExtra: hostPicker(ctx),
+    body: impersonationNotice(ctx) + body,
+  });
+  return html(ctx.prefix ? withPrefix(markup, ctx.prefix) : withoutPrefix(markup), {
+    status,
+    externalImages,
+  });
 }
 
 /** A refusal rendered inside the admin chrome. */
@@ -366,6 +376,7 @@ export async function handleAdmin(ctx) {
   const path = ctx.url.pathname.replace(/\/+$/, '') || '/admin';
 
   if (path === '/admin') return overview(ctx);
+  if (path.startsWith('/admin/search')) return adminSearch(ctx, path);
   if (path.startsWith('/admin/links')) return adminLinks(ctx, path);
   if (path.startsWith('/admin/directories')) return adminDirectories(ctx, path);
 

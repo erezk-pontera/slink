@@ -12,6 +12,10 @@ const suites = [
   'test/grants.test.mjs',
   'test/interstitial.test.mjs',
   'test/variants.test.mjs',
+  'test/impersonate.test.mjs',
+  'test/scoped.test.mjs',
+  'test/search.test.mjs',
+  'test/dirmissing.test.mjs',
 ];
 
 let bad = 0;

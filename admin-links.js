@@ -36,7 +36,13 @@ import {
   readClicks,
 } from './links.js';
 import { parseDestination, parsePath, RESERVED_PATHS, ValidationError } from './paths.js';
-import { canCreate, canManageLink, canReceiveTransfer, canSetReadonly } from './permissions.js';
+import {
+  canCreate,
+  canManageLink,
+  canReceiveTransfer,
+  canSetReadonly,
+  canTransferLink,
+} from './permissions.js';
 import { getUserByNorm } from './users.js';
 import { normalizeEmail } from './paths.js';
 import { esc, fmtTime } from './util.js';
@@ -509,7 +515,14 @@ async function editForm(ctx, { error, info } = {}) {
   if (!link) return back('/admin/links', 'notfound');
 
   const permit = await canManageLink(cfg, { user: ctx.session.user, link, host });
-  if (!permit.allowed) return denied(ctx, permit.reason);
+  if (!permit.allowed) {
+    // An administrator scoped out of this directory still owns the question
+    // of who the link belongs to, so give them the one card they may use
+    // rather than a flat refusal.
+    const move = await canTransferLink(cfg, { user: ctx.session.user, link, host });
+    if (move.allowed) return ownershipOnlyPage(ctx, { host, pathLc, link, error, info });
+    return denied(ctx, permit.reason);
+  }
 
   const token = await formToken(ctx, 'link.update');
   const delToken = await formToken(ctx, 'link.delete');
@@ -615,6 +628,31 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
 
   // The editor renders the card's image, which is an arbitrary https URL.
   return adminPage(ctx, { title: link.path, nav: 'links', body, externalImages: true });
+}
+
+/**
+ * The edit screen reduced to its Owner card, for an administrator who may
+ * reassign this link but is not scoped to manage what is inside it.
+ */
+async function ownershipOnlyPage(ctx, { host, pathLc, link, error, info }) {
+  const moveToken = await formToken(ctx, 'link.transfer');
+  const body = `
+${flashFrom(ctx.url)}${alert('error', error)}${alert('ok', info)}
+<h1>${esc(host)}/${esc(link.path)}</h1>
+<p class="sub">You are not scoped to this directory, so only ownership is yours to change here.</p>
+
+<div class="card">
+  <h2>Owner</h2>
+  <p class="hint">Currently ${esc(link.ownerEmail || 'unassigned')}. Transferring hands over the right to edit and delete it.</p>
+  <form method="post" action="/admin/links/transfer">
+    ${csrfField(moveToken)}${hidden('host', host)}${hidden('path', pathLc)}
+    ${field({ name: 'owner', label: 'New owner email', type: 'email', value: '', required: true, placeholder: 'colleague@example.com' })}
+    <div class="actions"><button type="submit" class="secondary">Transfer</button></div>
+  </form>
+</div>
+
+<div class="actions"><a class="btn secondary" href="/admin/links">Back</a></div>`;
+  return adminPage(ctx, { title: link.path, nav: 'links', body });
 }
 
 async function editSubmit(ctx) {
@@ -769,7 +807,7 @@ async function transferSubmit(ctx) {
   const link = await getLink(ctx.cfg, host, pathLc);
   if (!link) return back('/admin/links', 'notfound');
 
-  const permit = await canManageLink(ctx.cfg, { user: ctx.session.user, link, host });
+  const permit = await canTransferLink(ctx.cfg, { user: ctx.session.user, link, host });
   if (!permit.allowed) return denied(ctx, permit.reason);
 
   ctx.url.searchParams.set('host', host);

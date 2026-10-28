@@ -364,10 +364,52 @@ whether hierarchical (`slack://channel?id=7`) or opaque (`mailto:x@y.com`).
 `javascript:`, `data:`, `vbscript:`, `blob:` and `file:` are always refused;
 more can be blocked in settings.
 
-Redirect codes are 301, 302 (default), 303, 307 and 308. A delay above zero
-shows a countdown page first, which works without JavaScript via a meta
-refresh. 301 and 308 responses are cacheable for five minutes; the rest are
-`no-store`, so a changed destination takes effect at once.
+Redirect codes are 301, 302 (default), 303, 307 and 308. 301 and 308
+responses are cacheable for five minutes; the rest are `no-store`, so a
+changed destination takes effect at once.
+
+## The countdown
+
+Before opening a link, visitors can be held on a countdown page. Whether that
+happens is decided by a policy resolved in three steps — domain, then any
+directory owning the path, then the link itself.
+
+Each switch is three-state, which is what makes locking possible:
+
+| Setting | Values |
+| --- | --- |
+| Countdown | never shown · each link decides · always shown |
+| Destination on that page | never shown · each link decides · always shown |
+| Minimum delay | a floor a lower level may raise but not lower |
+
+Plus a default delay, and defaults for the two "each link decides" cases.
+Anything not locked is editable by whoever may edit the link.
+
+**Narrowing is the rule.** A directory administrator may always make their
+directory stricter than the domain. **Exemptions are the exception**: to let
+a directory go the other way, a Shrink Link administrator grants it an
+exemption on one named setting. Opening one does not open the others. The
+same applies to people — a user can be exempted globally or on named
+domains, which lets them set link options the policy would otherwise lock.
+
+A link is served according to its **owner's** exemptions, not a snapshot
+taken when it was saved, so withdrawing someone's exemption pulls their links
+back under the policy at once rather than leaving a permanent hole. The
+owner's grants are only loaded when the stored link actually depends on one,
+so an ordinary redirect costs no extra reads.
+
+Out of the box the countdown is available everywhere and defaults to **on for
+`ptra.dev`** and **off for `ptra.cc`**: a public short link should go
+straight through, while the authenticated host shows where it is sending you.
+Setting a delay on a link is itself a request for a countdown, so a link can
+opt in even where the default is off.
+
+When the destination is hidden, it is genuinely absent from the page: the
+countdown points back at this host with a `slink-go` flag and the worker
+answers with the real redirect, so the target appears nowhere in the markup.
+That flag is stripped before any query string is forwarded on.
+
+The page works without JavaScript via a meta refresh.
 
 ---
 
@@ -422,7 +464,7 @@ refresh. 301 and 308 responses are cacheable for five minutes; the rest are
 
 ```sh
 npm run check   # syntax-check every module as an ES module
-npm test        # 284 checks across eight suites
+npm test        # 315 checks across nine suites
 wrangler dev    # local run; see the note below
 ```
 

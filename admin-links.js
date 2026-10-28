@@ -10,7 +10,8 @@
 import { adminPage, back, denied, flashFrom, formToken, hostFilter, hostsFor, readForm } from './admin.js';
 import { audit, EVENTS } from './audit.js';
 import { checkCsrf } from './auth.js';
-import { creatableDirectories, getDirectory } from './directories.js';
+import { creatableDirectories, getDirectory, governingDirectory } from './directories.js';
+import { policyFor, resolveLink, userExemption, MAX_DELAY } from './interstitial.js';
 import { resolveDomain } from './domains.js';
 import { clientIp } from './geo.js';
 import {
@@ -40,6 +41,53 @@ const STATUS_OPTIONS = [
   { value: 308, label: '308 - Permanent redirect (keeps method)' },
   { value: 303, label: '303 - See other' },
 ];
+
+/**
+ * The countdown fields a given person may change on a given link. A locked
+ * setting is shown as settled rather than as a control that does nothing.
+ */
+function countdownControls(behaviour, link) {
+  const parts = [];
+  if (behaviour.countdownLocked) {
+    parts.push(
+      `<p class="note">Countdown is ${behaviour.show ? 'required' : 'disabled'} by policy for this location.</p>`
+    );
+  } else {
+    parts.push(
+      checkbox({
+        name: 'countdown',
+        label: 'Show a countdown before opening',
+        checked: behaviour.show,
+      })
+    );
+  }
+  if (behaviour.show) {
+    parts.push(
+      field({
+        name: 'delay',
+        label: 'Delay (seconds)',
+        type: 'number',
+        value: link && link.delay ? link.delay : behaviour.delay,
+        attrs: `min="${Math.max(1, behaviour.minDelay)}" max="${MAX_DELAY}"`,
+        note: behaviour.minDelay > 0 ? `Policy requires at least ${behaviour.minDelay}s.` : '',
+      })
+    );
+    if (behaviour.targetLocked) {
+      parts.push(
+        `<p class="note">The destination is ${behaviour.showTarget ? 'always shown' : 'never shown'} by policy.</p>`
+      );
+    } else {
+      parts.push(
+        checkbox({
+          name: 'showTarget',
+          label: 'Show the destination on the countdown page',
+          checked: behaviour.showTarget,
+        })
+      );
+    }
+  }
+  return parts.join('\n');
+}
 
 function linkEditHref(host, pathLc) {
   return `/admin/links/edit?host=${encodeURIComponent(host)}&path=${encodeURIComponent(pathLc)}`;
@@ -343,6 +391,9 @@ async function editForm(ctx, { error, info } = {}) {
   const delToken = await formToken(ctx, 'link.delete');
   const moveToken = await formToken(ctx, 'link.transfer');
   const clicks = await readClicks(cfg, host, pathLc);
+  const dir = await governingDirectory(cfg, host, pathLc);
+  const policy = policyFor(await resolveDomain(cfg, host), dir);
+  const behaviour = resolveLink(policy, link, userExemption(ctx.session.user, host));
   const shortUrl = 'https://' + host + '/' + link.path;
   const mayReadonly = canSetReadonly(cfg, ctx.session.user);
 
@@ -366,16 +417,8 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
       note: 'Renaming changes the short link; the old one stops working.',
     })}
     ${field({ name: 'target', label: 'Destination', value: link.target, required: true })}
-    <div class="row">
-      ${select({ name: 'status', label: 'Redirect code', value: link.status, options: STATUS_OPTIONS })}
-      ${field({
-        name: 'delay',
-        label: 'Delay (seconds)',
-        type: 'number',
-        value: link.delay || 0,
-        attrs: `min="0" max="${MAX_DELAY_SECONDS}"`,
-      })}
-    </div>
+    ${select({ name: 'status', label: 'Redirect code', value: link.status, options: STATUS_OPTIONS })}
+    ${countdownControls(behaviour, link)}
     <div class="row">
       ${field({ name: 'expires', label: 'Expires', type: 'text', value: expiryInput(link.expiresAt), placeholder: 'YYYY-MM-DD' })}
       ${textarea({ name: 'note', label: 'Note', value: link.note || '' })}
@@ -481,6 +524,13 @@ async function editSubmit(ctx) {
   link.target = destination.target;
   link.status = clampStatus(body.get('status'), link.status);
   link.delay = clampDelay(body.get('delay'), link.delay);
+  // Only record a choice where one is actually permitted, so a locked
+  // setting cannot be smuggled in by hand-posting the form.
+  const dir = await governingDirectory(ctx.cfg, host, pathLc);
+  const policy = policyFor(domain, dir);
+  const effective = resolveLink(policy, link, userExemption(ctx.session.user, host));
+  link.countdown = effective.countdownLocked ? null : body.get('countdown') === '1';
+  link.showTarget = effective.targetLocked ? null : body.get('showTarget') === '1';
   link.note = String(body.get('note') || '').slice(0, 500);
   link.expiresAt = expiresAt;
   link.enabled = body.get('enabled') === '1';

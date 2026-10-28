@@ -22,7 +22,11 @@ export function newLink(host, parsed, target, owner, overrides = {}) {
     pathLc: parsed.pathLc,
     target,
     status: 302,
+    /** Seconds of countdown. 0 means "use the policy default". */
     delay: 0,
+    /** null inherits the policy; true or false overrides it where allowed. */
+    countdown: null,
+    showTarget: null,
     ownerId: owner ? owner.id : null,
     ownerEmail: owner ? owner.emailNorm : null,
     /** Read-only links may only be changed by administrators. */

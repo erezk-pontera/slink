@@ -26,8 +26,13 @@ export function newDirectory(host, path, pathLc, overrides = {}) {
     readonly: false,
     enabled: true,
     note: '',
-    defaultStatus: null,
-    defaultDelay: null,
+    /** Countdown override, used only when the domain delegates or an
+     *  administrator enabled it on this directory. See interstitial.js. */
+    interstitial: null,
+    allowInterstitialOverride: false,
+    /** Per-setting escape hatches from the domain policy, granted by a
+     *  Shrink Link administrator only. See interstitial.js. */
+    interstitialExempt: { countdown: false, destination: false, minDelay: false },
     createdAt: ts,
     updatedAt: ts,
     ...overrides,
@@ -135,4 +140,20 @@ export async function creatableDirectories(cfg, host, userId) {
     .filter((g) => g.host === host && (g.canCreate || g.canManage))
     .map((g) => g.dirPathLc)
     .sort();
+}
+
+/**
+ * The directory that governs `pathLc`, found by probing its ancestors from
+ * the longest down. A root-level path costs no reads and a path one level
+ * deep costs one, which is why the redirect path uses this rather than
+ * listing every directory on the host.
+ */
+export async function governingDirectory(cfg, host, pathLc) {
+  const segments = String(pathLc || '').split('/');
+  for (let i = segments.length - 1; i >= 1; i--) {
+    const candidate = segments.slice(0, i).join('/');
+    const dir = await cfg.store.get(K.dir(host, candidate), { fresh: false });
+    if (dir) return dir;
+  }
+  return null;
 }

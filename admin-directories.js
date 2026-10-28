@@ -7,7 +7,18 @@
  * hand the privileges to others.
  */
 
-import { adminPage, back, denied, flashFrom, formToken, hostFilter, hostsFor, readForm } from './admin.js';
+import {
+  adminPage,
+  back,
+  denied,
+  flashFrom,
+  formToken,
+  hostFilter,
+  hostsFor,
+  policyForm,
+  readForm,
+  readPolicy,
+} from './admin.js';
 import { audit, EVENTS } from './audit.js';
 import { checkCsrf } from './auth.js';
 import {
@@ -23,6 +34,14 @@ import {
   putGrant,
 } from './directories.js';
 import { resolveDomain } from './domains.js';
+import {
+  describePolicy,
+  directoryMayOverride,
+  EXEMPTIBLE,
+  narrow,
+  normalizeExempt,
+  normalizePolicy,
+} from './interstitial.js';
 import { clientIp } from './geo.js';
 import { getLink, listLinks } from './links.js';
 import { normalizeEmail, parsePath, RESERVED_PATHS, ValidationError } from './paths.js';
@@ -231,6 +250,16 @@ async function editForm(ctx, { error } = {}) {
   const revokeToken = await formToken(ctx, 'grant.remove');
   const deleteToken = await formToken(ctx, 'dir.delete');
   const moveToken = await formToken(ctx, 'dir.transfer');
+  const policyToken = await formToken(ctx, 'dir.policy');
+  const exemptToken = await formToken(ctx, 'dir.exempt');
+  const parentDomain = await resolveDomain(cfg, host);
+  const domainPolicy = normalizePolicy(parentDomain && parentDomain.interstitial);
+  const exempt = normalizeExempt(dir.interstitialExempt);
+  const exemptions = EXEMPTIBLE.filter((k) => exempt[k]);
+  const mayOverride = directoryMayOverride(domainPolicy, dir);
+  const dirPolicy = dir.interstitial
+    ? narrow(domainPolicy, dir.interstitial, dir.interstitialExempt)
+    : domainPolicy;
   const mayAdmin = isAdmin(cfg, ctx.session.user);
 
   const grantRows = grants
@@ -310,6 +339,46 @@ ${flashFrom(url)}${alert('error', error)}
       : '<p class="note">You cannot change the owner of this directory.</p>'
   }
 </div>
+
+${
+  mayOverride
+    ? `<div class="card">
+  <h2>Countdown</h2>
+  <p class="hint">${
+    exemptions.length
+      ? 'An administrator has exempted this directory from: ' + esc(exemptions.join(', ')) +
+        '. Those settings may differ from the domain; the rest may only be made stricter.'
+      : 'You may make this stricter than the domain, not looser. An administrator can grant an exemption if you need otherwise.'
+  }</p>
+  <form method="post" action="/admin/directories/policy">
+    ${csrfField(policyToken)}${hidden('host', host)}${hidden('path', pathLc)}
+    ${checkbox({ name: 'enabled', label: 'Use a policy for this directory', checked: !!dir.interstitial })}
+    ${policyForm(ctx, dirPolicy, { prefix: 'it', inherited: domainPolicy })}
+    <div class="actions"><button type="submit">Save countdown policy</button></div>
+  </form>
+</div>`
+    : `<div class="card">
+  <h2>Countdown</h2>
+  <p class="hint">Set by the domain: ${esc(describePolicy(domainPolicy))} An administrator can let this directory set its own.</p>
+</div>`
+}
+
+${
+  mayAdmin
+    ? `<div class="card">
+  <h2>Exemptions</h2>
+  <p class="hint">Administrators only. Each exemption lets this directory set that one thing against the domain policy; the others stay narrowing-only.</p>
+  <form method="post" action="/admin/directories/exempt">
+    ${csrfField(exemptToken)}${hidden('host', host)}${hidden('path', pathLc)}
+    ${checkbox({ name: 'allowOverride', label: 'Let directory administrators set a policy here', checked: !!dir.allowInterstitialOverride })}
+    ${checkbox({ name: 'ex_countdown', label: 'Exempt from the domain countdown lock', checked: !!exempt.countdown })}
+    ${checkbox({ name: 'ex_destination', label: 'Exempt from the domain destination lock', checked: !!exempt.destination })}
+    ${checkbox({ name: 'ex_minDelay', label: 'Exempt from the domain minimum delay', checked: !!exempt.minDelay })}
+    <div class="actions"><button type="submit">Save exemptions</button></div>
+  </form>
+</div>`
+    : ''
+}
 
 <div class="card">
   <h2>Settings</h2>
@@ -478,6 +547,81 @@ async function revokeSubmit(ctx) {
   return back(dirHref(host, pathLc), 'grant.removed');
 }
 
+async function policySubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/directories', 'csrf');
+  const guard = await checkCsrf(ctx, 'dir.policy', body);
+  if (!guard.ok) return back('/admin/directories', 'csrf');
+
+  const host = String(body.get('host') || '');
+  const pathLc = String(body.get('path') || '').toLowerCase();
+  const dir = await getDirectory(ctx.cfg, host, pathLc);
+  if (!dir) return back('/admin/directories', 'notfound');
+
+  const permit = await canManageDirectory(ctx.cfg, { user: ctx.session.user, dir });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  const domain = await resolveDomain(ctx.cfg, host);
+  const domainPolicy = normalizePolicy(domain && domain.interstitial);
+  if (!directoryMayOverride(domainPolicy, dir)) {
+    return denied(ctx, 'This directory may not set its own countdown policy.');
+  }
+
+  // Stored as submitted; narrowing and any exemption are applied when the
+  // policy is resolved, so withdrawing an exemption takes effect at once.
+  dir.interstitial = body.get('enabled') === '1' ? readPolicy(body, 'it', domainPolicy) : null;
+  await putDirectory(ctx.cfg, dir);
+
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.dirUpdated,
+      actor: ctx.session.user,
+      host,
+      ip: clientIp(ctx.request),
+      object: pathLc,
+      detail: { interstitial: dir.interstitial },
+    })
+  );
+  return back(dirHref(host, pathLc), 'dir.updated');
+}
+
+async function exemptSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/directories', 'csrf');
+  const guard = await checkCsrf(ctx, 'dir.exempt', body);
+  if (!guard.ok) return back('/admin/directories', 'csrf');
+
+  // Exemptions are the escape hatch from domain policy, so they are an
+  // administrator's call alone, never a directory administrator's.
+  const gate = requireAdmin(ctx.cfg, ctx.session.user);
+  if (!gate.allowed) return denied(ctx, gate.reason);
+
+  const host = String(body.get('host') || '');
+  const pathLc = String(body.get('path') || '').toLowerCase();
+  const dir = await getDirectory(ctx.cfg, host, pathLc);
+  if (!dir) return back('/admin/directories', 'notfound');
+
+  dir.allowInterstitialOverride = body.get('allowOverride') === '1';
+  dir.interstitialExempt = normalizeExempt({
+    countdown: body.get('ex_countdown') === '1',
+    destination: body.get('ex_destination') === '1',
+    minDelay: body.get('ex_minDelay') === '1',
+  });
+  await putDirectory(ctx.cfg, dir);
+
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.dirUpdated,
+      actor: ctx.session.user,
+      host,
+      ip: clientIp(ctx.request),
+      object: pathLc,
+      detail: { exempt: dir.interstitialExempt, allowOverride: dir.allowInterstitialOverride },
+    })
+  );
+  return back(dirHref(host, pathLc), 'dir.updated');
+}
+
 async function transferSubmit(ctx) {
   const body = await readForm(ctx.request);
   if (!body) return back('/admin/directories', 'csrf');
@@ -580,6 +724,8 @@ export async function adminDirectories(ctx, path) {
   if (path === '/admin/directories/edit') return method === 'POST' ? editSubmit(ctx) : editForm(ctx);
   if (path === '/admin/directories/grant' && method === 'POST') return grantSubmit(ctx);
   if (path === '/admin/directories/revoke' && method === 'POST') return revokeSubmit(ctx);
+  if (path === '/admin/directories/policy' && method === 'POST') return policySubmit(ctx);
+  if (path === '/admin/directories/exempt' && method === 'POST') return exemptSubmit(ctx);
   if (path === '/admin/directories/transfer' && method === 'POST') return transferSubmit(ctx);
   if (path === '/admin/directories/delete' && method === 'POST') return deleteSubmit(ctx);
   return back('/admin/directories');

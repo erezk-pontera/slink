@@ -253,21 +253,37 @@ ${alert('error', error)}${alert('info', info)}
 /* ------------------------------------------------------------- interstitial */
 
 /** The delayed redirect page. Works without JavaScript via meta refresh. */
-export function interstitialPage({ cfg, host, link, target, delay }) {
+export function interstitialPage({
+  cfg,
+  host,
+  link,
+  target,
+  delay,
+  showTarget = true,
+  continueHref,
+}) {
   const home = adminUrl(cfg, host);
+  // Where the page sends the visitor. With the destination hidden this is a
+  // path on this host, so the real target appears nowhere in the markup.
+  const go = showTarget ? target : continueHref;
+
   const body = `
 <div class="card center">
   <p class="hint">You are being redirected</p>
   <p class="count"><span data-slink-count>${esc(delay)}</span></p>
-  <p class="dest mono">${esc(target)}</p>
+  ${
+    showTarget
+      ? `<p class="dest mono">${esc(target)}</p>`
+      : '<p class="dest hint">The destination is not shown for this link.</p>'
+  }
   <div class="actions" style="justify-content:center">
-    <a class="btn" href="${esc(target)}" rel="noopener noreferrer nofollow">Go now</a>
+    <a class="btn" href="${esc(go)}" rel="noopener noreferrer nofollow">Go now</a>
   </div>
 </div>
-<div data-slink-redirect="${esc(target)}" data-slink-delay="${esc(delay)}" hidden></div>`;
+<div data-slink-redirect="${esc(go)}" data-slink-delay="${esc(delay)}" hidden></div>`;
 
   // The meta refresh is the no-script fallback; the counter above is cosmetic.
-  const head = `<meta http-equiv="refresh" content="${esc(delay)};url=${esc(target)}">`;
+  const head = `<meta http-equiv="refresh" content="${esc(delay)};url=${esc(go)}">`;
   const page = layout({
     title: 'Redirecting - ' + cfg.appName,
     appName: cfg.appName,

@@ -22,6 +22,8 @@ export function newUser(email, emailNorm, overrides = {}) {
     rootCreate: {},
     /** Per-host explicit permission to create directories at the root. */
     dirCreate: {},
+    /** Countdown-policy exemptions, keyed by host or '*' for every host. */
+    interstitialExempt: {},
     createdAt: ts,
     updatedAt: ts,
     lastLoginAt: 0,

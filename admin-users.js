@@ -11,12 +11,19 @@ import { checkCsrf, destroyAllSessions } from './auth.js';
 import { saveSettings } from './config.js';
 import { listUserGrants } from './directories.js';
 import { clientIp } from './geo.js';
+import { ANY_HOST, EXEMPTIBLE, normalizeExempt } from './interstitial.js';
 import { PROVIDERS } from './mailer.js';
 import { HARD_BLOCKED_SCHEMES, normalizeEmail, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
 import { deleteUser, getUserByNorm, isRootAdmin, listUsers, putUser } from './users.js';
 import { esc, fmtTime, intEnv, listEnv } from './util.js';
 import { alert, checkbox, csrfField, field, hidden, select, textarea } from './views.js';
+
+const EXEMPT_LABELS = {
+  countdown: 'may set the countdown against the policy',
+  destination: 'may show or hide the destination against the policy',
+  minDelay: 'may go below the minimum delay',
+};
 
 const ROOT_IMMUTABLE =
   'That account is a root administrator, set by the ADMIN variable. It always holds every ' +
@@ -94,6 +101,10 @@ async function userEditForm(ctx, { error } = {}) {
   // Per-domain grants. An administrator already holds all of these, so the
   // boxes render ticked and disabled rather than implying a restriction.
   const isAdminAccount = root || !!user.isAdmin;
+  const exemptTable = {};
+  for (const key of [ANY_HOST, ...cfg.knownHosts]) {
+    exemptTable[key] = normalizeExempt((user.interstitialExempt || {})[key]);
+  }
   const perDomainBoxes = cfg.knownHosts
     .map(
       (h) => `<fieldset class="grants">
@@ -112,6 +123,13 @@ async function userEditForm(ctx, { error } = {}) {
           disabled: isAdminAccount,
           note: isAdminAccount ? '(administrator)' : '',
         })}
+        ${EXEMPTIBLE.map((k) =>
+          checkbox({
+            name: 'ex__' + h + '__' + k,
+            label: 'Countdown exemption: ' + EXEMPT_LABELS[k],
+            checked: !!exemptTable[h][k],
+          })
+        ).join('')}
       </fieldset>`
     )
     .join('');
@@ -148,6 +166,17 @@ ${flashFrom(url)}${alert('error', error)}
       disabled: root,
       note: root ? '(root administrators cannot be disabled)' : '(blocks sign-in and revokes access)',
     })}
+    <h2>Countdown exemptions on every domain</h2>
+    <p class="hint">A global exemption lets this person set that one thing on any domain, against the policy. Leave these off and grant per domain below where possible.</p>
+    ${EXEMPTIBLE.map((k) =>
+      checkbox({
+        name: 'ex__' + ANY_HOST + '__' + k,
+        label: EXEMPT_LABELS[k],
+        checked: !!exemptTable[ANY_HOST][k],
+      })
+    ).join('')}
+
+    <h2>Per domain</h2>
     ${perDomainBoxes}
     ${textarea({ name: 'note', label: 'Note', value: user.note || '' })}
     <div class="actions">
@@ -217,6 +246,17 @@ async function userEditSubmit(ctx) {
     user.rootCreate = rootCreate;
     user.dirCreate = dirCreate;
   }
+
+  // Exemptions apply to administrators too, since they are about policy
+  // rather than permission, and an administrator's links are served by the
+  // same rules as anyone else's.
+  const exemptTable = {};
+  for (const key of [ANY_HOST, ...ctx.cfg.knownHosts]) {
+    const flags = {};
+    for (const k of EXEMPTIBLE) flags[k] = body.get('ex__' + key + '__' + k) === '1';
+    if (EXEMPTIBLE.some((k) => flags[k])) exemptTable[key] = normalizeExempt(flags);
+  }
+  user.interstitialExempt = exemptTable;
   user.note = String(body.get('note') || '').slice(0, 500);
   await putUser(ctx.cfg, user);
 
@@ -235,6 +275,7 @@ async function userEditSubmit(ctx) {
         disabled: user.disabled,
         rootCreate: user.rootCreate,
         dirCreate: user.dirCreate,
+        interstitialExempt: user.interstitialExempt,
       },
     })
   );

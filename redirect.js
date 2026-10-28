@@ -7,10 +7,12 @@
  * seconds first.
  */
 
+import { governingDirectory } from './directories.js';
+import { GO_PARAM, needsExemption, policyFor, resolveLink, userExemption } from './interstitial.js';
 import { bumpClicks, getLink, isExpired, isServable } from './links.js';
-import { adminUrl, interstitialPage, landingPage, messagePage } from './views.js';
+import { getUserById } from './users.js';
 import { harden } from './security.js';
-import { html } from './views.js';
+import { adminUrl, html, interstitialPage, landingPage, messagePage } from './views.js';
 
 /** Decode a URL path into the lowercase lookup key, or null when unusable. */
 export function lookupKey(pathname) {
@@ -46,6 +48,15 @@ export function applyQuery(target, incoming) {
     if (!url.searchParams.has(key)) url.searchParams.append(key, value);
   }
   return url.toString();
+}
+
+/** Drop our own continue flag so it is never forwarded to a destination. */
+export function stripGoParam(search) {
+  if (!search) return '';
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  params.delete(GO_PARAM);
+  const out = params.toString();
+  return out ? '?' + out : '';
 }
 
 /** Build the final redirect response. */
@@ -103,16 +114,49 @@ export async function handleRedirect(ctx) {
   }
 
 
-  const target = link.forwardQuery ? applyQuery(link.target, url.search) : link.target;
-  const status = link.status || domain.defaultStatus || 302;
-  const delay = Number.isFinite(link.delay) ? link.delay : domain.defaultDelay || 0;
+  // The countdown is governed by the domain, narrowed by any directory that
+  // owns the path, and finally by the link itself where that is permitted.
+  const dir = await governingDirectory(cfg, host, key);
+  const policy = policyFor(domain, dir);
 
-  if (cfg.settings.countClicks !== false) {
+  // The owner's exemptions are only consulted when the stored link actually
+  // depends on one, so an ordinary redirect costs no extra reads. Resolving
+  // against the owner rather than a snapshot means withdrawing an exemption
+  // takes effect immediately.
+  let exempt;
+  if (needsExemption(policy, link) && link.ownerId) {
+    const owner = await getUserById(cfg, link.ownerId);
+    if (owner && !owner.disabled) exempt = userExemption(owner, host);
+  }
+  const behaviour = resolveLink(policy, link, exempt);
+
+  const incoming = stripGoParam(url.search);
+  const target = link.forwardQuery ? applyQuery(link.target, incoming) : link.target;
+  const status = link.status || domain.defaultStatus || 302;
+  const skip = url.searchParams.get(GO_PARAM) === '1';
+
+  // Count the arrival, not the continue, so a hidden-destination link that
+  // comes back through us a second time is not counted twice.
+  if (cfg.settings.countClicks !== false && !skip) {
     ctx.waitUntil(bumpClicks(cfg, host, key));
   }
 
-  if (delay > 0) {
-    return html(interstitialPage({ cfg, host, link, target, delay }));
+  if (behaviour.show && !skip) {
+    // When the destination is hidden it must not appear in the page at all,
+    // so the page points back at us and we answer with the real redirect.
+    const continueHref =
+      '/' + link.path + (incoming ? incoming + '&' : '?') + GO_PARAM + '=1';
+    return html(
+      interstitialPage({
+        cfg,
+        host,
+        link,
+        target,
+        delay: behaviour.delay,
+        showTarget: behaviour.showTarget,
+        continueHref,
+      })
+    );
   }
   return redirectResponse(target, status);
 }

@@ -15,8 +15,9 @@ import { creatableDirectories } from './directories.js';
 import { resolveDomain } from './domains.js';
 import { listOwnedLinks } from './links.js';
 import { mayCreateAnyDirectory, requireAdmin, rootCreateAllowed } from './permissions.js';
+import { describePolicy, MAX_DELAY, normalizePolicy } from './interstitial.js';
 import { esc, fmtTime } from './util.js';
-import { alert, html, layout, messagePage } from './views.js';
+import { alert, checkbox, field, html, layout, messagePage, select } from './views.js';
 
 /** The query value meaning "every domain", which is the default everywhere. */
 export const ALL_HOSTS = 'all';
@@ -35,6 +36,95 @@ export function hostFilter(ctx, url) {
 /** The hosts a listing should cover, given the filter. */
 export function hostsFor(ctx, selected) {
   return selected ? [selected] : ctx.cfg.knownHosts;
+}
+
+/**
+ * The countdown policy editor, shared by the domain and directory screens.
+ * `prefix` namespaces the field names so a page can carry more than one.
+ * `inherited` is the policy from the level above, used to say what a blank
+ * setting will fall back to.
+ */
+export function policyForm(ctx, policy, { prefix = 'it', showDelegate = false, inherited } = {}) {
+  const n = (k) => prefix + '_' + k;
+  return `
+${select({
+  name: n('countdown'),
+  label: 'Countdown before opening',
+  value: policy.countdown,
+  options: [
+    { value: 'optional', label: 'Available, each link decides' },
+    { value: 'required', label: 'Always shown, locked on' },
+    { value: 'off', label: 'Never shown, locked off' },
+  ],
+  note: 'Locked choices cannot be changed further down unless an exemption is granted.',
+})}
+${checkbox({
+  name: n('defaultOn'),
+  label: 'Shown by default',
+  checked: !!policy.defaultOn,
+  note: '(applies when each link decides)',
+})}
+<div class="row">
+  ${field({
+    name: n('defaultDelay'),
+    label: 'Default delay (seconds)',
+    type: 'number',
+    value: policy.defaultDelay,
+    attrs: `min="1" max="${MAX_DELAY}"`,
+  })}
+  ${field({
+    name: n('minDelay'),
+    label: 'Minimum delay (seconds)',
+    type: 'number',
+    value: policy.minDelay,
+    attrs: `min="0" max="${MAX_DELAY}"`,
+    note: 'A link may not go below this.',
+  })}
+</div>
+${select({
+  name: n('destination'),
+  label: 'Show the destination on the countdown page',
+  value: policy.destination,
+  options: [
+    { value: 'optional', label: 'Available, each link decides' },
+    { value: 'show', label: 'Always shown, locked on' },
+    { value: 'hide', label: 'Never shown, locked off' },
+  ],
+})}
+${checkbox({
+  name: n('defaultShowTarget'),
+  label: 'Destination shown by default',
+  checked: !!policy.defaultShowTarget,
+  note: '(applies when each link decides)',
+})}
+${
+  showDelegate
+    ? checkbox({
+        name: n('delegate'),
+        label: 'Let directory administrators set their own policy',
+        checked: !!policy.delegate,
+        note: '(they may only make it stricter, unless granted an exemption)',
+      })
+    : ''
+}
+${inherited ? `<p class="note">Inherited: ${esc(describePolicy(inherited))}</p>` : ''}`;
+}
+
+/** Read a policy back out of a submitted form. */
+export function readPolicy(body, prefix = 'it', base) {
+  const n = (k) => prefix + '_' + k;
+  return normalizePolicy(
+    {
+      countdown: body.get(n('countdown')),
+      defaultOn: body.get(n('defaultOn')) === '1',
+      defaultDelay: body.get(n('defaultDelay')),
+      minDelay: body.get(n('minDelay')),
+      destination: body.get(n('destination')),
+      defaultShowTarget: body.get(n('defaultShowTarget')) === '1',
+      delegate: body.get(n('delegate')) === '1',
+    },
+    base
+  );
 }
 
 /** Fixed flash messages, referenced by code so a URL cannot inject prose. */

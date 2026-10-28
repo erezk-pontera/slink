@@ -10,6 +10,7 @@ const suites = [
   'test/assets.test.mjs',
   'test/routing.test.mjs',
   'test/grants.test.mjs',
+  'test/interstitial.test.mjs',
 ];
 
 let bad = 0;

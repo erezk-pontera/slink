@@ -10,7 +10,7 @@
  * Cloudflare; the page says so rather than pretending otherwise.
  */
 
-import { adminPage, back, denied, flashFrom, formToken, readForm } from './admin.js';
+import { adminPage, back, denied, flashFrom, formToken, policyForm, readForm, readPolicy } from './admin.js';
 import { audit, EVENTS } from './audit.js';
 import { checkCsrf } from './auth.js';
 import {
@@ -23,7 +23,8 @@ import {
   ROOT_CREATE_POLICIES,
 } from './domains.js';
 import { clientIp } from './geo.js';
-import { clampDelay, clampStatus, MAX_DELAY_SECONDS } from './links.js';
+import { describePolicy, normalizePolicy } from './interstitial.js';
+import { clampStatus } from './links.js';
 import { canonicalHost, parseDestination, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
 import { esc, listEnv } from './util.js';
@@ -62,7 +63,7 @@ async function listPage(ctx) {
       <td>${d.authRequired ? 'Required' : 'Public'}</td>
       <td>${esc((d.allowedAuthDomains || []).join(', ') || '—')}</td>
       <td>${esc(POLICY_LABELS[d.rootCreatePolicy] || d.rootCreatePolicy)}</td>
-      <td class="num">${esc(d.defaultStatus)}</td>
+      <td><span class="target">${esc(describePolicy(normalizePolicy(d.interstitial)))}</span></td>
     </tr>`
     )
     .join('');
@@ -78,7 +79,7 @@ ${flashFrom(url)}
   ${
     domains.length
       ? `<div class="tablewrap"><table><thead><tr>
-         <th>Host</th><th>Sign-in</th><th>May sign in</th><th>Root creation</th><th>Code</th>
+         <th>Host</th><th>Sign-in</th><th>May sign in</th><th>Root creation</th><th>Countdown</th>
          </tr></thead><tbody>${rows}</tbody></table></div>`
       : '<div class="empty">No domains configured.</div>'
   }
@@ -140,6 +141,7 @@ async function editForm(ctx, { error } = {}) {
   const deleteToken = await formToken(ctx, 'domain.delete');
   const isHub = host === ctx.cfg.hubHost;
   const routed = ctx.cfg.knownHosts.includes(host);
+  const policy = normalizePolicy(domain.interstitial);
 
   const body = `
 ${flashFrom(url)}${alert('error', error)}
@@ -178,16 +180,11 @@ ${routed ? '' : alert('error', 'This host is not in the DOMAINS variable, so the
       value: (domain.allowedCreateDomains || []).join(', '),
       note: 'Used by the email domain policy. Blank falls back to DEFAULT_ALLOWED_DOMAINS.',
     })}
-    <div class="row">
-      ${select({ name: 'defaultStatus', label: 'Default redirect code', value: domain.defaultStatus, options: STATUS_OPTIONS })}
-      ${field({
-        name: 'defaultDelay',
-        label: 'Default delay (seconds)',
-        type: 'number',
-        value: domain.defaultDelay || 0,
-        attrs: `min="0" max="${MAX_DELAY_SECONDS}"`,
-      })}
-    </div>
+    ${select({ name: 'defaultStatus', label: 'Default redirect code', value: domain.defaultStatus, options: STATUS_OPTIONS })}
+
+    <h2>Countdown</h2>
+    <p class="hint">Applies to every link on this host unless a directory narrows it, or is granted an exemption.</p>
+    ${policyForm(ctx, policy, { prefix: 'it', showDelegate: true })}
     ${field({
       name: 'rootRedirect',
       label: 'Where / goes (optional)',
@@ -263,7 +260,7 @@ async function editSubmit(ctx) {
   domain.allowedCreateDomains = parseDomainList(body.get('allowedCreateDomains'));
   domain.rootCreatePolicy = ROOT_CREATE_POLICIES.includes(policy) ? policy : 'email_domain';
   domain.defaultStatus = clampStatus(body.get('defaultStatus'), 302);
-  domain.defaultDelay = clampDelay(body.get('defaultDelay'), 0);
+  domain.interstitial = readPolicy(body, 'it');
   domain.rootRedirect = rootRedirect;
   domain.notFoundUrl = notFoundUrl;
   domain.note = String(body.get('note') || '').slice(0, 500);

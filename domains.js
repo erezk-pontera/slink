@@ -6,6 +6,8 @@
 
 import { K } from './kv.js';
 import { defaultPolicy } from './interstitial.js';
+import { defaultMissingPolicy } from './dirmissing.js';
+import { defaultInvitePolicy } from './invites.js';
 import { defaultOauth } from './oauth.js';
 import { now } from './util.js';
 
@@ -32,6 +34,13 @@ export function newDomain(host, overrides = {}) {
     notFoundUrl: null,
     /** External identity provider for this host. See oauth.js. */
     oauth: defaultOauth(),
+    /** Which email domains may be handed a link or a directory, beyond the
+     *  ones that may sign in here. See invites.js. */
+    invitePolicy: defaultInvitePolicy(),
+    /** Whether directories here may answer with their own MISSING
+     *  destination, and the fallback for those that set none. See
+     *  dirmissing.js. */
+    dirMissingPolicy: defaultMissingPolicy(),
     /** Sign-in methods switched off here. Never applies to administrators,
      *  and single sign-on can never be among them. */
     disabledMethods: [],

@@ -37,6 +37,41 @@ export function defaultOauth(overrides = {}) {
   };
 }
 
+/**
+ * Hostnames an identity provider is never legitimately on.
+ *
+ * These endpoints are fetched by the Worker with the client secret attached,
+ * so a wrong one is a way to send that secret somewhere it should not go.
+ * Only an administrator can set them, which makes this defence in depth
+ * rather than a boundary — and it is only a literal check: a public name
+ * that resolves to a private address still gets through, because a Worker
+ * cannot resolve a name and pin the result before fetching it.
+ */
+export function isPrivateHost(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h.endsWith('.internal') || h.endsWith('.local')) return true;
+
+  // IPv4 literals, including the ranges a metadata service tends to sit on.
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 127 || a === 0 || a === 10) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  }
+
+  // IPv6 loopback, unspecified, unique-local and link-local.
+  if (h === '::1' || h === '::') return true;
+  if (/^f[cd][0-9a-f]{2}:/.test(h)) return true;
+  if (/^fe[89ab][0-9a-f]:/.test(h)) return true;
+  return false;
+}
+
 export function normalizeOauth(raw) {
   const o = raw && typeof raw === 'object' ? raw : {};
   const url = (v) => {
@@ -45,7 +80,9 @@ export function normalizeOauth(raw) {
     try {
       const parsed = new URL(s);
       // An endpoint reached over anything but HTTPS would leak the code.
-      return parsed.protocol === 'https:' ? parsed.toString() : '';
+      if (parsed.protocol !== 'https:') return '';
+      if (isPrivateHost(parsed.hostname)) return '';
+      return parsed.toString();
     } catch {
       return '';
     }

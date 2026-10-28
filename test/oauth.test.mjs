@@ -6,7 +6,13 @@
  * the disabled flag and the administrator exemption all still apply.
  */
 import { Harness } from './harness.js';
-import { methodsFor, normalizeDisabledMethods, normalizeOauth, oauthReady } from '../oauth.js';
+import {
+  isPrivateHost,
+  methodsFor,
+  normalizeDisabledMethods,
+  normalizeOauth,
+  oauthReady,
+} from '../oauth.js';
 
 let passed = 0;
 let failed = 0;
@@ -65,6 +71,22 @@ section('configuration');
   ok('not ready without a secret', !oauthReady({ oauthSecret: '' }, configured));
   ok('ready with a secret', oauthReady({ oauthSecret: 's' }, configured));
   ok('not ready when switched off', !oauthReady({ oauthSecret: 's' }, { oauth: { ...configured.oauth, enabled: false } }));
+
+  // These endpoints are fetched with the client secret attached, so a
+  // wrong one sends that secret somewhere it should not go.
+  for (const host of [
+    '127.0.0.1', '10.0.0.1', '172.16.5.5', '192.168.1.1', '169.254.169.254',
+    '100.64.0.1', '0.0.0.0', 'localhost', 'box.localhost', 'idp.internal',
+    'printer.local', '[::1]', '[fd00::1]', '[fe80::1]',
+  ]) {
+    ok(`a private endpoint is refused: ${host}`,
+       normalizeOauth({ tokenUrl: `https://${host}/t` }).tokenUrl === '');
+  }
+  for (const host of ['idp.example.com', '8.8.8.8', '172.15.0.1', '172.32.0.1', '100.128.0.1']) {
+    ok(`a public endpoint is kept: ${host}`,
+       normalizeOauth({ tokenUrl: `https://${host}/t` }).tokenUrl !== '');
+  }
+  ok('the host check is exported for reuse', isPrivateHost('10.1.2.3') && !isPrivateHost('example.com'));
 
   ok('single sign-on cannot be disabled', !normalizeDisabledMethods(['oauth', 'otp']).includes('oauth'));
   ok('an unknown method is dropped', normalizeDisabledMethods(['nonsense']).length === 0);
@@ -217,6 +239,53 @@ section('the callback cannot be forged');
   const st5 = new URL(s5.headers.get('Location')).searchParams.get('state');
   const r5 = await noToken.req('https://ptra.dev/__slink/oauth/callback?code=a&state=' + st5);
   ok('a reply with no token is refused', (await r5.text()).includes('no access token'));
+}
+
+/* ------------------------------- 7. the policy is enforced by address */
+section('turning the code off is enforced where the address is known');
+{
+  // Anyone can add ?otp=1 to the URL, so the page cannot be what enforces
+  // this. The rule has to be applied once an address has been typed.
+  for (const who of ['ola@pontera.com', 'pat@pontera.com']) {
+    const h = peer(root);
+    await h.signIn(who);
+  }
+  const promote = 'https://ptra.dev/admin/users/edit?u=pat%40pontera.com';
+  const ptok = Harness.csrfFor(await (await root.req(promote)).text(), '/admin/users/edit');
+  await root.req('https://ptra.dev/admin/users/edit', {
+    form: { _csrf: ptok, u: 'pat@pontera.com', isAdmin: '1', allDirectories: '1' },
+  });
+
+  await setDomain({ ...PROVIDER, disable_otp: '1' });
+
+  const tryOtp = async (email) => {
+    const h = peer(root);
+    const page = await (await h.req('https://ptra.dev/admin?otp=1')).text();
+    const tok = Harness.csrf(page);
+    const before = h.mail.length;
+    const r = await h.req('https://ptra.dev/admin', {
+      form: {
+        _csrf: tok, stage: 'email', email, next: '/admin',
+        'cf-turnstile-response': 't:login:ptra.dev',
+      },
+    });
+    return { status: r.status, sent: h.mail.length > before };
+  };
+
+  const ordinary = await tryOtp('ola@pontera.com');
+  ok('an ordinary address gets no code', !ordinary.sent);
+  const admin = await tryOtp('pat@pontera.com');
+  ok('an administrator still gets one', admin.sent);
+  const rootAdmin = await tryOtp('root@pontera.com');
+  ok('the root administrator still gets one', rootAdmin.sent);
+  // Telling them apart would turn the sign-in form into a way of asking who
+  // the administrators are.
+  ok('the two outcomes are indistinguishable', ordinary.status === admin.status,
+     ordinary.status + ' vs ' + admin.status);
+
+  await setDomain(PROVIDER);
+  const restored = await tryOtp('ola@pontera.com');
+  ok('re-enabling the code restores it for everyone', restored.sent);
 }
 
 console.log(`\noauth: ${passed} passed, ${failed} failed`);

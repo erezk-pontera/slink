@@ -367,6 +367,7 @@ ${alert('error', error)}${alert('ok', info)}
       })}
     </div>
     <div class="row">
+      ${field({ name: 'activeFrom', label: 'Starts (optional)', type: 'text', value: values.activeFrom || '', placeholder: 'YYYY-MM-DD', note: 'Before this date the link is not live.' })}
       ${field({ name: 'expires', label: 'Expires (optional)', type: 'text', value: values.expires || '', placeholder: 'YYYY-MM-DD', note: 'Leave blank for no expiry.' })}
       ${textarea({ name: 'note', label: 'Note (optional)', value: values.note || '' })}
     </div>
@@ -455,6 +456,7 @@ async function createSubmit(ctx) {
     target: body.get('target') || '',
     status: body.get('status'),
     delay: body.get('delay'),
+    activeFrom: body.get('activeFrom') || '',
     expires: body.get('expires') || '',
     note: body.get('note') || '',
     forwardQuery: body.get('forwardQuery') === '1',

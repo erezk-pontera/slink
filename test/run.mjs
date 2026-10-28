@@ -19,6 +19,7 @@ const suites = [
   'test/invites.test.mjs',
   'test/qr.test.mjs',
   'test/oauth.test.mjs',
+  'test/schedule.test.mjs',
 ];
 
 let bad = 0;

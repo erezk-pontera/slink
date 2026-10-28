@@ -228,6 +228,42 @@ section('a batch re-checks every row');
      oneOff.status + ' ' + oneOff.headers.get('Location'));
 }
 
+/* ------------------------------------------------------- 7. paging */
+section('results are paged');
+{
+  for (let i = 0; i < 60; i++) {
+    const tk = Harness.csrf(await (await root.req('https://ptra.dev/admin/links/new')).text());
+    await root.req('https://ptra.dev/admin/links/new', {
+      form: { _csrf: tk, host: 'ptra.cc', path: 'page-' + i, target: 'example.com/' + i, status: '302' },
+    });
+  }
+
+  const one = await (await S(root, 'page-')).text();
+  ok('the first page is a range of the total', /1&ndash;50 of 60/.test(one),
+     (one.match(/<h2>[^<]*<\/h2>/) || [])[0]);
+  ok('with a next link', one.includes('from=50'));
+  ok('and no back link on the first page', !/from=0["&]/.test(one.split('pager')[1] || ''));
+
+  const two = await (await root.req('https://ptra.dev/admin/search?q=page-&from=50')).text();
+  ok('the second page continues the range', /51&ndash;60 of 60/.test(two),
+     (two.match(/<h2>[^<]*<\/h2>/) || [])[0]);
+  ok('with a back link', two.includes('from=0'));
+  ok('and keeps the query', two.includes('q=page-'));
+
+  // A batch run from the second page comes back to the second page.
+  const tok = Harness.csrfFor(two, '/admin/search/batch');
+  const done = await root.req('https://ptra.dev/admin/search/batch', {
+    form: { _csrf: tok, op: 'disable', from: '50', sel: 'link:ptra.cc:page-55' },
+  });
+  const text = await done.text();
+  ok('a batch from page two applies', text.includes('1 changed'));
+  ok('and stays on page two', /51&ndash;/.test(text));
+
+  const hit = await vic.req('https://ptra.cc/page-55', { cookies: false });
+  ok('the disable took effect', (hit.headers.get('Location') || '').includes('fallback.example'),
+     hit.headers.get('Location'));
+}
+
 console.log(`\nsearch and batch: ${passed} passed, ${failed} failed`);
 root.restore();
 export default { passed, failed };

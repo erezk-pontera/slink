@@ -42,12 +42,20 @@ import {
   authorizeUrl,
   exchangeCode,
   fetchEmail,
+  methodsFor,
   oauthReady,
   pkcePair,
   STATE_TTL_SECONDS,
 } from './oauth.js';
 import { turnstileVerifyOrFail } from './turnstile.js';
-import { findOrCreateUser, getUserById, isAdmin, putUser } from './users.js';
+import {
+  findOrCreateUser,
+  getUserById,
+  getUserByNorm,
+  isAdmin,
+  isRootAdmin,
+  putUser,
+} from './users.js';
 import { now, randomId, sha256Hex } from './util.js';
 
 export const COOKIE = {
@@ -194,6 +202,18 @@ export function csrfCookie(ctx) {
 /* ------------------------------------------------------------ sign-in flow */
 
 /** Is this address allowed to authenticate on this host? */
+/**
+ * Is this address an administrator? Used before anyone is signed in, so it
+ * has to go to the record rather than to a session. A root administrator
+ * counts even with no account yet, which is what makes a first sign-in on a
+ * host with the code switched off possible at all.
+ */
+export async function isAdminAddress(cfg, emailNorm) {
+  if (isRootAdmin(cfg, emailNorm)) return true;
+  const user = await getUserByNorm(cfg, emailNorm);
+  return !!(user && !user.disabled && isAdmin(cfg, user));
+}
+
 export function mayAuthenticate(cfg, domain, emailNorm) {
   const emailDomain = emailNorm.slice(emailNorm.lastIndexOf('@') + 1);
   const allowed = authDomainsFor(cfg, domain);
@@ -262,6 +282,25 @@ export async function beginLogin(ctx, body) {
       })
     );
     return { ok: false, error: 'That email address is not permitted to sign in here.' };
+  }
+
+  // Where the host has switched the emailed code off, it stays available to
+  // administrators and to nobody else. The page cannot know who is asking
+  // before they type an address, so the rule is enforced here, where it can.
+  // A refusal is silent for the same reason the rest of this flow is: saying
+  // "not an administrator" would turn the sign-in form into a way of asking
+  // who the administrators are.
+  if (!methodsFor(cfg, ctx.domain, { isAdmin: await isAdminAddress(cfg, parsed.emailNorm) }).otp) {
+    ctx.waitUntil(
+      audit(cfg, {
+        event: EVENTS.loginBlocked,
+        host,
+        ip,
+        outcome: 'denied',
+        detail: { email: parsed.emailNorm, reason: 'otp-disabled-on-domain' },
+      })
+    );
+    return { ok: true, cookies: [] };
   }
 
   const next = safeNext(body.get('next'), '/admin');

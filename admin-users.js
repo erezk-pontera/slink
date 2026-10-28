@@ -6,7 +6,7 @@
  */
 
 import { adminPage, back, denied, flashFrom, formToken, readForm } from './admin.js';
-import { audit, EVENTS, listAudit } from './audit.js';
+import { audit, EVENTS, listAudit, purgeAudit } from './audit.js';
 import { checkCsrf, destroyAllSessions } from './auth.js';
 import { saveSettings } from './config.js';
 import { listUserGrants } from './directories.js';
@@ -55,6 +55,11 @@ async function usersPage(ctx, { error } = {}) {
       return `<tr>
       <td>${esc(u.email)}
         ${u.isAdmin ? '<span class="badge ok">admin</span>' : ''}
+        ${
+          u.isAdmin && u.allDirectories === false
+            ? '<span class="badge ro" title="Reaches only the directories they are granted on">scoped</span>'
+            : ''
+        }
         ${u.disabled ? '<span class="badge off">disabled</span>' : ''}
         ${u.emailNorm !== u.email ? `<div class="note">identity: ${esc(u.emailNorm)}</div>` : ''}
       </td>
@@ -445,7 +450,14 @@ ${flashFrom(url)}${alert('error', error)}
       note: 'Always blocked regardless: ' + HARD_BLOCKED_SCHEMES.join(', ') + '.',
     })}
     ${checkbox({ name: 'countClicks', label: 'Count hits on each link', checked: s.countClicks !== false, note: '(approximate)' })}
-    ${field({ name: 'auditRetentionDays', label: 'Audit retention (days)', type: 'number', value: s.auditRetentionDays, attrs: 'min="1" max="3650"' })}
+    ${field({
+      name: 'auditRetentionDays',
+      label: 'Audit retention (days)',
+      type: 'number',
+      value: s.auditRetentionDays,
+      attrs: 'min="1" max="3650"',
+      note: 'Shortening this removes entries already past the new limit, because a stored entry keeps the expiry it was written with.',
+    })}
 
     <h2>Mail</h2>
     <div class="row">
@@ -525,6 +537,7 @@ async function settingsSubmit(ctx) {
     },
   };
 
+  const shortened = patch.auditRetentionDays < s.auditRetentionDays;
   await saveSettings(ctx.cfg, patch);
   ctx.waitUntil(
     audit(ctx.cfg, {
@@ -535,6 +548,18 @@ async function settingsSubmit(ctx) {
       detail: { geo: patch.geo, sessionPermanent: patch.sessionPermanent },
     })
   );
+
+  // A KV expiry is fixed when the entry is written, so a shorter retention
+  // only takes effect on what comes next unless the old entries are removed.
+  if (shortened) {
+    const purge = await purgeAudit(ctx.cfg, { days: patch.auditRetentionDays });
+    if (purge.deleted) {
+      return back(
+        '/admin/settings',
+        purge.more ? 'audit.purged.partial' : 'audit.purged'
+      );
+    }
+  }
   return back('/admin/settings', 'settings.updated');
 }
 

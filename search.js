@@ -20,8 +20,15 @@ import { isAdmin } from './users.js';
 /** Keys one listing will walk before the query is called too broad. */
 export const MAX_KEYS = 5000;
 
-/** Matches carried into the page. Beyond this the query needs narrowing. */
-export const MAX_RESULTS = 200;
+/**
+ * Matches a query will rank before paging. A listing is cheap but a page of
+ * hydrated records is not, so the whole match set is bounded here and then
+ * served a page at a time.
+ */
+export const MAX_RESULTS = 2000;
+
+/** Rows on one page of results. */
+export const PAGE_SIZE = 50;
 
 export const TYPES = ['all', 'links', 'directories'];
 
@@ -102,7 +109,7 @@ function linkRow(host, pathLc, meta, dir) {
  * hydrated onto the link rows so that owner and read-only state come from
  * the record rather than from the index metadata.
  */
-export async function search(cfg, { user, hosts, query, type = 'all' }) {
+export async function search(cfg, { user, hosts, query, type = 'all', offset = 0, limit = PAGE_SIZE }) {
   const want = terms(query);
   const admin = isAdmin(cfg, user);
   const reaches = adminReachesAllDirectories(cfg, user);
@@ -192,9 +199,15 @@ export async function search(cfg, { user, hosts, query, type = 'all' }) {
     truncated = true;
   }
 
+  // Only the page being shown is hydrated. Matching is done from listing
+  // metadata, so a large match set costs listings rather than reads.
+  const total = results.length;
+  const from = Math.max(0, Math.min(offset, total));
+  const page = results.slice(from, from + Math.max(1, limit));
+
   // Settle the link rows against their records, so ownership and read-only
   // state shown beside a checkbox are the ones a batch action will act on.
-  const links = results.filter((r) => r.kind === 'link');
+  const links = page.filter((r) => r.kind === 'link');
   if (links.length) {
     const byHost = new Map();
     for (const row of links) {
@@ -216,5 +229,13 @@ export async function search(cfg, { user, hosts, query, type = 'all' }) {
     }
   }
 
-  return { results, truncated, terms: want };
+  return {
+    results: page,
+    total,
+    offset: from,
+    limit: Math.max(1, limit),
+    hasMore: from + page.length < total,
+    truncated,
+    terms: want,
+  };
 }

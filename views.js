@@ -161,6 +161,9 @@ export function statusBadges(rec) {
   const out = [];
   if (rec.enabled === false) out.push('<span class="badge off">disabled</span>');
   if (rec.readonly) out.push('<span class="badge ro">read-only</span>');
+  if (rec.activeFrom && rec.activeFrom > 0 && rec.activeFrom > Math.floor(Date.now() / 1000)) {
+    out.push(`<span class="badge ro">starts ${esc(fmtTime(rec.activeFrom))}</span>`);
+  }
   if (rec.expiresAt && rec.expiresAt > 0) {
     out.push(`<span class="badge">expires ${esc(fmtTime(rec.expiresAt))}</span>`);
   }

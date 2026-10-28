@@ -10,7 +10,7 @@
 import { getDirectory, governingDirectory } from './directories.js';
 import { resolveMissing } from './dirmissing.js';
 import { GO_PARAM, needsExemption, policyFor, resolveLink, userExemption } from './interstitial.js';
-import { bumpClicks, getLink, isExpired, isServable } from './links.js';
+import { bumpClicks, getLink, isExpired, isPending, isServable } from './links.js';
 import { isCrawler, previewAllowed, previewPage } from './preview.js';
 import { deviceClass, resolveTarget } from './targets.js';
 import { getUserById } from './users.js';
@@ -133,7 +133,11 @@ export async function handleRedirect(ctx) {
   if (!isServable(link)) {
     return gone(
       ctx,
-      isExpired(link) ? 'This link has expired.' : 'This link is disabled.',
+      isExpired(link)
+        ? 'This link has expired.'
+        : isPending(link)
+          ? 'This link is not active yet.'
+          : 'This link is disabled.',
       await missingDirectory(cfg, host, key)
     );
   }

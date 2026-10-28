@@ -66,7 +66,7 @@ import {
   inviteAllowed,
   normalizeInviteDomains,
 } from './invites.js';
-import { getUserByNorm, isAdmin } from './users.js';
+import { getUserByNorm, inviteUser, isAdmin } from './users.js';
 import { esc, fmtTime } from './util.js';
 import { alert, checkbox, csrfField, field, hidden, textarea } from './views.js';
 
@@ -556,17 +556,12 @@ async function grantSubmit(ctx) {
   ctx.url.searchParams.set('host', host);
   ctx.url.searchParams.set('path', pathLc);
 
-  let target;
   let parsedEmail;
   try {
     parsedEmail = normalizeEmail(body.get('email'), ctx.cfg.emailOpts);
-    target = await getUserByNorm(ctx.cfg, parsedEmail.emailNorm);
   } catch (err) {
     if (err instanceof ValidationError) return editForm(ctx, { error: err.message });
     throw err;
-  }
-  if (!target) {
-    return editForm(ctx, { error: 'No such user. They must sign in once before they can be granted access.' });
   }
 
   const invite = inviteAllowed(ctx.cfg, {
@@ -575,6 +570,14 @@ async function grantSubmit(ctx) {
     emailNorm: parsedEmail.emailNorm,
   });
   if (!invite.allowed) return editForm(ctx, { error: invite.reason });
+
+  const target = (
+    await inviteUser(ctx.cfg, {
+      email: parsedEmail.email,
+      emailNorm: parsedEmail.emailNorm,
+      invitedBy: ctx.session.user,
+    })
+  ).user;
 
   const canManage = body.get('canManage') === '1';
   const canCreate = body.get('canCreate') === '1' || canManage;
@@ -726,19 +729,12 @@ async function transferSubmit(ctx) {
   ctx.url.searchParams.set('host', host);
   ctx.url.searchParams.set('path', pathLc);
 
-  let recipient;
   let parsedOwner;
   try {
     parsedOwner = normalizeEmail(body.get('owner'), ctx.cfg.emailOpts);
-    recipient = await getUserByNorm(ctx.cfg, parsedOwner.emailNorm);
   } catch (err) {
     if (err instanceof ValidationError) return editForm(ctx, { error: err.message });
     throw err;
-  }
-  if (!recipient) {
-    return editForm(ctx, {
-      error: 'No such user. They must sign in once before a directory can be transferred to them.',
-    });
   }
 
   const invite = inviteAllowed(ctx.cfg, {
@@ -747,6 +743,14 @@ async function transferSubmit(ctx) {
     emailNorm: parsedOwner.emailNorm,
   });
   if (!invite.allowed) return editForm(ctx, { error: invite.reason });
+
+  const recipient = (
+    await inviteUser(ctx.cfg, {
+      email: parsedOwner.email,
+      emailNorm: parsedOwner.emailNorm,
+      invitedBy: ctx.session.user,
+    })
+  ).user;
   if (recipient.disabled) return editForm(ctx, { error: 'That account is disabled.' });
 
   const from = dir.ownerEmail || null;

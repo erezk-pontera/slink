@@ -103,7 +103,7 @@ section('search shows only what the viewer may reach');
   ok('no batch bar for a non-administrator', !mine.includes('/admin/search/batch'));
 
   const nothing = await (await S(vic, '')).text();
-  ok('a user with nothing sees nothing', nothing.includes('0 result'));
+  ok('a user with nothing sees nothing', nothing.includes('No results'));
   ok('not even root-level links', !nothing.includes('secret-root'));
 }
 

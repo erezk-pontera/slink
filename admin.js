@@ -147,6 +147,11 @@ export const MESSAGES = {
   'user.updated': ['ok', 'User updated.'],
   'user.deleted': ['ok', 'User removed.'],
   'settings.updated': ['ok', 'Settings saved.'],
+  'audit.purged': ['ok', 'Settings saved. Audit entries past the new retention were removed.'],
+  'audit.purged.partial': [
+    'ok',
+    'Settings saved. Some audit entries past the new retention were removed; save again to continue.',
+  ],
   'sessions.revoked': ['ok', 'Sessions revoked.'],
   denied: ['error', 'You do not have permission to do that.'],
   csrf: ['error', 'That request could not be verified. Please try again.'],

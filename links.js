@@ -39,6 +39,8 @@ export function newLink(host, parsed, target, owner, overrides = {}) {
     readonly: false,
     enabled: true,
     note: '',
+    /** Unix seconds before which the link is not yet live. 0 means now. */
+    activeFrom: 0,
     expiresAt: 0,
     createdAt: ts,
     updatedAt: ts,
@@ -132,9 +134,14 @@ export function isExpired(link, at = now()) {
   return !!(link && link.expiresAt && link.expiresAt > 0 && link.expiresAt <= at);
 }
 
+/** Is the link scheduled to start later than now? */
+export function isPending(link, at = now()) {
+  return !!(link && link.activeFrom && link.activeFrom > 0 && link.activeFrom > at);
+}
+
 /** Is the link servable right now? */
 export function isServable(link, at = now()) {
-  return !!link && link.enabled !== false && !isExpired(link, at);
+  return !!link && link.enabled !== false && !isExpired(link, at) && !isPending(link, at);
 }
 
 /** Clamp a redirect status to the supported set. */

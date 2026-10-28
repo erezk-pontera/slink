@@ -187,6 +187,26 @@ section('a batch cannot route around the policy');
   ok('and an allowed address still goes through', (await inside.text()).includes('1 changed'));
 }
 
+/* ------------------------------- 6. an invite creates the account */
+section('an invite reaches someone who has never signed in');
+{
+  await setDomain({ inviteMode: 'optional', inviteDomains: 'pontera.com, partner.com' });
+  const before = await (await root.req('https://ptra.dev/admin/users')).text();
+  ok('the address has no account yet', !before.includes('newcomer@partner.com'));
+
+  const moved = await transferLink('newcomer@partner.com');
+  ok('the transfer succeeds anyway', moved.location.includes('link.moved'),
+     moved.status + ' ' + moved.location);
+  const after = await (await root.req('https://ptra.dev/admin/users')).text();
+  ok('and the account now exists', after.includes('newcomer@partner.com'));
+
+  // An address the policy refuses must leave nothing behind.
+  const refused = await transferLink('ghost@other.com');
+  ok('a refused address is still refused', refused.text.includes('cannot be given access here'));
+  const list = await (await root.req('https://ptra.dev/admin/users')).text();
+  ok('and no account was created for it', !list.includes('ghost@other.com'));
+}
+
 console.log(`\ninvite domains: ${passed} passed, ${failed} failed`);
 root.restore();
 export default { passed, failed };

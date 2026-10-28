@@ -44,7 +44,7 @@ import {
   canSetReadonly,
   canTransferLink,
 } from './permissions.js';
-import { getUserByNorm } from './users.js';
+import { getUserByNorm, inviteUser } from './users.js';
 import { normalizeEmail } from './paths.js';
 import { esc, fmtTime } from './util.js';
 import { alert, checkbox, csrfField, field, hidden, select, statusBadges, textarea } from './views.js';
@@ -398,6 +398,24 @@ function parseExpiry(raw) {
   return Math.floor(ts / 1000);
 }
 
+/** A start date runs from the beginning of that day, where an expiry runs to the end of it. */
+function parseActiveFrom(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return 0;
+  const ts = Date.parse(value.length === 10 ? value + 'T00:00:00Z' : value);
+  if (!Number.isFinite(ts)) {
+    throw new ValidationError('Start must be a date such as 2026-12-31.', 'activeFrom');
+  }
+  return Math.floor(ts / 1000);
+}
+
+/** A link cannot stop being live before it starts. */
+function checkWindow(activeFrom, expiresAt) {
+  if (activeFrom && expiresAt && activeFrom >= expiresAt) {
+    throw new ValidationError('The start date must come before the expiry date.', 'activeFrom');
+  }
+}
+
 function expiryInput(expiresAt) {
   if (!expiresAt) return '';
   return new Date(expiresAt * 1000).toISOString().slice(0, 10);
@@ -436,11 +454,14 @@ async function createSubmit(ctx) {
   let parsed;
   let destination;
   let expiresAt;
+  let activeFrom;
   let routing;
   try {
     parsed = parsePath(values.path, { reserved: reservedFor(ctx, host) });
     destination = parseDestination(values.target, { blockedSchemes: ctx.cfg.settings.blockedSchemes });
     expiresAt = parseExpiry(values.expires);
+    activeFrom = parseActiveFrom(values.activeFrom);
+    checkWindow(activeFrom, expiresAt);
     routing = cleanRouting(values.routing, { blockedSchemes: ctx.cfg.settings.blockedSchemes });
     if (values.preview.image && !/^https:\/\//i.test(values.preview.image)) {
       throw new ValidationError('The preview image must be an https URL.', 'previewImage');
@@ -480,6 +501,7 @@ async function createSubmit(ctx) {
     status: clampStatus(values.status, domain.defaultStatus || 302),
     delay: clampDelay(values.delay, domain.defaultDelay || 0),
     note: String(values.note).slice(0, 500),
+    activeFrom,
     expiresAt,
     forwardQuery: values.forwardQuery,
     readonly: canSetReadonly(ctx.cfg, ctx.session.user) ? values.readonly : false,
@@ -562,6 +584,7 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
     ${select({ name: 'status', label: 'Redirect code', value: link.status, options: STATUS_OPTIONS })}
     ${countdownControls(behaviour, link)}
     <div class="row">
+      ${field({ name: 'activeFrom', label: 'Starts', type: 'text', value: expiryInput(link.activeFrom), placeholder: 'YYYY-MM-DD', note: 'Before this date the link is not live.' })}
       ${field({ name: 'expires', label: 'Expires', type: 'text', value: expiryInput(link.expiresAt), placeholder: 'YYYY-MM-DD' })}
       ${textarea({ name: 'note', label: 'Note', value: link.note || '' })}
     </div>
@@ -674,12 +697,15 @@ async function editSubmit(ctx) {
   let parsed;
   let destination;
   let expiresAt;
+  let activeFrom;
   try {
     parsed = parsePath(body.get('newpath') || link.path, { reserved: reservedFor(ctx, host) });
     destination = parseDestination(body.get('target'), {
       blockedSchemes: ctx.cfg.settings.blockedSchemes,
     });
     expiresAt = parseExpiry(body.get('expires'));
+    activeFrom = parseActiveFrom(body.get('activeFrom'));
+    checkWindow(activeFrom, expiresAt);
     cleanRouting(readRouting(body), { blockedSchemes: ctx.cfg.settings.blockedSchemes });
   } catch (err) {
     if (err instanceof ValidationError) {
@@ -746,6 +772,7 @@ async function editSubmit(ctx) {
     });
   }
   link.note = String(body.get('note') || '').slice(0, 500);
+  link.activeFrom = activeFrom;
   link.expiresAt = expiresAt;
   link.enabled = body.get('enabled') === '1';
   link.forwardQuery = body.get('forwardQuery') === '1';
@@ -814,24 +841,30 @@ async function transferSubmit(ctx) {
   ctx.url.searchParams.set('host', host);
   ctx.url.searchParams.set('path', pathLc);
 
-  let recipient;
   let parsedEmail;
   try {
     parsedEmail = normalizeEmail(body.get('owner'), ctx.cfg.emailOpts);
-    recipient = await getUserByNorm(ctx.cfg, parsedEmail.emailNorm);
   } catch (err) {
     if (err instanceof ValidationError) return editForm(ctx, { error: err.message });
     throw err;
   }
 
   // Whose addresses may be handed something on this host, narrowed by the
-  // directory that owns the path.
+  // directory that owns the path. Checked before the account is created, so
+  // a refused address leaves nothing behind.
   const invite = inviteAllowed(ctx.cfg, {
     domain: await resolveDomain(ctx.cfg, host),
     dir: await governingDirectory(ctx.cfg, host, pathLc),
     emailNorm: parsedEmail.emailNorm,
   });
   if (!invite.allowed) return editForm(ctx, { error: invite.reason });
+
+  const invited = await inviteUser(ctx.cfg, {
+    email: parsedEmail.email,
+    emailNorm: parsedEmail.emailNorm,
+    invitedBy: ctx.session.user,
+  });
+  const recipient = invited.user;
   if (!recipient) {
     return editForm(ctx, {
       error: 'No such user. They must sign in once before a link can be transferred to them.',

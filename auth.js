@@ -275,6 +275,10 @@ export async function beginLogin(ctx, body) {
     });
   } catch (err) {
     await deleteChallenge(cfg, challenge.loginId);
+    // Same reasoning as the Turnstile path: if delivery is broken nobody can
+    // sign in, so the reason must be visible in `wrangler tail`. The address
+    // is left out; the provider's message is what an operator needs.
+    console.error('sign-in email failed:', String(err && err.message).slice(0, 300));
     ctx.waitUntil(
       audit(cfg, {
         event: EVENTS.loginFailed,

@@ -188,8 +188,24 @@ ${routed ? '' : alert('error', 'This host is not in the DOMAINS variable, so the
         attrs: `min="0" max="${MAX_DELAY_SECONDS}"`,
       })}
     </div>
-    ${field({ name: 'rootRedirect', label: 'Where / goes (optional)', value: domain.rootRedirect || '', placeholder: 'https://example.com', note: 'Blank shows a small landing page.' })}
-    ${field({ name: 'notFoundUrl', label: 'Where unknown shortcuts go (optional)', value: domain.notFoundUrl || '', placeholder: 'https://example.com/404', note: 'Blank shows a not-found page.' })}
+    ${field({
+      name: 'rootRedirect',
+      label: 'Where / goes (optional)',
+      value: domain.rootRedirect || '',
+      placeholder: 'https://example.com',
+      note: ctx.cfg.missingUrl
+        ? 'Blank falls back to MISSING: ' + ctx.cfg.missingUrl
+        : 'Blank shows a small landing page, because MISSING is not set.',
+    })}
+    ${field({
+      name: 'notFoundUrl',
+      label: 'Where unknown, disabled and expired shortcuts go (optional)',
+      value: domain.notFoundUrl || '',
+      placeholder: 'https://example.com/404',
+      note: ctx.cfg.missingUrl
+        ? 'Blank falls back to MISSING: ' + ctx.cfg.missingUrl
+        : 'Blank shows a not-found page, because MISSING is not set.',
+    })}
     ${textarea({ name: 'note', label: 'Note', value: domain.note || '' })}
     ${checkbox({ name: 'enabled', label: 'Enabled', checked: domain.enabled !== false })}
     ${checkbox({ name: 'readonly', label: 'Read-only', checked: !!domain.readonly, note: '(only administrators may create or change anything on this host)' })}

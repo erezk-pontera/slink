@@ -143,21 +143,25 @@ export class Harness {
 
   /** Complete a full sign-in on the hub and leave the session in the jar. */
   async signIn(email, { host = 'ptra.dev' } = {}) {
-    const page = await this.req(`https://${host}/login`);
-    const body = await page.text();
-    const token = Harness.csrf(body);
-    const begin = await this.req(`https://${host}/login`, {
-      form: { _csrf: token, email, next: '/admin', 'cf-turnstile-response': `t:login:${host}` },
+    const page = await this.req(`https://${host}/admin`);
+    const token = Harness.csrf(await page.text());
+    const begin = await this.req(`https://${host}/admin`, {
+      form: {
+        _csrf: token,
+        stage: 'email',
+        email,
+        next: '/admin',
+        'cf-turnstile-response': `t:login:${host}`,
+      },
     });
     if (begin.status !== 303) {
       return { ok: false, status: begin.status, body: await begin.text() };
     }
-    const verifyPage = await this.req(`https://${host}/login/verify`);
-    const verifyBody = await verifyPage.text();
-    const vToken = Harness.csrf(verifyBody);
+    const verifyPage = await this.req(`https://${host}/admin`);
+    const vToken = Harness.csrf(await verifyPage.text());
     const code = this.lastCode();
-    const done = await this.req(`https://${host}/login/verify`, {
-      form: { _csrf: vToken, code, 'cf-turnstile-response': `t:otp:${host}` },
+    const done = await this.req(`https://${host}/admin`, {
+      form: { _csrf: vToken, stage: 'code', code, 'cf-turnstile-response': `t:otp:${host}` },
     });
     return { ok: done.status === 303, status: done.status, location: done.headers.get('Location'), code };
   }

@@ -36,7 +36,7 @@ ok('logo keeps the brand colour', bytes.includes('#FF651A'));
 
 // The favicon must be referenced on pages a signed-out visitor sees, and on
 // the admin pages, without needing a session for the icon itself.
-const login = await h.req('https://ptra.dev/login');
+const login = await h.req('https://ptra.dev/admin');
 const loginBody = await login.text();
 ok('login page links the favicon',
    loginBody.includes(`<link rel="icon" type="image/svg+xml" href="/__slink/logo.svg?v=${ASSET_VERSION}">`),
@@ -48,8 +48,9 @@ await h.signIn('root@pontera.com');
 const admin = await h.req('https://ptra.dev/admin');
 ok('admin page links the favicon', (await admin.text()).includes('/__slink/logo.svg'));
 
-const landing = await h.req('https://ptra.cc/');
-ok('short-link host links the favicon', (await landing.text()).includes('/__slink/logo.svg'));
+// A short-link host root redirects, so check the favicon on a page it does
+// render: the signed-out admin screen on the hub.
+ok('hub pages link the favicon', loginBody.includes('/__slink/logo.svg'));
 
 // The icon is same-origin, which img-src 'self' already permits.
 const csp = login.headers.get('Content-Security-Policy') || '';

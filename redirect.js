@@ -61,16 +61,29 @@ export function redirectResponse(target, status) {
       'Referrer-Policy': 'no-referrer',
     },
   });
-  return harden(res, { store: status === 301 || status === 308 });
+  // A destination must not learn which shortcut sent the visitor.
+  return harden(res, { store: status === 301 || status === 308, referrerPolicy: 'no-referrer' });
 }
 
-/** Serve the host root. */
+/**
+ * Where to send someone when there is nothing to show: the per-domain
+ * override if the administrator set one, otherwise the global MISSING URL.
+ */
+export function fallbackFor(ctx, kind) {
+  const { cfg, domain } = ctx;
+  const perDomain = kind === 'root' ? domain.rootRedirect : domain.notFoundUrl;
+  return perDomain || cfg.missingUrl || '';
+}
+
+/**
+ * Serve the host root. This runs before the sign-in gate: a root is a public
+ * signpost, so it redirects rather than asking anyone to authenticate.
+ */
 export async function handleRoot(ctx) {
-  const { cfg, domain, host } = ctx;
-  if (domain.rootRedirect) {
-    return redirectResponse(domain.rootRedirect, domain.defaultStatus || 302);
-  }
-  return html(landingPage({ cfg, host, signedIn: !!ctx.session }));
+  const { cfg, host } = ctx;
+  const target = fallbackFor(ctx, 'root');
+  if (target) return redirectResponse(target, 302);
+  return html(landingPage({ cfg, host }));
 }
 
 /** Resolve and serve a shortcut. */
@@ -89,6 +102,7 @@ export async function handleRedirect(ctx) {
     return gone(ctx, isExpired(link) ? 'This link has expired.' : 'This link is disabled.');
   }
 
+
   const target = link.forwardQuery ? applyQuery(link.target, url.search) : link.target;
   const status = link.status || domain.defaultStatus || 302;
   const delay = Number.isFinite(link.delay) ? link.delay : domain.defaultDelay || 0;
@@ -104,8 +118,9 @@ export async function handleRedirect(ctx) {
 }
 
 function notFound(ctx) {
-  const { cfg, domain, host } = ctx;
-  if (domain.notFoundUrl) return redirectResponse(domain.notFoundUrl, 302);
+  const { cfg, host } = ctx;
+  const target = fallbackFor(ctx, 'missing');
+  if (target) return redirectResponse(target, 302);
   const page = messagePage({
     cfg,
     host,
@@ -120,6 +135,10 @@ function notFound(ctx) {
 
 function gone(ctx, message) {
   const { cfg, host } = ctx;
+  // A disabled or expired shortcut is "nothing to show" too, so it lands in
+  // the same place as an unknown one rather than on a dead end.
+  const target = fallbackFor(ctx, 'missing');
+  if (target) return redirectResponse(target, 302);
   const page = messagePage({
     cfg,
     host,

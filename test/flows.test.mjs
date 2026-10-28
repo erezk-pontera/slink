@@ -258,15 +258,17 @@ section('logout');
 {
   const gus = peer(admin);
   await gus.signIn('gus@pontera.com');
-  ok('signed in', (await gus.req('https://ptra.dev/admin')).status === 200);
+  const before = await gus.req('https://ptra.dev/admin');
+  ok('signed in', before.status === 200 && (await before.text()).includes('Overview'));
 
   const page = await gus.req('https://ptra.dev/logout');
   const token = Harness.csrf(await page.text());
   ok('logout GET is a confirmation, not an action', (await gus.req('https://ptra.dev/admin')).status === 200);
 
   const out = await gus.req('https://ptra.dev/logout', { form: { _csrf: token } });
-  ok('logout POST signs out', out.status === 303 && out.headers.get('Location') === '/login');
-  ok('session is gone', (await gus.req('https://ptra.dev/admin')).status === 303);
+  ok('logout POST signs out', out.status === 303 && out.headers.get('Location') === '/admin');
+  const after = await gus.req('https://ptra.dev/admin');
+  ok('session is gone', after.status === 200 && (await after.text()).includes('Send code'));
 }
 
 /* ------------------------------------------------------ disabled user */
@@ -282,7 +284,9 @@ section('disabled accounts');
     form: { _csrf: uTok, u: 'hank@pontera.com', disabled: '1' },
   });
   ok('admin disabled the account', disabled.status === 303, String(disabled.status));
-  ok('disabled session is revoked', (await hank.req('https://ptra.dev/admin')).status === 303);
+  const revoked = await hank.req('https://ptra.dev/admin');
+  ok('disabled session is revoked', revoked.status === 200 && (await revoked.text()).includes('Send code'),
+     String(revoked.status));
 
   // A root admin cannot be demoted through the UI.
   const rEdit = 'https://ptra.dev/admin/users/edit?u=root%40pontera.com';

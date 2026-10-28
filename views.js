@@ -22,11 +22,6 @@ export function adminUrl(cfg, host) {
   return host === cfg.hubHost ? '/admin' : 'https://' + cfg.hubHost + '/admin';
 }
 
-/** Where sign-in lives as seen from `host`. */
-export function loginUrl(cfg, host) {
-  return host === cfg.hubHost ? '/login' : 'https://' + cfg.hubHost + '/login';
-}
-
 /** Wrap a body fragment in the page chrome. */
 export function layout({
   title,
@@ -185,8 +180,8 @@ ${alert('error', error)}${alert('info', info)}
 <div class="card">
   <h1>Sign in</h1>
   <p class="sub">We will email you a ${cfg.settings.otpLength}-digit code.</p>
-  <form method="post" action="/login" data-no-busy>
-    ${csrfField(csrf)}${hidden('next', next)}
+  <form method="post" action="/admin" data-no-busy>
+    ${csrfField(csrf)}${hidden('stage', 'email')}${hidden('next', next)}
     ${field({
       name: 'email',
       label: 'Work email',
@@ -219,8 +214,8 @@ ${alert('error', error)}${alert('info', info)}
   <p class="sub">Sent to ${esc(email)}${
     expiresIn ? ` &middot; expires in ${Math.max(1, Math.round(expiresIn / 60))} min` : ''
   }</p>
-  <form method="post" action="/login/verify" data-no-busy>
-    ${csrfField(csrf)}
+  <form method="post" action="/admin" data-no-busy>
+    ${csrfField(csrf)}${hidden('stage', 'code')}
     <div class="field">
       <label for="f_code">Verification code</label>
       <input id="f_code" class="otp" name="code" type="text" inputmode="numeric"
@@ -234,11 +229,14 @@ ${alert('error', error)}${alert('info', info)}
 <div class="card">
   <h2>Did not get it?</h2>
   <p class="hint">Check your spam folder, or request a new code.</p>
-  <form method="post" action="/login/resend" class="actions tight">
-    ${csrfField(csrf)}
+  <form method="post" action="/admin" class="actions tight">
+    ${csrfField(csrf)}${hidden('stage', 'resend')}
     <button type="submit" class="secondary">Send a new code</button>
   </form>
-  <div class="actions"><a class="btn secondary" href="/login">Use a different address</a></div>
+  <form method="post" action="/admin" class="actions">
+    ${csrfField(csrf)}${hidden('stage', 'restart')}
+    <button type="submit" class="secondary">Use a different address</button>
+  </form>
 </div>`;
   return layout({
     title: 'Verify - ' + cfg.appName,
@@ -309,15 +307,16 @@ export function messagePage({ cfg, host, title, heading, message, status = 200, 
 }
 
 /** Landing page for a host root with no configured redirect. */
-export function landingPage({ cfg, host, signedIn }) {
-  const href = signedIn ? adminUrl(cfg, host) : loginUrl(cfg, host);
+/**
+ * The host root, when no redirect is configured anywhere. It deliberately
+ * offers no way in: administration is reached by going to /admin on the hub,
+ * and a short-link host should not advertise that a sign-in exists.
+ */
+export function landingPage({ cfg, host }) {
   const body = `
 <div class="card">
   <h1>${esc(cfg.appName)}</h1>
   <p class="sub">Short links for ${esc(host)}.</p>
-  <div class="actions">
-    <a class="btn" href="${esc(href)}">${signedIn ? 'Open admin' : 'Sign in'}</a>
-  </div>
 </div>`;
   return layout({
     title: cfg.appName,
@@ -325,6 +324,6 @@ export function landingPage({ cfg, host, signedIn }) {
     host,
     body,
     narrow: true,
-    homeHref: href,
+    homeHref: '/',
   });
 }

@@ -141,6 +141,12 @@ export async function turnstileVerifyOrFail(ctx, body, action) {
   });
   if (result.ok) return { ok: true };
 
+  // Also to the Worker log. A misconfigured secret rejects every sign-in, and
+  // the audit log can only be read by someone who managed to sign in, so the
+  // reason has to reach an operator through `wrangler tail` as well.
+  // `invalid-input-secret` means the secret is wrong; `invalid-input-response`
+  // means the token was.
+  console.warn('turnstile rejected:', result.reason, 'action=' + action, 'host=' + ctx.host);
   ctx.waitUntil(
     audit(cfg, {
       event: EVENTS.loginBlocked,

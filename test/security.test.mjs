@@ -24,15 +24,15 @@ function peer(base) {
 section('cookies');
 {
   const fresh = peer(admin);
-  const page = await fresh.req('https://ptra.dev/login');
+  const page = await fresh.req('https://ptra.dev/admin');
   const token = Harness.csrf(await page.text());
-  await fresh.req('https://ptra.dev/login', {
-    form: { _csrf: token, email: 'cook@pontera.com', 'cf-turnstile-response': 't:login:ptra.dev' },
+  await fresh.req('https://ptra.dev/admin', {
+    form: { _csrf: token, stage: 'email', email: 'cook@pontera.com', 'cf-turnstile-response': 't:login:ptra.dev' },
   });
-  const vPage = await fresh.req('https://ptra.dev/login/verify');
+  const vPage = await fresh.req('https://ptra.dev/admin');
   const vToken = Harness.csrf(await vPage.text());
-  const done = await fresh.req('https://ptra.dev/login/verify', {
-    form: { _csrf: vToken, code: fresh.lastCode(), 'cf-turnstile-response': 't:otp:ptra.dev' },
+  const done = await fresh.req('https://ptra.dev/admin', {
+    form: { _csrf: vToken, stage: 'code', code: fresh.lastCode(), 'cf-turnstile-response': 't:otp:ptra.dev' },
   });
   const setCookies = done.headers.getSetCookie();
   const sess = setCookies.find((c) => c.startsWith('__Host-slink_sess='));
@@ -60,7 +60,9 @@ section('CSRF binding');
   ok('token is bound to the session',
      (crossSession.headers.get('Location') || '').includes('m=csrf'),
      crossSession.status + ' ' + crossSession.headers.get('Location'));
-  ok('no link was created', (await admin.req('https://ptra.cc/cross-session')).status === 404);
+  const absent = await admin.req('https://ptra.cc/cross-session');
+  ok('no link was created', absent.headers.get('Location') === 'https://fallback.example/home',
+     absent.status + ' ' + absent.headers.get('Location'));
 
   // A token minted for one form must not work on another.
   await alice.req('https://ptra.dev/admin/links/new', {
@@ -79,30 +81,64 @@ section('CSRF binding');
      crossForm.status + ' ' + crossForm.headers.get('Location'));
   ok('link survived the cross-form attempt', (await admin.req('https://ptra.cc/alices-own')).status === 302);
 
-  // Missing Origin on a cross-site post is refused.
-  const noOrigin = await alice.req('https://ptra.dev/admin/links/delete', {
+  // A foreign Referer is refused even with no Origin header.
+  const foreignRef = await alice.req('https://ptra.dev/admin/links/delete', {
     form: { _csrf: Harness.csrfFor(editBody, '/admin/links/delete'), host: 'ptra.cc', path: 'alices-own' },
     headers: { Origin: null, Referer: 'https://evil.example/x' },
   });
-  ok('foreign Referer refused', (noOrigin.headers.get('Location') || '').includes('m=csrf'));
+  ok('foreign Referer refused', (foreignRef.headers.get('Location') || '').includes('m=csrf'));
+  ok('link survived the foreign-Referer attempt', (await admin.req('https://ptra.cc/alices-own')).status === 302);
+
+  // An opaque origin (a sandboxed frame) sends the literal string "null".
+  const opaque = await alice.req('https://ptra.dev/admin/links/delete', {
+    form: { _csrf: Harness.csrfFor(editBody, '/admin/links/delete'), host: 'ptra.cc', path: 'alices-own' },
+    headers: { Origin: 'null' },
+  });
+  ok('opaque origin refused', (opaque.headers.get('Location') || '').includes('m=csrf'));
+
+  // Neither header: several browsers omit Origin on a same-origin form post,
+  // and Referrer-Policy removes the Referer fallback. Refusing these locked
+  // real people out of every form, so the signed cookie-bound token and
+  // SameSite=Lax carry the defence instead.
+  const bare = await alice.req('https://ptra.dev/admin/links/edit', {
+    form: {
+      _csrf: updateToken, host: 'ptra.cc', path: 'alices-own', newpath: 'alices-own',
+      target: 'https://example.com/renamed', status: '302', delay: '0', enabled: '1',
+    },
+    headers: { Origin: null },
+  });
+  ok('no Origin and no Referer is accepted',
+     (bare.headers.get('Location') || '').includes('m=link.updated'),
+     bare.status + ' ' + bare.headers.get('Location'));
+  const renamed = await admin.req('https://ptra.cc/alices-own');
+  ok('that edit really applied', renamed.headers.get('Location') === 'https://example.com/renamed',
+     String(renamed.headers.get('Location')));
+
+  // A bare request still needs a valid token.
+  const bareNoToken = await alice.req('https://ptra.dev/admin/links/delete', {
+    form: { _csrf: 'forged', host: 'ptra.cc', path: 'alices-own' },
+    headers: { Origin: null },
+  });
+  ok('a bare request still needs a valid token',
+     (bareNoToken.headers.get('Location') || '').includes('m=csrf'));
 }
 
 /* ------------------------------------------------------- open redirect */
 section('open redirect');
 {
   const fresh = peer(admin);
-  const page = await fresh.req('https://ptra.dev/login?next=https://evil.example/');
+  const page = await fresh.req('https://ptra.dev/admin?next=https://evil.example/');
   const body = await page.text();
   ok('absolute next is discarded in the form', body.includes('name="next" value="/admin"'),
      (body.match(/name="next" value="[^"]*"/) || [''])[0]);
 
   const token = Harness.csrf(body);
-  await fresh.req('https://ptra.dev/login', {
-    form: { _csrf: token, email: 'openr@pontera.com', next: '//evil.example/x', 'cf-turnstile-response': 't:login:ptra.dev' },
+  await fresh.req('https://ptra.dev/admin', {
+    form: { _csrf: token, stage: 'email', email: 'openr@pontera.com', next: '//evil.example/x', 'cf-turnstile-response': 't:login:ptra.dev' },
   });
-  const vBody = await (await fresh.req('https://ptra.dev/login/verify')).text();
-  const done = await fresh.req('https://ptra.dev/login/verify', {
-    form: { _csrf: Harness.csrf(vBody), code: fresh.lastCode(), 'cf-turnstile-response': 't:otp:ptra.dev' },
+  const vBody = await (await fresh.req('https://ptra.dev/admin')).text();
+  const done = await fresh.req('https://ptra.dev/admin', {
+    form: { _csrf: Harness.csrf(vBody), stage: 'code', code: fresh.lastCode(), 'cf-turnstile-response': 't:otp:ptra.dev' },
   });
   ok('protocol-relative next is discarded', done.headers.get('Location') === '/admin',
      String(done.headers.get('Location')));
@@ -113,23 +149,14 @@ section('host separation');
 {
   // The admin area is served only by the hub; on a short-link host those
   // paths are ordinary shortcut lookups.
+  // On a short-link host these are ordinary shortcut lookups, so they fall
+  // through to the MISSING redirect rather than offering a way in.
   const onShortHost = await admin.req('https://ptra.cc/admin');
-  ok('short-link host does not serve /admin', onShortHost.status === 404, String(onShortHost.status));
+  ok('short-link host does not serve /admin',
+     onShortHost.status === 302 && onShortHost.headers.get('Location') === 'https://fallback.example/home',
+     onShortHost.status + ' ' + onShortHost.headers.get('Location'));
   const loginOnShortHost = await admin.req('https://ptra.cc/login');
-  ok('short-link host does not serve /login', loginOnShortHost.status === 404, String(loginOnShortHost.status));
-
-  // A 404 page on a short-link host links to the hub, not to a local path.
-  const notFound = await admin.req('https://ptra.cc/nothing-here');
-  const nfBody = await notFound.text();
-  ok('404 links to the hub admin', nfBody.includes('https://ptra.dev/admin'), 'no absolute admin link found');
-
-  // Anonymous on ptra.cc, so the landing page offers sign-in - on the hub,
-  // absolutely, because ptra.cc serves no /login of its own.
-  const landing = await admin.req('https://ptra.cc/');
-  const lb = await landing.text();
-  ok('landing links to the hub', lb.includes('href="https://ptra.dev/login"'),
-     (lb.match(/class="btn" href="[^"]*"/) || [''])[0]);
-  ok('landing has no bare /login link', !lb.includes('href="/login"'));
+  ok('short-link host does not serve /login', loginOnShortHost.status === 302);
 }
 
 section('request limits');
@@ -176,12 +203,15 @@ section('output escaping');
 section('rate limiting');
 {
   const spammer = peer(admin);
-  const page = await spammer.req('https://ptra.dev/login');
+  const page = await spammer.req('https://ptra.dev/admin');
   const token = Harness.csrf(await page.text());
   let blocked = false;
   for (let i = 0; i < 15; i++) {
-    const r = await spammer.req('https://ptra.dev/login', {
-      form: { _csrf: token, email: `flood${i}@pontera.com`, 'cf-turnstile-response': 't:login:ptra.dev' },
+    const r = await spammer.req('https://ptra.dev/admin', {
+      form: {
+        _csrf: token, stage: 'email', email: `flood${i}@pontera.com`,
+        'cf-turnstile-response': 't:login:ptra.dev',
+      },
     });
     if (r.status !== 303 && (await r.text()).includes('Too many sign-in attempts')) { blocked = true; break; }
   }

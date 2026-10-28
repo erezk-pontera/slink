@@ -8,11 +8,25 @@
 
 import { b64urlDecode, b64urlEncode, isSafeKey, randomId, te } from './util.js';
 
+/**
+ * Derived keys are cached because deriving one on every signature would be
+ * wasteful on a hot path.
+ *
+ * The cache is keyed by the secret as well as the purpose. Keying it by
+ * purpose alone looked harmless - an installation only ever has one secret
+ * - but a Workers isolate outlives a deployment, so after AUTH_SECRET was
+ * rotated the isolate went on signing and verifying with the key derived
+ * from the *old* one until it happened to recycle. A rotation is usually a
+ * response to a leak, and that made it quietly do nothing.
+ */
 const keyCache = new Map();
+
+/** Keep the cache bounded; there are only a few purposes and one secret. */
+const MAX_CACHED_KEYS = 64;
 
 /** Import a purpose-scoped HMAC key derived from the master secret. */
 async function hmacKey(secret, purpose) {
-  const cacheKey = purpose;
+  const cacheKey = purpose + '\u0000' + secret;
   const cached = keyCache.get(cacheKey);
   if (cached) return cached;
   const master = await crypto.subtle.importKey(
@@ -30,6 +44,7 @@ async function hmacKey(secret, purpose) {
     false,
     ['sign', 'verify']
   );
+  if (keyCache.size >= MAX_CACHED_KEYS) keyCache.clear();
   keyCache.set(cacheKey, key);
   return key;
 }

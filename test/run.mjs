@@ -26,6 +26,7 @@ const suites = [
   'test/linkpass.test.mjs',
   'test/frame.test.mjs',
   'test/passkeys.test.mjs',
+  'test/rotation.test.mjs',
 ];
 
 let bad = 0;

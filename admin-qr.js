@@ -15,6 +15,7 @@
 import { back, denied } from './admin.js';
 import { LOGO_SVG } from './logo.js';
 import { parsePath } from './paths.js';
+import { harden } from './security.js';
 import { ECC_LEVELS, toSvg } from './qr.js';
 
 export const QR_SIZES = [128, 256, 512, 1024, 2048];
@@ -108,15 +109,20 @@ export async function qrSvg(ctx) {
     return denied(ctx, err && err.message ? err.message : 'That will not fit in a QR code.');
   }
 
-  return new Response(svg, {
-    headers: {
-      'Content-Type': 'image/svg+xml; charset=utf-8',
-      'Content-Disposition': `inline; filename="${parsed.pathLc.replace(/\//g, '-')}.svg"`,
-      // The code is a pure function of the query string, so it caches well,
-      // but it is private to the signed-in viewer.
-      'Cache-Control': 'private, max-age=3600',
-      'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
-    },
-  });
+  const response = harden(
+    new Response(svg, {
+      headers: {
+        'Content-Type': 'image/svg+xml; charset=utf-8',
+        'Content-Disposition': `inline; filename="${parsed.pathLc.replace(/\//g, '-')}.svg"`,
+        // The code is a pure function of the query string, so it caches well,
+        // but it is private to the signed-in viewer.
+        'Cache-Control': 'private, max-age=3600',
+      },
+    }),
+    { store: true }
+  );
+  // An SVG is active content when a browser navigates straight to it, so
+  // this one keeps the inert policy rather than the ordinary page one.
+  response.headers.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  return response;
 }

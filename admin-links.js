@@ -802,6 +802,10 @@ async function editForm(ctx, { error, info } = {}) {
     dir,
   }).allowed;
   const currentPassword = await readPassword(cfg, link);
+  // A password that is set but will not decrypt means AUTH_SECRET was
+  // rotated without AUTH_SECRET_PREVIOUS. Showing an empty field there
+  // would invite a save that silently unprotects the link.
+  const passwordLost = hasPassword(link) && !currentPassword;
   const previewBlocked = previewBlockedReason(parentDomain);
   const dupToken = await formToken(ctx, 'link.duplicate');
   const passwordToken = await formToken(ctx, 'link.password');
@@ -829,9 +833,10 @@ async function editForm(ctx, { error, info } = {}) {
   const body = `
 ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}${maskWarning}
 <h1>${esc(host)}/${esc(link.path)}</h1>
-<p class="sub">${statusBadges(link) || 'Active'} &middot; created ${esc(fmtTime(link.createdAt))} &middot; ${esc(
+<p class="sub">${statusBadges(link) || 'Active'} &middot; created ${esc(fmtTime(link.createdAt))} &middot;
+<span title="Simultaneous arrivals can overwrite one another, so this is a floor rather than an exact count.">${esc(
     clicks
-  )} hit${clicks === 1 ? '' : 's'}</p>
+  )} hit${clicks === 1 ? '' : 's'} or more</span></p>
 
 <div class="card">
   <h2>Settings</h2>
@@ -891,19 +896,43 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}${maskWarning}
   <h2>Password</h2>
   ${
     mayPassword
-      ? `<p class="hint">A visitor has to type this before the link resolves, on any domain. It is stored encrypted and shown here because you have to be able to tell people what it is. Changing it closes every browser that had already answered.</p>
+      ? `${
+          passwordLost
+            ? alert(
+                'error',
+                'This link has a password, but it cannot be decrypted with the current AUTH_SECRET. ' +
+                  'That happens when the secret is rotated: set AUTH_SECRET_PREVIOUS to the old value to ' +
+                  'recover it, or set a new password here. Until one or the other, nobody can open this link.'
+              )
+            : ''
+        }<p class="hint">A visitor has to type this before the link resolves, on any domain. It is stored encrypted and shown here because you have to be able to tell people what it is. Changing it closes every browser that had already answered.</p>
   <form method="post" action="/admin/links/password" autocomplete="off">
     ${csrfField(passwordToken)}${hidden('host', host)}${hidden('path', pathLc)}
     ${field({
       name: 'password',
       label: 'Password',
       value: currentPassword,
-      placeholder: hasPassword(link) ? '' : 'leave blank for no password',
+      placeholder: passwordLost
+        ? 'type a new password to replace the unreadable one'
+        : hasPassword(link)
+          ? ''
+          : 'leave blank for no password',
       attrs: 'autocomplete="off" spellcheck="false" maxlength="' + MAX_PASSWORD + '"',
-      note: hasPassword(link)
-        ? 'Clear the field and save to remove the password.'
-        : 'Setting one also hides this link\'s destinations from anyone who cannot edit it.',
+      note: passwordLost
+        ? 'Saving a new one replaces it. To remove it instead, tick the box below.'
+        : hasPassword(link)
+          ? 'Clear the field and save to remove the password.'
+          : 'Setting one also hides this link\'s destinations from anyone who cannot edit it.',
     })}
+    ${
+      passwordLost
+        ? checkbox({
+            name: 'confirmClear',
+            label: 'Yes, remove the password I cannot read',
+            checked: false,
+          })
+        : ''
+    }
     <div class="actions"><button type="submit" class="secondary">${
       hasPassword(link) ? 'Update password' : 'Set a password'
     }</button></div>
@@ -913,7 +942,7 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}${maskWarning}
         )}${hasPassword(link) ? ' This link already has one, which still applies.' : ''}</p>`
   }
   ${
-    hasPassword(link)
+    hasPassword(link) && !passwordLost
       ? `<h3>Sharing it without the prompt</h3>
   <p class="hint">Adding the password to the end of the link opens it straight away. The part after <code>#</code> never leaves the browser, so it stays out of our logs and out of the referrer sent to the destination, and this page clears it from the address bar as soon as it has used it. Anyone holding this form of the link has the password, so share it exactly as carefully.</p>
   <p class="target-big">${esc(shareableUrl(host, link.path, currentPassword))}</p>
@@ -1093,6 +1122,17 @@ async function passwordSubmit(ctx) {
   // a capability withdrawn later must not strand a link behind a prompt.
   const raw = String(body.get('password') || '');
   if (raw && !may.allowed) return denied(ctx, may.reason || 'Not permitted here.');
+
+  // Where the stored password cannot be read, the field rendered empty.
+  // Treating that as "clear it" would unprotect the link by accident, so
+  // removing it has to be said out loud.
+  if (!raw && hasPassword(link) && !(await readPassword(ctx.cfg, link)) && !body.get('confirmClear')) {
+    return editForm(ctx, {
+      error:
+        'That password cannot be read with the current AUTH_SECRET, so saving an empty field was ' +
+        'refused rather than silently removing it. Type a new password, or tick the box to remove it.',
+    });
+  }
 
   const result = await setPassword(ctx.cfg, link, raw);
   if (!result.ok) return editForm(ctx, { error: result.error });

@@ -584,7 +584,37 @@ The page works without JavaScript via a meta refresh.
   in a notification preview. Change the subject template in settings if that
   is not wanted.
 - Deleting a user leaves their links in place, still pointing at the deleted
-  owner. Reassign them first; the UI says so.
+  owner. Reassign them first; the UI says so. Their passkeys do go with the
+  account, so an address reused later inherits no device.
+- **Click counts are a floor, not a count.** Counting is a read-modify-write
+  on one KV key with no compare-and-set, so simultaneous arrivals overwrite
+  one another; twenty at once were measured to record one. The edit screen
+  says "or more". Counting every hit needs a primitive that can increment —
+  a Durable Object, or Analytics Engine — which is a deployment change
+  rather than a code one, and nothing else depends on the figure.
+- The same lack of compare-and-set means the twenty-passkey cap per account
+  can be passed by registering from two tabs at the same instant. It is a
+  sanity bound on how much one account can store, not a security boundary.
+- There is no CI in this repository. `npm test` is the gate and it is run by
+  hand; the only automatic check on a pull request is the Cloudflare build.
+
+### Rotating AUTH_SECRET
+
+Set `AUTH_SECRET_PREVIOUS` to the old value **before** changing
+`AUTH_SECRET`, and keep it until every protected link has been saved once.
+
+Nearly everything derived from the secret is short-lived — a CSRF token, an
+unlock cookie, a login code, an SSO or impersonation token — so a rotation
+costs those a retry and nothing more. Sessions are unaffected: a session id
+is stored, not signed. The exception is a **link password**, which is
+encrypted at rest and has to stay readable; without the previous secret the
+link is stranded behind a password nobody can read, type or clear. With it,
+the password still opens, and saving the link re-seals it under the new
+secret, after which the fallback can be dropped.
+
+If a rotation has already happened without it, the link editor says so
+plainly rather than showing an empty field, and refuses to clear a password
+it cannot read unless you confirm.
 
 ---
 
@@ -592,7 +622,7 @@ The page works without JavaScript via a meta refresh.
 
 ```sh
 npm run check   # syntax-check every module as an ES module
-npm test        # 351 checks across ten suites
+npm test        # 1,138 checks across 25 suites
 wrangler dev    # local run; see the note below
 ```
 

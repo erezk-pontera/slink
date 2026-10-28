@@ -81,6 +81,15 @@ export class Config {
     this.settings = settings;
 
     this.authSecret = envVar(env, 'AUTH_SECRET', 'auth-secret');
+    /**
+     * The secret this deployment used before the current one, if it has
+     * just been rotated. Optional, and only ever used to *read*: a link
+     * password sealed under the old secret stays readable, and is re-sealed
+     * under the new one the next time it is saved. Without it, rotating
+     * AUTH_SECRET leaves every protected link stuck behind a password
+     * nobody can read or type.
+     */
+    this.authSecretPrevious = envVar(env, 'AUTH_SECRET_PREVIOUS', 'auth-secret-previous') || '';
     this.turnstileSiteKey = envVar(env, 'turnstile-sitekey', 'TURNSTILE_SITEKEY', 'TURNSTILE_SITE_KEY');
     this.turnstileSecret = envVar(env, 'turnstile-secret', 'TURNSTILE_SECRET');
     this.oauthSecret = envVar(env, 'oauth-secret', 'OAUTH_SECRET');

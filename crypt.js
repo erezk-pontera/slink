@@ -27,6 +27,9 @@ import { b64urlDecode, b64urlEncode, te } from './util.js';
  */
 const keyCache = new Map();
 
+/** Keep the cache bounded; there are only a few purposes and one secret. */
+const MAX_CACHED_KEYS = 64;
+
 async function keyFor(secret, purpose) {
   const cacheKey = purpose + '\u0000' + secret;
   if (keyCache.has(cacheKey)) return keyCache.get(cacheKey);
@@ -38,6 +41,7 @@ async function keyFor(secret, purpose) {
     false,
     ['encrypt', 'decrypt']
   );
+  if (keyCache.size >= MAX_CACHED_KEYS) keyCache.clear();
   keyCache.set(cacheKey, key);
   return key;
 }
@@ -55,25 +59,40 @@ export async function seal(secret, purpose, value) {
   return b64urlEncode(nonce) + '.' + b64urlEncode(new Uint8Array(cipher));
 }
 
-/** Decrypt a value produced by seal. Returns '' for anything unreadable. */
-export async function open(secret, purpose, sealed) {
+/**
+ * Decrypt a value produced by seal. Returns '' for anything unreadable.
+ *
+ * `also` holds secrets to fall back to, which is what makes rotating
+ * AUTH_SECRET survivable: a value sealed under the old one still opens,
+ * and is re-sealed under the new one the next time it is written.
+ */
+export async function open(secret, purpose, sealed, { also = [] } = {}) {
   if (typeof sealed !== 'string' || !sealed) return '';
   const dot = sealed.indexOf('.');
   if (dot <= 0) return '';
+  let nonce;
+  let cipher;
   try {
-    const nonce = b64urlDecode(sealed.slice(0, dot));
-    const cipher = b64urlDecode(sealed.slice(dot + 1));
-    const key = await keyFor(secret, purpose);
-    const plain = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: nonce, additionalData: te.encode(purpose) },
-      key,
-      cipher
-    );
-    return new TextDecoder().decode(plain);
+    nonce = b64urlDecode(sealed.slice(0, dot));
+    cipher = b64urlDecode(sealed.slice(dot + 1));
   } catch {
-    // A wrong key, a tampered value or one sealed for another purpose all
-    // land here. None of them is recoverable, and none should throw into
-    // the request.
     return '';
   }
+  for (const candidate of [secret, ...also]) {
+    if (!candidate) continue;
+    try {
+      const key = await keyFor(candidate, purpose);
+      const plain = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: nonce, additionalData: te.encode(purpose) },
+        key,
+        cipher
+      );
+      return new TextDecoder().decode(plain);
+    } catch {
+      // A wrong key, a tampered value or one sealed for another purpose all
+      // land here. None of them should throw into the request; try the next
+      // secret, and give up quietly when there is none left.
+    }
+  }
+  return '';
 }

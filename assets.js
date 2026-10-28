@@ -7,6 +7,7 @@
 
 import { HASH_PREFIX } from './linkpass.js';
 import { LOGO_SVG } from './logo.js';
+import { harden } from './security.js';
 
 export const ASSET_PREFIX = '/__slink';
 
@@ -461,35 +462,48 @@ export const JS = `
 })();
 `.trim();
 
-/** Serve a static asset, or null when the path is not one. */
+/**
+ * Serve a static asset, or null when the path is not one.
+ *
+ * These go through harden() like every other response. They are answered
+ * before configuration is even loaded, so without it a browser whose very
+ * first request here is for the stylesheet would get no HSTS, and the
+ * script would be served without `nosniff`.
+ *
+ * `store: true` keeps each asset's own caching; the SVG's stricter policy
+ * is re-applied after hardening because that one has to stay inert.
+ */
+const SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+const IMMUTABLE = 'public, max-age=31536000, immutable';
+
 export function serveAsset(pathname) {
   if (pathname === ASSET_PREFIX + '/app.css') {
-    return new Response(CSS, {
-      headers: {
-        'Content-Type': 'text/css; charset=utf-8',
-        'Cache-Control': 'public, max-age=31536000, immutable',
-      },
-    });
+    return harden(
+      new Response(CSS, {
+        headers: { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': IMMUTABLE },
+      }),
+      { store: true }
+    );
   }
   if (pathname === ASSET_PREFIX + '/app.js') {
-    return new Response(JS, {
-      headers: {
-        'Content-Type': 'text/javascript; charset=utf-8',
-        'Cache-Control': 'public, max-age=31536000, immutable',
-      },
-    });
+    return harden(
+      new Response(JS, {
+        headers: { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': IMMUTABLE },
+      }),
+      { store: true }
+    );
   }
   if (pathname === ASSET_PREFIX + '/logo.svg') {
-    return new Response(LOGO_SVG, {
-      headers: {
-        'Content-Type': 'image/svg+xml; charset=utf-8',
-        'Cache-Control': 'public, max-age=31536000, immutable',
-        // An SVG is active content when a browser navigates straight to it,
-        // so this one is served inert: no script, no network, no framing.
-        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
-        'X-Content-Type-Options': 'nosniff',
-      },
-    });
+    const response = harden(
+      new Response(LOGO_SVG, {
+        headers: { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': IMMUTABLE },
+      }),
+      { store: true }
+    );
+    // An SVG is active content when a browser navigates straight to it, so
+    // this one keeps the inert policy rather than the ordinary page one.
+    response.headers.set('Content-Security-Policy', SVG_CSP);
+    return response;
   }
   return null;
 }

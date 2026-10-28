@@ -32,6 +32,7 @@ import {
   rpId,
 } from './passkeys.js';
 import * as rl from './ratelimit.js';
+import { harden } from './security.js';
 import { getUserByNorm, isAdmin, putUser } from './users.js';
 import { esc, fmtTime, now } from './util.js';
 import { alert, csrfField, hidden } from './views.js';
@@ -51,13 +52,11 @@ const LOGIN_ATTEMPTS_PER_IP = 30;
 const LOGIN_WINDOW_SECONDS = 900;
 
 function json(data, status = 200, cookies = []) {
-  const headers = new Headers({
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store, max-age=0',
-    'X-Content-Type-Options': 'nosniff',
-  });
+  const headers = new Headers({ 'Content-Type': 'application/json; charset=utf-8' });
   for (const cookie of cookies) if (cookie) headers.append('Set-Cookie', cookie);
-  return new Response(JSON.stringify(data), { status, headers });
+  // Through harden() like every other response, so a JSON reply carries the
+  // same headers a page does rather than its own shorter list.
+  return harden(new Response(JSON.stringify(data), { status, headers }));
 }
 
 /** Read a JSON object body, refusing anything oversized or malformed. */

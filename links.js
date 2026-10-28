@@ -183,6 +183,14 @@ export function clickDay(at = now()) {
  * History lives in the same record as the total, so a hit still costs one
  * read and one write; KV tolerates about one write per second per key and
  * splitting the buckets into their own keys would not change that.
+ *
+ * This is a read-modify-write on one key, and KV has no compare-and-set,
+ * so simultaneous arrivals overwrite each other: twenty at once were
+ * measured to record one. The number is therefore a floor, not a count,
+ * and the screens say so. Counting every hit needs a primitive that can
+ * increment - a Durable Object, or Analytics Engine - which is a
+ * deployment change rather than a code one. Nothing else depends on this
+ * figure, so it is left as the cheap approximation it is.
  */
 export async function bumpClicks(cfg, host, pathLc) {
   try {

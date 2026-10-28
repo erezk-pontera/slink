@@ -87,10 +87,32 @@ export async function setPassword(cfg, link, raw) {
   return { ok: true, cleared: false };
 }
 
-/** Read the password back, for the people allowed to see it. */
+/**
+ * Read the password back, for the people allowed to see it.
+ *
+ * A previous AUTH_SECRET, where one is configured, is tried as well, so a
+ * rotation does not strand every protected link behind a password nobody
+ * can read. Saving the link re-seals it under the current secret.
+ */
 export async function readPassword(cfg, link) {
   if (!hasPassword(link)) return '';
-  return open(cfg.authSecret, PURPOSE, link.password);
+  return open(cfg.authSecret, PURPOSE, link.password, {
+    also: cfg.authSecretPrevious ? [cfg.authSecretPrevious] : [],
+  });
+}
+
+/**
+ * Is the stored password readable at all?
+ *
+ * False with a password set means the value cannot be decrypted - in
+ * practice, AUTH_SECRET was rotated without AUTH_SECRET_PREVIOUS. The
+ * screens have to tell that apart from "no password", because showing an
+ * empty field would invite someone to save it and silently unprotect the
+ * link, and the visitor's prompt can never be answered either.
+ */
+export async function passwordReadable(cfg, link) {
+  if (!hasPassword(link)) return true;
+  return (await readPassword(cfg, link)) !== '';
 }
 
 /** Does `submitted` match? Compared in constant time. */

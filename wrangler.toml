@@ -87,7 +87,7 @@ IGNORE_EMAIL_PLUS = "true"
 
 # The existing Turnstile widget's sitekey. Public by design; the secret is a
 # Worker secret, never a var.
-turnstile-sitekey = "REPLACE_WITH_YOUR_TURNSTILE_SITEKEY"
+turnstile-sitekey = "0x4AAAAAAFpoe-amflQK9nlA"
 
 # Sign-in code delivery. "cloudflare" uses the EMAIL binding above.
 MAIL_PROVIDER = "cloudflare"

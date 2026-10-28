@@ -8,7 +8,7 @@
 
 import { K, Store } from './kv.js';
 import { parseDestination } from './paths.js';
-import { boolEnv, intEnv, listEnv, now } from './util.js';
+import { boolEnv, intEnv, isSafeKey, listEnv, now } from './util.js';
 
 /** Read an env value under either the hyphenated or the SCREAMING_SNAKE name. */
 export function envVar(env, ...names) {
@@ -60,6 +60,7 @@ function mergeSettings(base, override) {
   const out = { ...base };
   for (const [key, value] of Object.entries(override || {})) {
     if (value === undefined) continue;
+    if (!isSafeKey(key)) continue;
     if (value && typeof value === 'object' && !Array.isArray(value) && typeof base[key] === 'object') {
       out[key] = { ...base[key], ...value };
     } else {

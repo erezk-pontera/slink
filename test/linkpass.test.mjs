@@ -253,6 +253,76 @@ section('asking where a link goes');
      locked.r && (await locked.r.text()).includes('This link is protected'));
 }
 
+/* ------------------------------------------- 8. one user, another's link */
+section('a password does not widen who may touch a link');
+{
+  const al = peer(root);
+  await al.signIn('al@pontera.com');
+  const bo = peer(root);
+  await bo.signIn('bo@pontera.com');
+  const mk = async (h, path, target) => {
+    const t = Harness.csrf(await (await h.req('https://ptra.dev/admin/links/new')).text());
+    return h.req('https://ptra.dev/admin/links/new', {
+      form: { _csrf: t, host: 'ptra.cc', path, target, status: '302' },
+    });
+  };
+  await mk(al, 'al-link', 'example.com/al');
+  await mk(bo, 'bo-link', 'example.com/bo');
+
+  // Bo takes a token from a form on his own page, so the refusal is about
+  // the link rather than about the token.
+  const actOnAls = async (action, form) => {
+    const own = await (await bo.req(editHref('ptra.cc', 'bo-link'))).text();
+    const tok = Harness.csrfFor(own, action) || Harness.csrf(own);
+    const r = await bo.req('https://ptra.dev' + action, { form: { _csrf: tok, ...form } });
+    const loc = r.headers.get('Location') || '';
+    return r.status === 403 || loc.includes('csrf') || loc.includes('notfound');
+  };
+
+  ok('cannot set a password on it',
+     await actOnAls('/admin/links/password', { host: 'ptra.cc', path: 'al-link', password: 'x' }));
+  ok('cannot move it',
+     await actOnAls('/admin/links/move', { host: 'ptra.cc', path: 'al-link', toHost: 'ptra.dev', newpath: 'stolen' }));
+  ok('cannot transfer it',
+     await actOnAls('/admin/links/transfer', { host: 'ptra.cc', path: 'al-link', owner: 'bo@pontera.com' }));
+  ok('cannot delete it',
+     await actOnAls('/admin/links/delete', { host: 'ptra.cc', path: 'al-link' }));
+
+  const hit = await peer(root).req('https://ptra.cc/al-link');
+  ok('the link is untouched', (hit.headers.get('Location') || '').includes('example.com/al'),
+     hit.headers.get('Location'));
+
+  // Once it has a password, the destination and the password itself are
+  // visible to its owner and to administrators, and to nobody else.
+  const pt = Harness.csrfFor(await (await al.req(editHref('ptra.cc', 'al-link'))).text(),
+                             '/admin/links/password');
+  await al.req('https://ptra.dev/admin/links/password', {
+    form: { _csrf: pt, host: 'ptra.cc', path: 'al-link', password: 'al-secret' },
+  });
+
+  ok('another user cannot open the edit screen',
+     (await bo.req(editHref('ptra.cc', 'al-link'))).status === 403);
+  const boList = await (await bo.req('https://ptra.dev/admin/links')).text();
+  ok('their list shows neither the destination', !boList.includes('example.com/al'));
+  ok('nor the password', !boList.includes('al-secret'));
+  ok('the owner sees the password',
+     (await (await al.req(editHref('ptra.cc', 'al-link'))).text()).includes('al-secret'));
+  ok('an administrator sees it too',
+     (await (await root.req(editHref('ptra.cc', 'al-link'))).text()).includes('al-secret'));
+
+  // A per-user ruling withdraws the feature from one person only.
+  const ue = 'https://ptra.dev/admin/users/edit?u=bo%40pontera.com';
+  const ut = Harness.csrfFor(await (await root.req(ue)).text(), '/admin/users/edit');
+  await root.req('https://ptra.dev/admin/users/edit', {
+    form: { _csrf: ut, u: 'bo@pontera.com', 'cap__*__password': 'deny' },
+  });
+  const boEdit = await (await bo.req(editHref('ptra.cc', 'bo-link'))).text();
+  ok('a blocked person loses the form', !boEdit.includes('action="/admin/links/password"'));
+  ok('and is told why', boEdit.includes('blocked you'));
+  const alEdit = await (await al.req(editHref('ptra.cc', 'al-link'))).text();
+  ok('everyone else is unaffected', alEdit.includes('action="/admin/links/password"'));
+}
+
 console.log(`\nlink passwords: ${passed} passed, ${failed} failed`);
 root.restore();
 export default { passed, failed };

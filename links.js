@@ -12,7 +12,7 @@ import { K } from './kv.js';
 import { REDIRECT_STATUSES } from './domains.js';
 import { emptyPreview } from './preview.js';
 import { emptyRouting } from './targets.js';
-import { now } from './util.js';
+import { isSafeKey, now } from './util.js';
 
 export const MAX_DELAY_SECONDS = 60;
 
@@ -203,7 +203,7 @@ function pruneDays(days, today) {
   const keys = Object.keys(days).sort();
   if (keys.length <= CLICK_HISTORY_DAYS) return days;
   const out = {};
-  for (const k of keys.slice(-CLICK_HISTORY_DAYS)) out[k] = days[k];
+  for (const k of keys.slice(-CLICK_HISTORY_DAYS)) if (isSafeKey(k)) out[k] = days[k];
   if (!(today in out)) out[today] = days[today] || 0;
   return out;
 }

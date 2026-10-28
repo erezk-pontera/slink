@@ -28,6 +28,7 @@
  */
 
 import { isAdmin } from './users.js';
+import { isSafeKey } from './util.js';
 
 /** Every host, in the per-user table. */
 export const ANY_HOST = '*';
@@ -86,6 +87,7 @@ export function normalizeUserCapabilities(raw) {
   for (const [host, map] of Object.entries(raw)) {
     const key = host === ANY_HOST ? ANY_HOST : String(host).toLowerCase();
     const caps = normalizeCapabilities(map);
+    if (!isSafeKey(key)) continue;
     if (Object.keys(caps).length) out[key] = caps;
   }
   return out;

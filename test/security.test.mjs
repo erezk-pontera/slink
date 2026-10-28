@@ -1,4 +1,7 @@
 import { Harness } from './harness.js';
+import { normalizeUserCapabilities } from '../capabilities.js';
+import { parseCookies } from '../security.js';
+import { isSafeKey } from '../util.js';
 
 let passed = 0;
 let failed = 0;
@@ -216,6 +219,129 @@ section('rate limiting');
     if (r.status !== 303 && (await r.text()).includes('Too many sign-in attempts')) { blocked = true; break; }
   }
   ok('per-IP code requests are throttled', blocked);
+}
+
+const guest = peer(admin);
+
+/* ----------------------------------------- input handling, end to end */
+section('every form field is escaped on the way back out');
+{
+  // Escaping failed if and only if a payload comes back exactly as it was
+  // sent. Looking for fragments like "onerror=" matches inert escaped text
+  // and proves nothing either way.
+  const PAYLOADS = [
+    '"><img src=x onerror=alert(1)>',
+    "'><script>alert(1)</script>",
+    '</textarea><script>alert(1)</script>',
+    '</title><script>alert(1)</script>',
+    '<svg/onload=alert(1)>',
+    '" autofocus onfocus="alert(1)',
+    '${7*7}',
+  ];
+
+  const nf = async () => Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+  let raw = 0;
+  let crashed = 0;
+  for (const p of PAYLOADS) {
+    const r = await admin.req('https://ptra.dev/admin/links/new', {
+      form: {
+        _csrf: await nf(), host: 'ptra.cc', path: p, target: p, status: '302', note: p,
+        previewTitle: p, previewDescription: p, previewImage: p,
+        rules__default: p, url__mobileAndroid: p, activeFrom: p, expires: p,
+      },
+    });
+    if (r.status >= 500) crashed++;
+    const body = await r.text();
+    if (body.includes(p) && /[<>"']/.test(p)) raw++;
+  }
+  ok('no payload survives the link form unescaped', raw === 0, String(raw));
+  ok('and none of them crashes it', crashed === 0, String(crashed));
+
+  let searchRaw = 0;
+  for (const p of PAYLOADS) {
+    const r = await admin.req(
+      'https://ptra.dev/admin/search?q=' + encodeURIComponent(p) +
+      '&type=' + encodeURIComponent(p) + '&host=' + encodeURIComponent(p) +
+      '&from=' + encodeURIComponent(p)
+    );
+    const body = await r.text();
+    if (r.status >= 500 || (body.includes(p) && /[<>"']/.test(p))) searchRaw++;
+  }
+  ok('search echoes nothing unescaped', searchRaw === 0, String(searchRaw));
+}
+
+section('a destination cannot break out into a header');
+{
+  const nf = async () => Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+  let injected = 0;
+  const raws = [
+    'https://example.com/a\r\nSet-Cookie: evil=1',
+    'https://example.com/a\nSet-Cookie: evil=1',
+  ];
+  for (const [i, t] of raws.entries()) {
+    const r = await admin.req('https://ptra.dev/admin/links/new', {
+      form: { _csrf: await nf(), host: 'ptra.cc', path: 'crlf' + i, target: t, status: '302' },
+    });
+    ok(`a destination with a line break is refused (${i})`,
+       !(r.headers.get('Location') || '').includes('link.created'));
+  }
+
+  // Percent-encoded breaks are legal URL characters and stay encoded.
+  const r = await admin.req('https://ptra.dev/admin/links/new', {
+    form: {
+      _csrf: await nf(), host: 'ptra.cc', path: 'crlfpc',
+      target: 'https://example.com/a%0d%0aSet-Cookie:%20evil=1', status: '302',
+    },
+  });
+  if ((r.headers.get('Location') || '').includes('link.created')) {
+    const hit = await guest.req('https://ptra.cc/crlfpc');
+    const loc = hit.headers.get('Location') || '';
+    if (/[\r\n]/.test(loc) || (hit.headers.get('Set-Cookie') || '').includes('evil')) injected++;
+  }
+  ok('an encoded line break stays encoded in the Location', injected === 0);
+
+  // No response anywhere carries a stray line break in a header.
+  let strays = 0;
+  for (const u of [
+    'https://ptra.dev/admin', 'https://ptra.dev/admin/links', 'https://ptra.cc/',
+    'https://ptra.cc/nope', 'https://ptra.dev/admin/search?q=x',
+  ]) {
+    const r = await admin.req(u);
+    for (const [k, v] of r.headers) if (/[\r\n]/.test(k) || /[\r\n]/.test(v)) strays++;
+  }
+  ok('no response header carries a line break', strays === 0, String(strays));
+}
+
+section('a key from the wire cannot reach a prototype');
+{
+  ok('isSafeKey rejects the three', !isSafeKey('__proto__') && !isSafeKey('constructor') && !isSafeKey('prototype'));
+  ok('and accepts ordinary ones', isSafeKey('session') && isSafeKey('a-b_c'));
+
+  const jar = parseCookies({ headers: new Headers({ Cookie: '__proto__=x; constructor=y; ok=1' }) });
+  ok('a dangerous cookie name is dropped', Object.keys(jar).join(',') === 'ok', Object.keys(jar).join(','));
+  ok('the object prototype is untouched', Object.getPrototypeOf({}) === Object.prototype);
+  ok('an ordinary cookie still parses', jar.ok === '1');
+
+  const caps = normalizeUserCapabilities({ __proto__: { frame: true }, 'ptra.cc': { frame: true } });
+  ok('a dangerous host key is dropped from capabilities',
+     Object.keys(caps).join(',') === 'ptra.cc', Object.keys(caps).join(','));
+  ok('nothing leaked onto Object.prototype', {}.frame === undefined);
+}
+
+section('a forged cookie signs nobody in');
+{
+  let signedIn = 0;
+  for (const cookie of [
+    '__Host-slink_sess=',
+    '__Host-slink_sess=not-a-real-session',
+    '__Host-slink_sess=' + 'x'.repeat(5000),
+    "__Host-slink_sess=' OR 1=1--",
+    '__Host-slink_sess=../../admin',
+  ]) {
+    const r = await admin.req('https://ptra.dev/admin', { headers: { Cookie: cookie }, cookies: false });
+    if (r.status === 200 && (await r.text()).includes('class="who"')) signedIn++;
+  }
+  ok('no forged session cookie is accepted', signedIn === 0, String(signedIn));
 }
 
 console.log(`\nsecurity: ${passed} passed, ${failed} failed`);

@@ -6,7 +6,7 @@
  * token minted for one purpose can never be replayed as another.
  */
 
-import { b64urlDecode, b64urlEncode, randomId, te } from './util.js';
+import { b64urlDecode, b64urlEncode, isSafeKey, randomId, te } from './util.js';
 
 const keyCache = new Map();
 
@@ -105,9 +105,9 @@ export function parseCookies(request) {
     const value = part.slice(idx + 1).trim();
     if (!name) continue;
     try {
-      out[name] = decodeURIComponent(value);
+      if (isSafeKey(name)) out[name] = decodeURIComponent(value);
     } catch {
-      out[name] = value;
+      if (isSafeKey(name)) out[name] = value;
     }
   }
   return out;

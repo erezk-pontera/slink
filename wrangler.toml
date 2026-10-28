@@ -1,0 +1,90 @@
+# Cloudflare Worker configuration for the slink short-link service.
+#
+# Secrets are NOT set here. Put them in place with `wrangler secret put`,
+# which reads the value from standard input so it never appears in a shell
+# history, a process list or this file:
+#
+#   wrangler secret put AUTH_SECRET
+#   wrangler secret put turnstile-secret
+#
+# The Turnstile widget already exists; only its secret needs installing, and
+# its sitekey (not a secret) is set in [vars] below.
+
+name = "slink-redir"
+main = "index.js"
+compatibility_date = "2026-10-15"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+# The single KV namespace is the whole datastore.
+[[kv_namespaces]]
+binding = "KV"
+id = "52cdb2d7b898428ebc4ad570f7b5b32c"        # namespace "slink"
+preview_id = "a48d27dc6ebd46c3bdc05788b9aff976" # namespace "slink-dev"
+
+# Outbound sign-in codes. Email Sending must be enabled for the sending
+# domain in Cloudflare Email Service, and MAIL_FROM must be on that domain.
+[[send_email]]
+name = "EMAIL"
+
+[vars]
+# Hosts this worker serves. Apex and www. are treated as the same host.
+DOMAINS = "ptra.cc,ptra.dev"
+
+# The host that carries /admin, /login and /logout. Other hosts sign users in
+# through a signed handshake against this one.
+HUB_HOST = "ptra.dev"
+
+APP_NAME = "Slink"
+
+# Root administrators. Comma separated. These accounts cannot be demoted or
+# deleted from the admin UI.
+ADMIN = "erezk@pontera.com"
+
+# Email domains allowed to authenticate, and to create links at a host root,
+# unless a domain overrides it in the admin UI.
+DEFAULT_ALLOWED_DOMAINS = "pontera.com"
+
+# Email identity normalisation.
+#   IGNORE_EMAIL_DOT  - a.a@x.com and aa@x.com are the same account
+#   IGNORE_EMAIL_PLUS - aa+tag@x.com becomes aa@x.com
+IGNORE_EMAIL_DOT = "true"
+IGNORE_EMAIL_PLUS = "true"
+
+# The existing Turnstile widget's sitekey. Public by design; the secret is a
+# Worker secret, never a var.
+turnstile-sitekey = "REPLACE_WITH_YOUR_TURNSTILE_SITEKEY"
+
+# Sign-in code delivery. "cloudflare" uses the EMAIL binding above.
+MAIL_PROVIDER = "cloudflare"
+MAIL_FROM = "no-reply@ptra.dev"
+
+# Defaults; an administrator can change these at runtime in /admin/settings.
+OTP_TTL_SECONDS = "600"
+OTP_LENGTH = "6"
+OTP_MAX_ATTEMPTS = "5"
+SESSION_TTL_SECONDS = "604800"
+SESSION_PERMANENT = "false"
+
+# Routes. Apex and www for both zones, so every path reaches the worker.
+[[routes]]
+pattern = "ptra.cc/*"
+zone_name = "ptra.cc"
+
+[[routes]]
+pattern = "www.ptra.cc/*"
+zone_name = "ptra.cc"
+
+[[routes]]
+pattern = "ptra.dev/*"
+zone_name = "ptra.dev"
+
+[[routes]]
+pattern = "www.ptra.dev/*"
+zone_name = "ptra.dev"
+
+[observability]
+enabled = true
+
+[placement]
+mode = "smart"

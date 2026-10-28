@@ -1,0 +1,18 @@
+{
+  "name": "slink",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Short-link service for ptra.cc and ptra.dev on Cloudflare Workers",
+  "main": "index.js",
+  "scripts": {
+    "check": "./check.sh",
+    "test": "node test/run.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  }
+}

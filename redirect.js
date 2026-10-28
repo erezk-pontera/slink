@@ -223,22 +223,10 @@ export async function handleRedirect(ctx) {
   // A destination the owner chose to show in place rather than send to.
   // The capability is checked against the owner, not the visitor: the
   // visitor is usually not signed in, and it is the owner's decision.
-  if (shouldFrame(link, picked.slot) && !skip) {
+  let framing = false;
+  if (shouldFrame(link, picked.slot)) {
     const owner = link.ownerId ? await getUserById(cfg, link.ownerId) : null;
-    const permit = capabilityAllowed(cfg, 'frame', { user: owner, domain, dir });
-    if (permit.allowed) {
-      const page = framePage({ cfg, host, link, url: target });
-      return new Response(page, {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': frameCsp(target),
-          'Referrer-Policy': 'no-referrer',
-          'X-Content-Type-Options': 'nosniff',
-          'Cache-Control': 'no-store, max-age=0',
-        },
-      });
-    }
+    framing = capabilityAllowed(cfg, 'frame', { user: owner, domain, dir }).allowed;
   }
 
   if (behaviour.show && !skip) {
@@ -255,8 +243,30 @@ export async function handleRedirect(ctx) {
         delay: behaviour.delay,
         showTarget: behaviour.showTarget,
         continueHref,
+        // A framed link must come back through us rather than leave, or the
+        // countdown would be a way round the frame.
+        returnHere: framing,
       })
     );
+  }
+
+  // Framing is settled after the countdown and without regard to the
+  // continue flag. Honouring the flag here made `?slink-go=1` a way to turn
+  // a framed link back into a plain redirect, which handed out the very
+  // destination the frame is there to keep in place.
+  if (framing) {
+    const page = framePage({ cfg, host, link, url: target });
+    const response = harden(
+      new Response(page, {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      }),
+      { referrerPolicy: 'no-referrer' }
+    );
+    // harden() writes the ordinary policy; this page needs one that names
+    // the single origin it is allowed to frame.
+    response.headers.set('Content-Security-Policy', frameCsp(target));
+    return response;
   }
   return redirectResponse(target, status);
 }

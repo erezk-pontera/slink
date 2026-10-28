@@ -19,7 +19,7 @@ import {
   previewBlockedReason,
   previewCard,
 } from './preview.js';
-import { ALL_SLOTS, normalizeFrame, normalizeRouting, SLOT_LABELS } from './targets.js';
+import { ALL_SLOTS, allDestinations, normalizeFrame, normalizeRouting, SLOT_LABELS } from './targets.js';
 import { resolveDomain } from './domains.js';
 import { capabilityAllowed, describeCapability } from './capabilities.js';
 import { createEverywhere, moveLink } from './linkmove.js';
@@ -52,7 +52,13 @@ import {
   putLink,
   readClickHistory,
 } from './links.js';
-import { parseDestination, parsePath, RESERVED_PATHS, ValidationError } from './paths.js';
+import {
+  destinationUserinfo,
+  parseDestination,
+  parsePath,
+  RESERVED_PATHS,
+  ValidationError,
+} from './paths.js';
 import {
   canCreate,
   canManageLink,
@@ -747,6 +753,15 @@ function qrCard(host, link, url) {
 </div>`;
 }
 
+/** The host a destination actually resolves to, for the masking warning. */
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 /* ----------------------------------------------------------------- edit */
 
 async function editForm(ctx, { error, info } = {}) {
@@ -794,8 +809,25 @@ async function editForm(ctx, { error, info } = {}) {
   const shortUrl = 'https://' + host + '/' + link.path;
   const mayReadonly = canSetReadonly(cfg, ctx.session.user);
 
+  // A destination whose authority carries a username reads as one host and
+  // goes to another. It is sometimes meant, so it is said out loud rather
+  // than refused.
+  const masked = allDestinations(link)
+    .map((url) => ({ url, user: destinationUserinfo(url) }))
+    .filter((d) => d.user);
+  const maskWarning = masked.length
+    ? alert(
+        'error',
+        'Check the destination: ' +
+          masked
+            .map((d) => `"${d.user}" before the @ is not where this goes; the host is ` + hostOf(d.url))
+            .join('; ') +
+          '.'
+      )
+    : '';
+
   const body = `
-${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
+${flashFrom(url)}${alert('error', error)}${alert('ok', info)}${maskWarning}
 <h1>${esc(host)}/${esc(link.path)}</h1>
 <p class="sub">${statusBadges(link) || 'Active'} &middot; created ${esc(fmtTime(link.createdAt))} &middot; ${esc(
     clicks

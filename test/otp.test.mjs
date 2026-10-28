@@ -92,6 +92,13 @@ ok('a non-ASCII host is still punycoded',
    parseDestination('https://\u4f8b\u3048.\u30c6\u30b9\u30c8/x').target.includes('xn--'));
 ok('a default port is still dropped', parseDestination('https://Ex.com:443/x').target === 'https://Ex.com/x');
 ok('dot segments are still resolved', parseDestination('https://Ex.com/a/../b').target === 'https://Ex.com/b');
+// A password in the authority would be stored in the clear, logged and put
+// into the QR code, so it is refused rather than kept.
+ok('a password in a destination is refused',
+   (() => { try { parseDestination('https://u:p@ex.com/'); return false; } catch { return true; } })());
+ok('a username alone is kept but reported',
+   parseDestination('https://trusted.example@evil.example/').userinfo === 'trusted.example');
+ok('an ordinary destination reports none', parseDestination('https://ex.com/').userinfo === '');
 
 const dangerous = ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,<script>', 'vbscript:x', 'file:///etc/passwd'];
 ok('dangerous schemes all rejected',

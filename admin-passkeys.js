@@ -18,6 +18,7 @@ import { checkCsrf, safeNext, createSession, tokenFor, mayAuthenticate } from '.
 import { clientIp, geoCheck, geoMessage } from './geo.js';
 import {
   CHALLENGE_TTL_SECONDS,
+  cleanName,
   deletePasskey,
   getPasskey,
   listPasskeys,
@@ -33,8 +34,8 @@ import {
 import * as rl from './ratelimit.js';
 import { getUserByNorm, isAdmin, putUser } from './users.js';
 import { esc, fmtTime, now } from './util.js';
-import { alert } from './views.js';
-import { ALGORITHMS, fromB64Url, verifyAssertion, verifyRegistration } from './webauthn.js';
+import { alert, csrfField, hidden } from './views.js';
+import { ALGORITHMS, fromB64Url, RS256, verifyAssertion, verifyRegistration } from './webauthn.js';
 
 /** The largest JSON body any of these endpoints legitimately produces. */
 const MAX_BODY = 32 * 1024;
@@ -210,7 +211,7 @@ export async function registerFinish(ctx) {
  * already knows which keys it holds for this site.
  */
 export async function loginBegin(ctx) {
-  const { cfg, domain } = ctx;
+  const { cfg } = ctx;
   if (ctx.session) return json({ error: 'Already signed in.' }, 400);
 
   const body = await readJson(ctx.request);
@@ -218,12 +219,13 @@ export async function loginBegin(ctx) {
   const guard = await guardJson(ctx, 'passkey.login', body);
   if (!guard.ok) return json({ error: 'That request could not be verified.' }, 403);
 
-  // Whether the host offers passkeys at all is public; whether a particular
-  // person may use one is not, and is settled at the finish.
-  if (!passkeysEnabled(cfg, domain)) {
-    return json({ error: 'Passkeys are not offered on this domain.' }, 400);
-  }
-
+  // No policy check here, deliberately. A challenge is 32 random bytes and
+  // says nothing about anyone, while the account doing the signing in is
+  // not known until the assertion comes back - that is what a discoverable
+  // credential means. Refusing here would also take the passkey away from
+  // an administrator on a host that has switched them off, and an
+  // administrator keeps every method. The policy is applied at the finish,
+  // where there is an account to apply it to.
   const { challenge, token } = await mintChallenge(cfg, { kind: 'get' });
   return json({ challenge, token, timeout: CHALLENGE_TTL_SECONDS * 1000, rpId: rpId(cfg) });
 }
@@ -347,32 +349,28 @@ export async function passkeysPage(ctx, { error, info } = {}) {
   const rows = keys
     .map(
       (key) => `<tr>
-      <td>
-        <form method="post" action="/admin/passkeys" class="inline">
-          <input type="hidden" name="_csrf" value="${esc(token)}">
-          <input type="hidden" name="id" value="${esc(key.id)}">
-          <input type="hidden" name="action" value="rename">
+      <td class="tools">
+        <form method="post" action="/admin/passkeys">
+          ${csrfField(token)}${hidden('id', key.id)}${hidden('action', 'rename')}
           <label class="visually-hidden" for="f_pk_${esc(key.id)}">Name</label>
-          <input id="f_pk_${esc(key.id)}" name="name" value="${esc(key.name)}"
-                 maxlength="${MAX_NAME}" required>
-          <button type="submit" class="secondary">Rename</button>
+          <input id="f_pk_${esc(key.id)}" type="text" name="name" value="${esc(key.name)}"
+                 maxlength="${MAX_NAME}" spellcheck="false" required>
+          <button type="submit" class="link">Rename</button>
         </form>
       </td>
-      <td>${esc(key.alg === -257 ? 'RSA' : 'EC P-256')}</td>
-      <td>${esc(fmtTime(key.createdAt))}</td>
-      <td>${key.lastUsedAt ? esc(fmtTime(key.lastUsedAt)) : '—'}</td>
-      <td>${
+      <td>${key.alg === RS256 ? 'RSA' : 'EC P-256'}${
         key.cloneWarning
-          ? '<span class="badge off" title="This key’s counter went backwards, which can mean it has been copied.">Check this key</span>'
+          ? ' <span class="badge off" title="The counter on this key went backwards, which can mean it has been copied. Remove it if that was not expected.">check this one</span>'
           : ''
       }</td>
-      <td>
-        <form method="post" action="/admin/passkeys" class="inline"
+      <td>${esc(fmtTime(key.createdAt))}</td>
+      <td>${key.lastUsedAt ? esc(fmtTime(key.lastUsedAt)) : '—'}</td>
+      <td class="num">${key.useCount || 0}</td>
+      <td class="tools">
+        <form method="post" action="/admin/passkeys"
               data-confirm="Remove ${esc(key.name)}? You will not be able to sign in with it again.">
-          <input type="hidden" name="_csrf" value="${esc(token)}">
-          <input type="hidden" name="id" value="${esc(key.id)}">
-          <input type="hidden" name="action" value="delete">
-          <button type="submit" class="danger">Remove</button>
+          ${csrfField(token)}${hidden('id', key.id)}${hidden('action', 'delete')}
+          <button type="submit" class="link">Remove</button>
         </form>
       </td>
     </tr>`
@@ -391,7 +389,8 @@ device already has, instead of waiting for a code.</p>
   ${
     rows
       ? `<div class="tablewrap"><table>
-          <thead><tr><th>Name</th><th>Type</th><th>Added</th><th>Last used</th><th></th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Type</th><th>Added</th><th>Last used</th>
+            <th class="num">Uses</th><th></th></tr></thead>
           <tbody>${rows}</tbody></table></div>`
       : '<div class="empty">You have not added a passkey yet.</div>'
   }
@@ -405,7 +404,8 @@ device already has, instead of waiting for a code.</p>
       : `<noscript><p class="hint">Adding a passkey needs JavaScript. The emailed code works without it.</p></noscript>
   <div class="field">
     <label for="f_pk_new">Name this key</label>
-    <input id="f_pk_new" data-slink-passkey-name value="This device" maxlength="${MAX_NAME}">
+    <input id="f_pk_new" type="text" data-slink-passkey-name value="This device"
+           maxlength="${MAX_NAME}" spellcheck="false">
     <p class="hint">Only you see this. Something like &ldquo;work laptop&rdquo; makes it easy to
     tell which one to remove later.</p>
   </div>
@@ -456,9 +456,9 @@ async function manageSubmit(ctx) {
     return back('/admin/passkeys', 'passkey.removed');
   }
 
-  const name = String(body.get('name') || '').slice(0, MAX_NAME).trim();
-  if (!name) return back('/admin/passkeys', 'passkey.noname');
-  key.name = name;
+  const raw = String(body.get('name') || '').trim();
+  if (!raw) return back('/admin/passkeys', 'passkey.noname');
+  key.name = cleanName(raw);
   await putPasskey(ctx.cfg, key);
   return back('/admin/passkeys', 'passkey.renamed');
 }

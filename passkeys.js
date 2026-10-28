@@ -14,7 +14,7 @@
 import { K } from './kv.js';
 import { methodsFor } from './oauth.js';
 import { signToken, verifyToken } from './security.js';
-import { b64urlEncode, now, randomId } from './util.js';
+import { b64urlEncode, now, randomId, sha256Hex } from './util.js';
 
 /** How long a registration or sign-in challenge stays good for. */
 export const CHALLENGE_TTL_SECONDS = 300;
@@ -59,6 +59,15 @@ export async function openChallenge(cfg, token, { kind, userId = null }) {
 
 /* ------------------------------------------------------------- storage */
 
+/** A display name with control characters and surrounding space removed. */
+export function cleanName(raw) {
+  const value = String(raw == null ? '' : raw)
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .slice(0, MAX_NAME)
+    .trim();
+  return value || 'Passkey';
+}
+
 export function newPasskey(user, { credentialId, publicKey, alg, signCount, name }) {
   const ts = now();
   return {
@@ -69,7 +78,7 @@ export function newPasskey(user, { credentialId, publicKey, alg, signCount, name
     publicKey,
     alg,
     signCount: signCount || 0,
-    name: String(name || '').slice(0, MAX_NAME) || 'Passkey',
+    name: cleanName(name),
     createdAt: ts,
     lastUsedAt: 0,
     useCount: 0,
@@ -78,29 +87,41 @@ export function newPasskey(user, { credentialId, publicKey, alg, signCount, name
   };
 }
 
+/**
+ * The KV key a credential is found under.
+ *
+ * A credential id may be up to 1023 bytes, which is 1366 characters of
+ * base64url and well past the 512-byte limit on a KV key. Hashing it keeps
+ * the key a fixed size whatever the authenticator sends, and sign-in is
+ * still one read because the hash is computed from what the browser gives
+ * us. The full id is kept inside the record.
+ */
+async function credentialKey(credentialId) {
+  return K.passkey(await sha256Hex(credentialId));
+}
+
 export async function putPasskey(cfg, key) {
-  await cfg.store.put(K.passkey(key.credentialId), key);
+  await cfg.store.put(await credentialKey(key.credentialId), key);
   await cfg.store.put(K.userPasskey(key.userId, key.id), key.credentialId);
   return key;
 }
 
 export async function getPasskey(cfg, credentialId) {
   if (!credentialId || typeof credentialId !== 'string' || credentialId.length > 1400) return null;
-  return cfg.store.get(K.passkey(credentialId));
+  return cfg.store.get(await credentialKey(credentialId));
 }
 
 export async function listPasskeys(cfg, userId) {
   const prefix = K.userPasskeyPrefix(userId);
   const keys = await cfg.store.listAll(prefix, { max: MAX_PASSKEYS * 2 });
   const ids = await cfg.store.getMany(keys.map((k) => k.name));
-  const records = await cfg.store.getMany(
-    ids.filter(Boolean).map((credentialId) => K.passkey(credentialId))
-  );
+  const wanted = await Promise.all(ids.filter(Boolean).map((id) => credentialKey(id)));
+  const records = await cfg.store.getMany(wanted);
   return records.filter(Boolean).sort((a, b) => a.createdAt - b.createdAt);
 }
 
 export async function deletePasskey(cfg, key) {
-  await cfg.store.delete(K.passkey(key.credentialId));
+  await cfg.store.delete(await credentialKey(key.credentialId));
   await cfg.store.delete(K.userPasskey(key.userId, key.id));
 }
 

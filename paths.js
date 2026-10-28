@@ -142,6 +142,24 @@ export function keepTypedCase(typed, normalized) {
 }
 
 /**
+ * The username in a destination's authority, or ''.
+ *
+ * `https://trusted.example@evil.example/` reads as the trusted host to
+ * almost everybody, while the browser goes to the second one. Nothing here
+ * refuses it - it is occasionally meant - but a screen showing a
+ * destination should be able to say so.
+ */
+export function destinationUserinfo(target) {
+  const value = String(target || '');
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) return '';
+  try {
+    return decodeURIComponent(new URL(value).username || '');
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Canonicalise a destination. A bare value gets an https:// prefix; anything
  * carrying an explicit scheme (`mailto:`, `slack://`, `ts3server:`) is kept.
  *
@@ -160,6 +178,9 @@ export function parseDestination(raw, { blockedSchemes = [] } = {}) {
   }
 
   let out;
+  // A username in the authority, which is the shape that makes
+  // `https://trusted.example@evil.example/` read as the wrong host.
+  let userinfo = '';
   if (SCHEME_RE.test(value)) out = value;
   else if (value.startsWith('//')) out = 'https:' + value;
   else out = 'https://' + value;
@@ -186,12 +207,22 @@ export function parseDestination(raw, { blockedSchemes = [] } = {}) {
       throw new ValidationError('Destination is not a valid URL.', 'target');
     }
     if (!parsed.hostname) throw new ValidationError('Destination has no host.', 'target');
+    // A password in the authority would be stored here in the clear, shown
+    // on the edit screen, written into the audit log and encoded into the
+    // QR code. None of that is somewhere a password belongs.
+    if (parsed.password) {
+      throw new ValidationError(
+        'A destination cannot carry a password. Use a link without credentials in it.',
+        'target'
+      );
+    }
+    userinfo = decodeURIComponent(parsed.username || '');
     out = keepTypedCase(out, parsed.toString());
   }
 
   // A header value must not be able to inject a second header.
   if (/[\r\n]/.test(out)) throw new ValidationError('Destination is not valid.', 'target');
-  return { target: out, scheme };
+  return { target: out, scheme, userinfo };
 }
 
 /* -------------------------------------------------------------------- email */

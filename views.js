@@ -230,24 +230,25 @@ export function loginPage({
   </div>`
     : '';
 
-  // The passkey button stays hidden until the script has confirmed this
-  // browser can actually use one, so nobody is shown a control that leads
-  // nowhere. Without JavaScript it never appears, and the code below it is
-  // the way in.
-  const passkey =
-    methods.passkey && passkeyCsrf
-      ? `<div class="sso" data-slink-passkey-login data-token="${esc(passkeyCsrf)}"
-       data-next="${esc(next || '/admin')}">
-    <button type="button" class="btn secondary" data-slink-passkey-go hidden>Sign in with a passkey</button>
-    <p class="hint" data-slink-passkey-msg role="status"></p>
-  </div>`
-      : '';
-
   // With the code switched off, single sign-on is the only way in and the
   // page should not present a form that cannot succeed.
-  const divider = (methods.oauth || methods.passkey) && methods.otp
-    ? '<p class="divider"><span>or</span></p>'
-    : '';
+  const rule = '<p class="divider"><span>or</span></p>';
+  const divider = methods.oauth && methods.otp ? rule : '';
+
+  // The whole passkey block stays hidden until the script has confirmed
+  // this browser can use one, its own divider included, so a visitor
+  // without JavaScript is never shown a stray rule above a control that
+  // was never going to appear.
+  const passkey =
+    methods.passkey && passkeyCsrf
+      ? `<div data-slink-passkey-login data-token="${esc(passkeyCsrf)}"
+       data-next="${esc(next || '/admin')}" hidden>
+    <div class="sso">
+      <button type="button" class="btn secondary" data-slink-passkey-go>Sign in with a passkey</button>
+    </div>
+    <p class="hint" data-slink-passkey-msg role="status"></p>${methods.otp ? rule : ''}
+  </div>`
+      : '';
   const byEmail = methods.otp
     ? `<p class="sub">We will email you a ${cfg.settings.otpLength}-digit code.</p>
   <form method="post" action="/admin" data-no-busy>
@@ -415,11 +416,14 @@ export function interstitialPage({
   delay,
   showTarget = true,
   continueHref,
+  returnHere = false,
 }) {
   const home = adminUrl(cfg, host);
   // Where the page sends the visitor. With the destination hidden this is a
   // path on this host, so the real target appears nowhere in the markup.
-  const go = showTarget ? target : continueHref;
+  // A framed link comes back here too even when the destination is shown,
+  // because leaving straight for it would skip the frame.
+  const go = showTarget && !returnHere ? target : continueHref;
 
   const body = `
 <div class="card center">

@@ -437,6 +437,28 @@ main one forbids.
 create form. It needs the same standing as editing the original, since the
 copy reveals everything the original holds.
 
+**Framing.** Any slot, the default included, can be marked to show its
+destination inside a frame instead of redirecting to it. The address bar
+then stays on the short link - `ptra.cc/aa` keeps reading `ptra.cc/aa`
+while the destination fills the page - on the apex and on `www` alike, and
+on every domain the shortcut exists on. The capability is resolved against
+the link's *owner*, not the visitor, because the visitor is usually not
+signed in and it is the owner's decision to make; an administrator's link
+therefore keeps framing when a domain withdraws the capability from
+everyone else. The countdown, where a domain has one, still runs first and
+then comes back here rather than leaving for the destination, and the
+continue flag cannot be used to turn a framed link into a plain redirect.
+The frame is sandboxed, carries no referrer, and the page's
+`frame-src` names the destination's origin and nothing else. A destination
+that refuses to be framed shows the warning and a direct link instead, so
+the feature is best treated as a convenience rather than a guarantee.
+
+**A destination cannot carry a password.** `https://user:secret@host/` is
+refused: it would be stored in the clear, shown on the edit screen, written
+into the audit log and encoded into the QR code. A bare username is kept,
+because it is occasionally meant, but the editor says plainly that
+`https://trusted.example@evil.example/` goes to the second host.
+
 ## Preview cards
 
 When something like Slack or Twitter unfurls a short link it follows the

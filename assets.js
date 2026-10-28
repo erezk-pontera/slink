@@ -11,7 +11,7 @@ import { LOGO_SVG } from './logo.js';
 export const ASSET_PREFIX = '/__slink';
 
 /** Bumped whenever the asset bodies change; used for immutable caching. */
-export const ASSET_VERSION = '7';
+export const ASSET_VERSION = '8';
 
 export const CSS = `
 :root{
@@ -147,7 +147,8 @@ footer.foot div+div{margin-top:4px}
 .ogtitle{font-weight:600;margin:2px 0}
 .ogdesc{font-size:13px;color:var(--muted)}
 .tools{display:flex;gap:7px;flex-wrap:wrap}
-.tools form{display:inline}
+.tools form{display:inline-flex;gap:6px;align-items:center}
+.tools input[type=text]{width:auto;min-width:9rem;padding:5px 8px;font-size:13px}
 @media (max-width:620px){
   .wrap{padding:12px}
   header.top .wrap{gap:8px}
@@ -332,11 +333,15 @@ export const JS = `
 
   // Adding a passkey, on the account's own page.
   var add = document.querySelector('[data-slink-passkey-add]');
-  if (add && hasWebAuthn()) {
+  if (add) {
     var addBtn = add.querySelector('[data-slink-passkey-go]');
     var addMsg = add.querySelector('[data-slink-passkey-msg]');
     var nameField = add.querySelector('[data-slink-passkey-name]');
-    if (addBtn) {
+    // Say so rather than leaving a field with no button beside it.
+    if (!hasWebAuthn() && addMsg) {
+      addMsg.textContent = 'This browser cannot use passkeys. The emailed code still works.';
+    }
+    if (addBtn && hasWebAuthn()) {
       addBtn.hidden = false;
       addBtn.addEventListener('click', function () {
         addBtn.disabled = true;
@@ -390,13 +395,15 @@ export const JS = `
     }
   }
 
-  // Signing in with a passkey, on the sign-in page.
+  // Signing in with a passkey, on the sign-in page. The whole block is
+  // revealed at once, so a browser that cannot do this shows nothing at
+  // all rather than a dead control.
   var login = document.querySelector('[data-slink-passkey-login]');
   if (login && hasWebAuthn()) {
     var inBtn = login.querySelector('[data-slink-passkey-go]');
     var inMsg = login.querySelector('[data-slink-passkey-msg]');
     if (inBtn) {
-      inBtn.hidden = false;
+      login.hidden = false;
       inBtn.addEventListener('click', function () {
         inBtn.disabled = true;
         if (inMsg) inMsg.textContent = 'Follow your device’s prompt…';

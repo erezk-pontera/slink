@@ -57,8 +57,8 @@ async function enrol(agent, auth, { name = 'Test key' } = {}) {
 }
 
 /** Sign in with a key on a fresh browser. Returns the finishing response. */
-async function signInWith(agent, auth, { next, mutate } = {}) {
-  const page = await (await agent.req(HUB + '/admin')).text();
+async function signInWith(agent, auth, { next, mutate, from = '/admin' } = {}) {
+  const page = await (await agent.req(HUB + from)).text();
   const csrf = dataToken(page, 'data-slink-passkey-login');
   const begin = await agent.req(HUB + '/__slink/passkey/login/begin', { json: { _csrf: csrf } });
   const opts = await begin.json();
@@ -275,7 +275,12 @@ section('signing in with it');
   const browser = peer(root);
   const login = await (await browser.req(HUB + '/admin')).text();
   ok('the sign-in page offers a passkey', login.includes('data-slink-passkey-login'));
-  ok('the button starts hidden', /data-slink-passkey-go hidden/.test(login));
+  // Hidden until the script says this browser can use one, divider and all,
+  // so no-JavaScript sees no stray rule above a control that never appears.
+  ok('the whole block starts hidden', /data-slink-passkey-login[^>]*hidden/.test(login));
+  ok('and the divider is inside it',
+     login.indexOf('class="divider"') > login.indexOf('data-slink-passkey-login') &&
+     login.indexOf('class="divider"') < login.indexOf('</div>', login.indexOf('data-slink-passkey-msg')));
   ok('the emailed code is still offered', login.includes('name="email"'));
 
   const r = await signInWith(browser, mainAuth, { next: '/admin/links' });
@@ -494,15 +499,52 @@ section('a host may switch them off');
   const guest = peer(root);
   const page = await (await guest.req(HUB + '/admin')).text();
   ok('the button is gone from the page', !page.includes('data-slink-passkey-login'));
+  ok('but an administrator can still reach it',
+     (await (await peer(root).req(HUB + '/admin?otp=1')).text()).includes('data-slink-passkey-login'));
 
-  // The endpoint refuses even when asked directly, with a token taken from
-  // the page while it was still on offer.
-  const r = await guest.req(HUB + '/__slink/passkey/login/begin', { json: { _csrf: 'x' } });
-  ok('and the endpoint refuses', r.status !== 200);
+  // An ordinary person's key is refused at the finish, where there is an
+  // account to apply the policy to. The challenge itself is still handed
+  // out, because it says nothing about anyone and the request carries no
+  // identity yet.
+  const person = peer(root);
+  await person.signIn('policy@pontera.com');
+  const theirs = await makeAuthenticator();
+  await enrol(person, theirs, { name: 'Ordinary' });
+  const refused = peer(root);
+  const r = await signInWith(refused, theirs, { from: '/admin?otp=1' });
+  ok('an ordinary account cannot use one while they are off', r.finish.status === 400,
+     String(r.finish.status));
+
+  // An administrator can, which is the whole point of the exemption.
+  const adminAuth = await makeAuthenticator();
+  await enrol(root, adminAuth, { name: 'Admin key' });
+  const adminBrowser = peer(root);
+  const allowed = await signInWith(adminBrowser, adminAuth, { from: '/admin?otp=1' });
+  ok('an administrator still can', allowed.body.ok === true, JSON.stringify(allowed.body));
 
   await setDomain({});
   const back = await (await peer(root).req(HUB + '/admin')).text();
   ok('turning it back on restores the button', back.includes('data-slink-passkey-login'));
+}
+
+section('signing in cannot be aimed somewhere else');
+{
+  const auth = await makeAuthenticator();
+  const person = peer(root);
+  await person.signIn('aimed@pontera.com');
+  await enrol(person, auth, { name: 'Aimed' });
+
+  for (const [next, want] of [
+    ['https://evil.example/', '/admin'],
+    ['//evil.example/', '/admin'],
+    ['/admin\r\nX: 1', '/admin'],
+    ['/admin/links', '/admin/links'],
+    ['not-a-path', '/admin'],
+  ]) {
+    const browser = peer(root);
+    const r = await signInWith(browser, auth, { next });
+    ok(`next ${JSON.stringify(next)} lands on ${want}`, r.body.next === want, String(r.body.next));
+  }
 }
 
 /* ---------------------------------------------------- 8. the endpoints */
@@ -584,6 +626,48 @@ section('impersonation stops at the door');
 
   const begin = await root.req(HUB + prefix + '/passkeys/register/begin', { json: { _csrf: 'x' } });
   ok('registering from an impersonated view is refused', begin.status === 403, String(begin.status));
+}
+
+/* ------------------------------------------- 9b. awkward credentials */
+section('an awkward credential is still handled');
+{
+  const person = peer(root);
+  await person.signIn('seventh@pontera.com');
+
+  // The specification allows a credential id of up to 1023 bytes, which is
+  // 1366 characters of base64url - far past the 512-byte limit on a KV key.
+  const long = await makeAuthenticator({ idBytes: 1023 });
+  const r = await enrol(person, long, { name: 'Long id' });
+  ok('a 1023-byte credential id registers', r.finish.status === 200, JSON.stringify(r.body));
+  ok('and it is listed', (await (await person.req(HUB + '/admin/passkeys')).text()).includes('Long id'));
+  const back = peer(root);
+  ok('and it signs in', (await signInWith(back, long)).body.ok === true);
+
+  // One byte past the specification is refused by the parser, not stored.
+  const tooLong = await makeAuthenticator({ idBytes: 1024 });
+  const over = await enrol(person, tooLong, { name: 'Too long' });
+  ok('a longer one is refused', over.finish.status === 400, String(over.finish.status));
+
+  // A name is never trusted into the page.
+  const nasty = await makeAuthenticator();
+  const payload = '"><img src=x onerror=alert(1)>';
+  await enrol(person, nasty, { name: payload });
+  const page = await (await person.req(HUB + '/admin/passkeys')).text();
+  ok('a name with markup comes back escaped', !page.includes(payload));
+  ok('and the escaped form is there', page.includes('&quot;&gt;&lt;img'));
+  ok('no attribute was broken out of', !/<img src=x onerror/.test(page));
+
+  // Control characters never reach an attribute.
+  const control = await makeAuthenticator();
+  await enrol(person, control, { name: 'a\u0000b\nc' });
+  const page2 = await (await person.req(HUB + '/admin/passkeys')).text();
+  ok('control characters are stripped', !/value="[^"]*[\u0000-\u001f]/.test(page2));
+
+  // An empty name falls back rather than rendering nothing.
+  const blank = await makeAuthenticator();
+  await enrol(person, blank, { name: '   ' });
+  ok('a blank name gets a default',
+     (await (await person.req(HUB + '/admin/passkeys')).text()).includes('value="Passkey"'));
 }
 
 /* ------------------------------------------------------- 10. the cap */

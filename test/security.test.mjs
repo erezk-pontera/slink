@@ -462,6 +462,38 @@ section('what an identity provider says is not taken on trust');
      signedIn === 0, String(signedIn));
 }
 
+section('credentials never live in a destination');
+{
+  const tok = Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+  const r = await admin.req('https://ptra.dev/admin/links/new', {
+    form: { _csrf: tok, host: 'ptra.cc', path: 'creds', target: 'https://u:hunter2@ex.com/',
+            status: '302' },
+  });
+  ok('a destination carrying a password is refused', r.status === 200);
+  ok('and says why', (await r.text()).includes('cannot carry a password'));
+
+  // Nothing was stored, so the shortcut falls through to the host's own
+  // MISSING destination rather than to ex.com.
+  const check = await admin.req('https://ptra.cc/creds');
+  ok('so nothing was stored', !(check.headers.get('Location') || '').includes('ex.com'),
+     check.status + ' ' + check.headers.get('Location'));
+}
+
+section('a destination that masks its host says so');
+{
+  const tok = Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+  await admin.req('https://ptra.dev/admin/links/new', {
+    form: { _csrf: tok, host: 'ptra.cc', path: 'masked',
+            target: 'https://pontera.example@evil.example/x', status: '302' },
+  });
+  const page = await (await admin.req('https://ptra.dev/admin/links/edit?host=ptra.cc&path=masked')).text();
+  ok('the editor warns', page.includes('is not where this goes'));
+  ok('and names the real host', page.includes('the host is evil.example'));
+  const warning = (page.match(/<div class="alert err"[^>]*>([^<]*)<\/div>/) || [])[1] || '';
+  ok('the warning is escaped like everything else',
+     warning.includes('&quot;pontera.example&quot;'), warning.slice(0, 60));
+}
+
 console.log(`\nsecurity: ${passed} passed, ${failed} failed`);
 admin.restore();
 if (failed) process.exit(1);

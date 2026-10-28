@@ -60,7 +60,7 @@ function rawToDer(raw) {
   return cat(new Uint8Array([0x30, body.length]), body);
 }
 
-export async function makeAuthenticator({ alg = -7, rpId = 'ptra.dev' } = {}) {
+export async function makeAuthenticator({ alg = -7, rpId = 'ptra.dev', idBytes = 32 } = {}) {
   const pair =
     alg === -7
       ? await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
@@ -75,7 +75,12 @@ export async function makeAuthenticator({ alg = -7, rpId = 'ptra.dev' } = {}) {
           ['sign', 'verify']
         );
   const jwk = await webcrypto.subtle.exportKey('jwk', pair.publicKey);
-  const credentialId = webcrypto.getRandomValues(new Uint8Array(32));
+  const credentialId = new Uint8Array(idBytes);
+  // getRandomValues takes at most 65536 bytes, and a credential id is far
+  // smaller than that, but fill it in chunks so the cap is never the issue.
+  for (let at = 0; at < idBytes; at += 1024) {
+    webcrypto.getRandomValues(credentialId.subarray(at, Math.min(at + 1024, idBytes)));
+  }
   const cose =
     alg === -7
       ? new Map([

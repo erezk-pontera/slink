@@ -48,8 +48,9 @@ export const K = {
   grantPrefix: (host, dirPathLc) => 'grt:' + host + SEP + dirPathLc + SEP,
   userGrant: (userId, host, dirPathLc) => 'ugr:' + userId + SEP + host + SEP + dirPathLc,
   userGrantPrefix: (userId) => 'ugr:' + userId + SEP,
-  /** A passkey, keyed by its credential id so sign-in is one read. */
-  passkey: (credentialId) => 'pky:' + credentialId,
+  /** A passkey, keyed by a hash of its credential id so sign-in is one
+   *  read and the key stays within the 512-byte limit. */
+  passkey: (credentialHash) => 'pky:' + credentialHash,
   /** The reverse index, so an account's keys can be listed. */
   userPasskey: (userId, id) => 'upk:' + userId + SEP + id,
   userPasskeyPrefix: (userId) => 'upk:' + userId + SEP,

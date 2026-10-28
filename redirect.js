@@ -23,6 +23,7 @@ import {
   passwordMatches,
   UNLOCK_TTL_SECONDS,
 } from './linkpass.js';
+import { keepTypedCase } from './paths.js';
 import { deviceClass, resolveTarget, shouldFrame } from './targets.js';
 import { checkCsrf, csrfCookie, tokenFor } from './auth.js';
 import { getUserById } from './users.js';
@@ -71,7 +72,9 @@ export function applyQuery(target, incoming) {
   for (const [key, value] of extra) {
     if (!url.searchParams.has(key)) url.searchParams.append(key, value);
   }
-  return url.toString();
+  // Re-serialising through URL would lowercase the host, which the
+  // destination was deliberately stored without.
+  return keepTypedCase(target, url.toString());
 }
 
 /** Drop our own continue flag so it is never forwarded to a destination. */

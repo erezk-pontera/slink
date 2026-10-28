@@ -253,11 +253,16 @@ export function harden(
   h.set('Cross-Origin-Opener-Policy', 'same-origin');
   h.set('Cross-Origin-Resource-Policy', 'same-origin');
   h.set('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+  // Everything is denied outright except the two WebAuthn features, which
+  // are allowed to this origin alone: the hub needs them to register and
+  // use a passkey, and `self` still refuses to delegate them to an embedded
+  // cross-origin page, which is what the directive is really guarding.
   h.set(
     'Permissions-Policy',
     'accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), ' +
       'fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), ' +
-      'midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), usb=(), xr-spatial-tracking=()'
+      'midi=(), payment=(), publickey-credentials-create=(self), publickey-credentials-get=(self), ' +
+      'screen-wake-lock=(), usb=(), xr-spatial-tracking=()'
   );
   if (!store) h.set('Cache-Control', 'no-store, max-age=0');
   h.set('X-Robots-Tag', 'noindex, nofollow, noarchive');

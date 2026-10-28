@@ -85,8 +85,71 @@ export function parsePath(raw, { reserved = RESERVED_PATHS, allowReserved = fals
 }
 
 /**
+ * `new URL()` lowercases the scheme and the host, and changes the case of
+ * nothing else. This puts those two back exactly as they were typed, so a
+ * destination is stored the way it was entered, while everything else the
+ * parser produced is kept - percent-encoding, punycode, a dropped default
+ * port - because a Location header needs those.
+ *
+ * Where the parser changed the authority by more than case it keeps the
+ * parser's version: that difference is an encoding, not a case difference,
+ * and undoing it would break the URL.
+ */
+export function keepTypedCase(typed, normalized) {
+  const split = (value) => {
+    const at = value.indexOf('://');
+    if (at < 0) return null;
+    const rest = value.slice(at + 3);
+    const end = rest.search(/[/?#]/);
+    return {
+      scheme: value.slice(0, at),
+      authority: end < 0 ? rest : rest.slice(0, end),
+      tail: end < 0 ? '' : rest.slice(end),
+    };
+  };
+  // The host within an authority, leaving aside any userinfo and port.
+  const hostOf = (authority) => {
+    const afterUser = authority.slice(authority.lastIndexOf('@') + 1);
+    const colon = afterUser.lastIndexOf(':');
+    const bracket = afterUser.lastIndexOf(']');
+    return colon > bracket ? afterUser.slice(0, colon) : afterUser;
+  };
+
+  const typedParts = split(typed);
+  const normalParts = split(normalized);
+  if (!typedParts || !normalParts) return normalized;
+
+  const scheme =
+    typedParts.scheme.toLowerCase() === normalParts.scheme.toLowerCase()
+      ? typedParts.scheme
+      : normalParts.scheme;
+
+  let authority = normalParts.authority;
+  if (typedParts.authority.toLowerCase() === authority.toLowerCase()) {
+    authority = typedParts.authority;
+  } else {
+    // The authority changed by more than case - a dropped default port, an
+    // encoded userinfo - so the parser's version stands, except for the
+    // host inside it, which is put back when only its case moved.
+    const typedHost = hostOf(typedParts.authority);
+    const normalHost = hostOf(authority);
+    if (typedHost.toLowerCase() === normalHost.toLowerCase() && typedHost !== normalHost) {
+      const at = authority.lastIndexOf(normalHost);
+      authority = authority.slice(0, at) + typedHost + authority.slice(at + normalHost.length);
+    }
+  }
+  return scheme + '://' + authority + normalParts.tail;
+}
+
+/**
  * Canonicalise a destination. A bare value gets an https:// prefix; anything
  * carrying an explicit scheme (`mailto:`, `slack://`, `ts3server:`) is kept.
+ *
+ * Nothing here changes the case of what was typed. A shortcut is lowercased,
+ * because that is ours to define and people type it from memory; a
+ * destination belongs to somebody else's service, and the only safe
+ * assumption about any part of it - host included - is that it is theirs
+ * exactly as given.
  */
 export function parseDestination(raw, { blockedSchemes = [] } = {}) {
   const value = String(raw ?? '').trim();
@@ -101,12 +164,10 @@ export function parseDestination(raw, { blockedSchemes = [] } = {}) {
   else if (value.startsWith('//')) out = 'https:' + value;
   else out = 'https://' + value;
 
-  // The scheme and the host are case-insensitive, so they are normalised to
-  // lowercase. Everything after the host is left exactly as typed, because a
-  // path, query or fragment is case-sensitive and lowercasing it would send
-  // people somewhere other than where the link was meant to go.
+  // The scheme is compared in lowercase because the policy lists are
+  // lowercase, but `out` itself is left alone: what gets stored is what was
+  // typed.
   const scheme = out.slice(0, out.indexOf(':')).toLowerCase();
-  out = scheme + out.slice(scheme.length);
   if (HARD_BLOCKED_SCHEMES.includes(scheme)) {
     throw new ValidationError('That destination scheme is not allowed.', 'target');
   }
@@ -125,7 +186,7 @@ export function parseDestination(raw, { blockedSchemes = [] } = {}) {
       throw new ValidationError('Destination is not a valid URL.', 'target');
     }
     if (!parsed.hostname) throw new ValidationError('Destination has no host.', 'target');
-    out = parsed.toString();
+    out = keepTypedCase(out, parsed.toString());
   }
 
   // A header value must not be able to inject a second header.

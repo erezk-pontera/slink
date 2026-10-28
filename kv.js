@@ -18,6 +18,8 @@
  *   cnt:<host>:<pathLc>                approximate click counter
  *   rl:<bucket>                        rate limit counter (TTL)
  *   aud:<invTs>:<rand>                 audit entry (TTL, newest first)
+ *   pky:<credentialId>                 passkey, found by what the browser sends
+ *   upk:<userId>:<id>                  an account's passkeys, for listing
  *
  * Links in a directory need no separate index: a link under `pub` has a path
  * beginning `pub/`, so listing prefix `lnk:<host>:pub/` finds them.
@@ -46,6 +48,11 @@ export const K = {
   grantPrefix: (host, dirPathLc) => 'grt:' + host + SEP + dirPathLc + SEP,
   userGrant: (userId, host, dirPathLc) => 'ugr:' + userId + SEP + host + SEP + dirPathLc,
   userGrantPrefix: (userId) => 'ugr:' + userId + SEP,
+  /** A passkey, keyed by its credential id so sign-in is one read. */
+  passkey: (credentialId) => 'pky:' + credentialId,
+  /** The reverse index, so an account's keys can be listed. */
+  userPasskey: (userId, id) => 'upk:' + userId + SEP + id,
+  userPasskeyPrefix: (userId) => 'upk:' + userId + SEP,
   session: (sidHash) => 'ses:' + sidHash,
   userSession: (userId, sidHash) => 'uss:' + userId + SEP + sidHash,
   userSessionPrefix: (userId) => 'uss:' + userId + SEP,

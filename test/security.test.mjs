@@ -374,6 +374,7 @@ section('every state-changing endpoint is guarded, without exception');
     ['/admin/users/impersonate', { u: 'root@pontera.com' }],
     ['/admin/settings', { auditRetentionDays: '1' }],
     ['/admin/search/batch', { op: 'readonly', sel: 'link:ptra.cc:x' }],
+    ['/admin/passkeys', { id: 'x', action: 'delete' }],
   ];
 
   let accepted = 0;

@@ -219,8 +219,9 @@ export function loginPage({
   csrf,
   next,
   email = '',
-  methods = { otp: true, oauth: false },
+  methods = { otp: true, oauth: false, passkey: false },
   ssoLabel = 'Single sign-on',
+  passkeyCsrf = '',
 }) {
   const ssoHref = '/__slink/oauth/start?r=' + encodeURIComponent(next || '/admin');
   const sso = methods.oauth
@@ -228,9 +229,25 @@ export function loginPage({
     <a class="btn" href="${esc(ssoHref)}">Continue with ${esc(ssoLabel)}</a>
   </div>`
     : '';
+
+  // The passkey button stays hidden until the script has confirmed this
+  // browser can actually use one, so nobody is shown a control that leads
+  // nowhere. Without JavaScript it never appears, and the code below it is
+  // the way in.
+  const passkey =
+    methods.passkey && passkeyCsrf
+      ? `<div class="sso" data-slink-passkey-login data-token="${esc(passkeyCsrf)}"
+       data-next="${esc(next || '/admin')}">
+    <button type="button" class="btn secondary" data-slink-passkey-go hidden>Sign in with a passkey</button>
+    <p class="hint" data-slink-passkey-msg role="status"></p>
+  </div>`
+      : '';
+
   // With the code switched off, single sign-on is the only way in and the
   // page should not present a form that cannot succeed.
-  const divider = methods.oauth && methods.otp ? '<p class="divider"><span>or</span></p>' : '';
+  const divider = (methods.oauth || methods.passkey) && methods.otp
+    ? '<p class="divider"><span>or</span></p>'
+    : '';
   const byEmail = methods.otp
     ? `<p class="sub">We will email you a ${cfg.settings.otpLength}-digit code.</p>
   <form method="post" action="/admin" data-no-busy>
@@ -253,9 +270,9 @@ export function loginPage({
 ${alert('error', error)}${alert('info', info)}
 <div class="card">
   <h1>Sign in</h1>
-  ${sso}${divider}${byEmail}
+  ${sso}${passkey}${divider}${byEmail}
   ${
-    !methods.otp && !methods.oauth
+    !methods.otp && !methods.oauth && !methods.passkey
       ? '<p class="sub">No sign-in method is available on this domain. An administrator needs to enable one.</p>'
       : ''
   }

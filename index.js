@@ -35,6 +35,7 @@ import { loadConfig, saveSettings } from './config.js';
 import { ensureBootstrapDomains, resolveDomain } from './domains.js';
 import { clientIp, geoCheck, geoMessage } from './geo.js';
 import { IMP_DENY, openImpersonation, splitImpersonation } from './impersonate.js';
+import { loginBegin as passkeyBegin, loginFinish as passkeyFinish } from './admin-passkeys.js';
 import { methodsFor, normalizeOauth } from './oauth.js';
 import { canonicalHost } from './paths.js';
 import { rootCreateAllowed } from './permissions.js';
@@ -96,6 +97,9 @@ async function signInGet(ctx, { error, info } = {}) {
   const methods = methodsFor(ctx.cfg, ctx.domain, {
     isAdmin: ctx.url.searchParams.get('otp') === '1',
   });
+  // A credential is bound to the hub host, so the passkey button appears
+  // only there; the other hosts hand sign-in to the hub and come back.
+  const onHub = ctx.host === ctx.cfg.hubHost;
   const page = loginPage({
     cfg: ctx.cfg,
     host: ctx.host,
@@ -104,8 +108,9 @@ async function signInGet(ctx, { error, info } = {}) {
     error,
     info,
     email: ctx.prefillEmail || '',
-    methods,
+    methods: { ...methods, passkey: methods.passkey && onHub },
     ssoLabel: normalizeOauth(ctx.domain && ctx.domain.oauth).label,
+    passkeyCsrf: onHub ? await tokenFor(ctx, 'passkey.login') : '',
   });
   return withCookies(html(page, { turnstile: true, status: error ? 400 : 200 }), [csrfCookie(ctx)]);
 }
@@ -406,6 +411,16 @@ async function route(request, env, exec) {
       return withCookies(refused, done.cookies || []);
     }
     return seeOther(done.next, done.cookies);
+  }
+
+  // Signing in with a passkey. The credential is bound to the hub host, so
+  // these live there alone; every other host reaches the hub through the
+  // single-sign-on handshake below and comes back with a session.
+  if (path === '/__slink/passkey/login/begin' || path === '/__slink/passkey/login/finish') {
+    if (!isHub || request.method !== 'POST') return textResponse('Not found', 404);
+    const done =
+      path === '/__slink/passkey/login/begin' ? await passkeyBegin(ctx) : await passkeyFinish(ctx);
+    return withCookies(harden(done), [csrfCookie(ctx)]);
   }
 
   // The SSO handshake endpoints live on every host.

@@ -68,15 +68,30 @@ ok('valid shortcut lowercases', parsePath('Pub/Deck_1-x').pathLc === 'pub/deck_1
 ok('the displayed shortcut is lowercase too', parsePath('Pub/Deck_1-X').path === 'pub/deck_1-x');
 ok('shortcut segments agree', parsePath('MiXeD').path === parsePath('MiXeD').pathLc);
 
-// Scheme and host are case-insensitive and get normalised; a path, query or
-// fragment is case-sensitive and must survive exactly as typed.
-ok('destination scheme lowercases', parseDestination('HTTPS://Example.COM/a').target.startsWith('https://'));
-ok('destination host lowercases', parseDestination('HTTPS://Example.COM/a').target.includes('example.com'));
-ok('destination path keeps its case',
-   parseDestination('https://example.com/MyPage?Token=AbC#Frag').target === 'https://example.com/MyPage?Token=AbC#Frag');
-ok('opaque scheme lowercases', parseDestination('MAILTO:Someone@Example.com').target.startsWith('mailto:'));
-ok('opaque body keeps its case',
-   parseDestination('MAILTO:Someone@Example.com').target === 'mailto:Someone@Example.com');
+// A shortcut is ours and is lowercased; a destination is somebody else's
+// and is stored exactly as typed, every part of it.
+ok('destination scheme keeps its case',
+   parseDestination('HTTPS://Example.COM/a').target === 'HTTPS://Example.COM/a');
+ok('destination host keeps its case',
+   parseDestination('Example.COM/a').target === 'https://Example.COM/a');
+ok('destination path, query and fragment keep theirs',
+   parseDestination('https://example.com/MyPage?Token=AbC#Frag').target ===
+     'https://example.com/MyPage?Token=AbC#Frag');
+ok('a mixed-case host survives with everything else',
+   parseDestination('HtTp://Ex.Com/A/b?C=D&e=F#G').target === 'HtTp://Ex.Com/A/b?C=D&e=F#G');
+ok('an opaque scheme keeps its case too',
+   parseDestination('MAILTO:Someone@Example.com').target === 'MAILTO:Someone@Example.com');
+// The scheme is still compared in lowercase, so a policy cannot be dodged
+// by typing it differently.
+ok('the reported scheme is lowercase', parseDestination('HTTPS://Example.COM/a').scheme === 'https');
+ok('a blocked scheme is still blocked in any case',
+   (() => { try { parseDestination('JaVaScRiPt:alert(1)'); return false; } catch { return true; } })());
+// What the parser must still do, because a Location header needs it.
+ok('a space is still encoded', parseDestination('https://Ex.com/a b').target === 'https://Ex.com/a%20b');
+ok('a non-ASCII host is still punycoded',
+   parseDestination('https://\u4f8b\u3048.\u30c6\u30b9\u30c8/x').target.includes('xn--'));
+ok('a default port is still dropped', parseDestination('https://Ex.com:443/x').target === 'https://Ex.com/x');
+ok('dot segments are still resolved', parseDestination('https://Ex.com/a/../b').target === 'https://Ex.com/b');
 
 const dangerous = ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,<script>', 'vbscript:x', 'file:///etc/passwd'];
 ok('dangerous schemes all rejected',

@@ -52,6 +52,7 @@ const PAGES = [
   ['directory edit', '/admin/directories/edit?host=ptra.cc&path=rend'],
   ['search', '/admin/search?q=rend'],
   ['search dirs', '/admin/search?q=&type=directories'],
+  ['passkeys', '/admin/passkeys'],
   ['domains', '/admin/domains'],
   ['domain edit', '/admin/domains/edit?host=ptra.cc'],
   ['hub domain edit', '/admin/domains/edit?host=ptra.dev'],

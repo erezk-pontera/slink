@@ -11,7 +11,7 @@ import { LOGO_SVG } from './logo.js';
 export const ASSET_PREFIX = '/__slink';
 
 /** Bumped whenever the asset bodies change; used for immutable caching. */
-export const ASSET_VERSION = '6';
+export const ASSET_VERSION = '7';
 
 export const CSS = `
 :root{
@@ -286,6 +286,158 @@ export const JS = `
         if (form && (!token || token.value)) form.requestSubmit();
       }
     });
+  }
+
+  // ---------------------------------------------------------- passkeys
+  //
+  // Everything here is progressive: the buttons start hidden and are only
+  // revealed once this browser is known to support WebAuthn, so a browser
+  // that cannot do it never shows a control that would fail.
+
+  var b64url = function (buffer) {
+    var bytes = new Uint8Array(buffer);
+    var out = '';
+    for (var i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+    return btoa(out).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+  };
+
+  var fromB64url = function (value) {
+    var padded = String(value).replace(/-/g, '+').replace(/_/g, '/');
+    while (padded.length % 4) padded += '=';
+    var raw = atob(padded);
+    var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return bytes;
+  };
+
+  var postJson = function (url, payload) {
+    return fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok || data.error) {
+          throw new Error(data.error || 'That did not work. Please try again.');
+        }
+        return data;
+      });
+    });
+  };
+
+  var hasWebAuthn = function () {
+    return !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.get);
+  };
+
+  // Adding a passkey, on the account's own page.
+  var add = document.querySelector('[data-slink-passkey-add]');
+  if (add && hasWebAuthn()) {
+    var addBtn = add.querySelector('[data-slink-passkey-go]');
+    var addMsg = add.querySelector('[data-slink-passkey-msg]');
+    var nameField = add.querySelector('[data-slink-passkey-name]');
+    if (addBtn) {
+      addBtn.hidden = false;
+      addBtn.addEventListener('click', function () {
+        addBtn.disabled = true;
+        if (addMsg) addMsg.textContent = 'Follow your device’s prompt…';
+        var token = add.getAttribute('data-token');
+        postJson('/admin/passkeys/register/begin', { _csrf: token })
+          .then(function (opts) {
+            return navigator.credentials.create({
+              publicKey: {
+                challenge: fromB64url(opts.challenge),
+                rp: opts.rp,
+                user: {
+                  id: new TextEncoder().encode(opts.user.id),
+                  name: opts.user.name,
+                  displayName: opts.user.displayName
+                },
+                pubKeyCredParams: opts.algorithms.map(function (alg) {
+                  return { type: 'public-key', alg: alg };
+                }),
+                timeout: opts.timeout,
+                attestation: 'none',
+                excludeCredentials: (opts.exclude || []).map(function (id) {
+                  return { type: 'public-key', id: fromB64url(id) };
+                }),
+                authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' }
+              }
+            }).then(function (credential) {
+              if (!credential) throw new Error('No passkey was created.');
+              return postJson('/admin/passkeys/register/finish', {
+                _csrf: token,
+                token: opts.token,
+                name: nameField ? nameField.value : '',
+                attestationObject: b64url(credential.response.attestationObject),
+                clientDataJSON: b64url(credential.response.clientDataJSON)
+              });
+            });
+          })
+          .then(function () {
+            window.location.assign('/admin/passkeys?m=passkey.added');
+          })
+          .catch(function (err) {
+            addBtn.disabled = false;
+            if (addMsg) {
+              addMsg.textContent =
+                err && err.name === 'NotAllowedError'
+                  ? 'That was cancelled, or it timed out.'
+                  : (err && err.message) || 'That did not work.';
+            }
+          });
+      });
+    }
+  }
+
+  // Signing in with a passkey, on the sign-in page.
+  var login = document.querySelector('[data-slink-passkey-login]');
+  if (login && hasWebAuthn()) {
+    var inBtn = login.querySelector('[data-slink-passkey-go]');
+    var inMsg = login.querySelector('[data-slink-passkey-msg]');
+    if (inBtn) {
+      inBtn.hidden = false;
+      inBtn.addEventListener('click', function () {
+        inBtn.disabled = true;
+        if (inMsg) inMsg.textContent = 'Follow your device’s prompt…';
+        var token = login.getAttribute('data-token');
+        postJson('/__slink/passkey/login/begin', { _csrf: token })
+          .then(function (opts) {
+            return navigator.credentials.get({
+              publicKey: {
+                challenge: fromB64url(opts.challenge),
+                rpId: opts.rpId,
+                timeout: opts.timeout,
+                userVerification: 'preferred'
+              },
+              mediation: 'optional'
+            }).then(function (assertion) {
+              if (!assertion) throw new Error('No passkey was offered.');
+              return postJson('/__slink/passkey/login/finish', {
+                _csrf: token,
+                token: opts.token,
+                next: login.getAttribute('data-next') || '/admin',
+                id: assertion.id,
+                authenticatorData: b64url(assertion.response.authenticatorData),
+                clientDataJSON: b64url(assertion.response.clientDataJSON),
+                signature: b64url(assertion.response.signature)
+              });
+            });
+          })
+          .then(function (done) {
+            window.location.assign(done.next || '/admin');
+          })
+          .catch(function (err) {
+            inBtn.disabled = false;
+            if (inMsg) {
+              inMsg.textContent =
+                err && err.name === 'NotAllowedError'
+                  ? 'That was cancelled, or no passkey was available.'
+                  : (err && err.message) || 'That did not work.';
+            }
+          });
+      });
+    }
   }
 
   // Suggest the shortcut path from the destination when the field is empty.

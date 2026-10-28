@@ -24,6 +24,7 @@ import {
   TRI_OPTIONS,
   triValue,
 } from './capabilities.js';
+import { deleteAllPasskeys } from './passkeys.js';
 import { deleteUser, getUserByNorm, isRootAdmin, listUsers, putUser } from './users.js';
 import { esc, fmtTime, intEnv, listEnv } from './util.js';
 import { alert, checkbox, csrfField, field, hidden, select, textarea } from './views.js';
@@ -379,6 +380,9 @@ async function userDeleteSubmit(ctx) {
   if (isRootAccount(ctx.cfg, user)) return denied(ctx, ROOT_IMMUTABLE);
 
   await destroyAllSessions(ctx.cfg, user.id);
+  // Otherwise the credentials outlive the account, and an address reused
+  // later would inherit somebody else's devices.
+  await deleteAllPasskeys(ctx.cfg, user.id);
   await deleteUser(ctx.cfg, user);
   ctx.waitUntil(
     audit(ctx.cfg, {

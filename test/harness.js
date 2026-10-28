@@ -109,11 +109,23 @@ export class Harness {
     }
   }
 
-  /** Issue a request through the worker. `form` sends a urlencoded POST. */
-  async req(url, { method = 'GET', form, country = 'IL', headers = {}, cookies = true } = {}) {
+  /**
+   * Issue a request through the worker. `form` sends a urlencoded POST;
+   * `json` sends a JSON one, which is what the passkey endpoints take.
+   */
+  async req(url, { method = 'GET', form, json, country = 'IL', headers = {}, cookies = true } = {}) {
     const target = new URL(url);
     const host = target.hostname;
     const init = { method, headers: { ...headers } };
+
+    if (json !== undefined) {
+      init.method = 'POST';
+      init.body = JSON.stringify(json);
+      init.headers['Content-Type'] = 'application/json';
+      if (!('Origin' in init.headers) && init.headers.Origin !== null) {
+        init.headers.Origin = target.origin;
+      }
+    }
 
     if (form) {
       init.method = 'POST';

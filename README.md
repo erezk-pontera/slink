@@ -168,6 +168,40 @@ Session lifetime is `SESSION_TTL_SECONDS`, or effectively permanent with
 `SESSION_PERMANENT=true`. An optional idle timeout, and optional binding to
 the user-agent or client IP, are in `/admin/settings`.
 
+### Passkeys
+
+A signed-in account can enrol a passkey at `/admin/passkeys` and sign in with
+it afterwards, skipping the emailed code. WebAuthn is implemented here with no
+dependencies: a small CBOR decoder (`cbor.js`), the verification layer
+(`webauthn.js`), and storage and policy (`passkeys.js`).
+
+- **Relying party.** The id is the hub host, so one credential covers every
+  host; the others reach the hub through the handshake above. The endpoints
+  are served on the hub alone.
+- **Algorithms.** ES256 and RS256, both verified with WebCrypto. Attestation
+  is `none`: which make of key somebody owns is not this service's business,
+  but the authenticator data inside it is parsed and checked in full.
+- **Challenges** are signed tokens rather than stored records, good for five
+  minutes, bound to the browser that asked and - for registration - to the
+  account that asked. Nothing is written for an abandoned attempt.
+- **A credential belongs to one account.** Re-registering an existing one is
+  refused rather than moving it, and deleting an account deletes its keys.
+- **A passkey is personal.** Only the account holding one can list, rename or
+  remove it; an administrator cannot, and an impersonated view sees none of
+  it. Someone locked out is helped with the emailed code.
+- **Clone detection.** A sign counter that fails to advance is recorded on the
+  credential and flagged on the page rather than refused, because plenty of
+  authenticators keep no counter at all.
+- **Never the only way in.** The emailed code always remains, and an
+  administrator keeps every method whatever a domain's policy says.
+- **Progressive.** The buttons stay hidden until the script has confirmed the
+  browser supports WebAuthn, so nothing is offered that cannot work.
+
+`Permissions-Policy` allows `publickey-credentials-create` and
+`publickey-credentials-get` to `self` and nothing else, which is what lets the
+hub's own pages use WebAuthn while still refusing to delegate it to an
+embedded cross-origin page.
+
 ---
 
 ## Turnstile
@@ -361,8 +395,13 @@ slashes are ignored, so `ptra.cc/aaa/` works.
 
 Destinations default to `https://`. An explicit scheme is kept as written,
 whether hierarchical (`slack://channel?id=7`) or opaque (`mailto:x@y.com`).
-`javascript:`, `data:`, `vbscript:`, `blob:` and `file:` are always refused;
-more can be blocked in settings.
+A destination is stored exactly as typed - scheme, host, path, query and
+fragment all keep their case, because it belongs to somebody else's service
+and no part of it is ours to normalise. What is still applied is the
+encoding a `Location` header needs: a space becomes `%20`, a non-ASCII host
+is punycoded, a default port is dropped and `..` segments are resolved.
+`javascript:`, `data:`, `vbscript:`, `blob:` and `file:` are always refused
+whatever case they are typed in; more can be blocked in settings.
 
 Redirect codes are 301, 302 (default), 303, 307 and 308. 301 and 308
 responses are cacheable for five minutes; the rest are `no-store`, so a

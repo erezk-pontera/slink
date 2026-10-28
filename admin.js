@@ -9,6 +9,7 @@
 import { adminDirectories } from './admin-directories.js';
 import { adminDomains } from './admin-domains.js';
 import { adminLinks } from './admin-links.js';
+import { adminPasskeys } from './admin-passkeys.js';
 import { adminSearch } from './admin-search.js';
 import { adminUsers } from './admin-users.js';
 import { EXIT_HREF, impersonationNotice, withPrefix, withoutPrefix } from './impersonate.js';
@@ -157,6 +158,10 @@ export const MESSAGES = {
     'Settings saved. Some audit entries past the new retention were removed; save again to continue.',
   ],
   'sessions.revoked': ['ok', 'Sessions revoked.'],
+  'passkey.removed': ['ok', 'Passkey removed.'],
+  'passkey.renamed': ['ok', 'Passkey renamed.'],
+  'passkey.added': ['ok', 'Passkey added. You can use it to sign in from now on.'],
+  'passkey.noname': ['error', 'A passkey needs a name.'],
   denied: ['error', 'You do not have permission to do that.'],
   csrf: ['error', 'That request could not be verified. Please try again.'],
   notfound: ['error', 'That item no longer exists.'],
@@ -185,6 +190,9 @@ export function adminNav(ctx, current) {
     { href: '/admin/directories', label: 'Directories', key: 'directories' },
     { href: '/admin/search', label: 'Search', key: 'search' },
   ];
+  // A passkey is personal, so an impersonated view neither lists nor
+  // touches the account's keys.
+  if (!ctx.impersonator) items.push({ href: '/admin/passkeys', label: 'Passkeys', key: 'passkeys' });
   if (ctx.isAdmin) {
     items.push(
       { href: '/admin/domains', label: 'Domains', key: 'domains' },
@@ -388,6 +396,10 @@ export async function handleAdmin(ctx) {
   if (path.startsWith('/admin/search')) return adminSearch(ctx, path);
   if (path.startsWith('/admin/links')) return adminLinks(ctx, path);
   if (path.startsWith('/admin/directories')) return adminDirectories(ctx, path);
+  if (path.startsWith('/admin/passkeys')) {
+    const handled = await adminPasskeys(ctx, path);
+    if (handled) return handled;
+  }
 
   if (path.startsWith('/admin/domains')) {
     const gate = requireAdmin(ctx.cfg, ctx.session.user);

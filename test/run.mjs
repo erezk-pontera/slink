@@ -25,6 +25,7 @@ const suites = [
   'test/multidomain.test.mjs',
   'test/linkpass.test.mjs',
   'test/frame.test.mjs',
+  'test/passkeys.test.mjs',
 ];
 
 let bad = 0;

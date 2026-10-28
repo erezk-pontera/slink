@@ -549,7 +549,11 @@ async function auditPage(ctx) {
       (e) => `<tr>
       <td class="num">${esc(fmtTime(e.ts))}</td>
       <td>${esc(e.event)}${e.outcome && e.outcome !== 'ok' ? ` <span class="badge off">${esc(e.outcome)}</span>` : ''}</td>
-      <td>${esc(e.actor || '—')}</td>
+      <td>${esc(e.actor || '—')}${
+        e.via
+          ? ` <span class="badge ro" title="Done while viewing the hub as this person">via ${esc(e.via)}</span>`
+          : ''
+      }</td>
       <td>${esc(e.host || '—')}${e.object ? '/' + esc(e.object) : ''}</td>
       <td><span class="target" title="${esc(JSON.stringify(e.detail || {}))}">${esc(
         e.detail ? JSON.stringify(e.detail) : ''

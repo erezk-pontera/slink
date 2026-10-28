@@ -182,6 +182,17 @@ section('the log credits the administrator, not the person viewed');
   ok('starting a view is recorded', log.includes('user.impersonated'));
   ok('the record names the administrator', log.includes('root@pontera.com'));
   ok('and names who was viewed', log.includes('quinn@pontera.com'));
+
+  // An action taken inside the view is credited to both, visibly.
+  const started = await startAs(fresh, 'quinn@pontera.com');
+  const page = await (await fresh.req('https://ptra.dev' + started.location + '/links/new')).text();
+  const tok = Harness.csrf(page);
+  await fresh.req('https://ptra.dev' + started.location + '/links/new', {
+    form: { _csrf: tok, host: 'ptra.cc', path: 'quinn-made-this', target: 'example.com/q', status: '302' },
+  });
+  const after = await (await fresh.req('https://ptra.dev/admin/audit')).text();
+  ok('an action inside the view records the real actor too',
+     after.includes('via root@pontera.com'), 'no via badge');
 }
 
 console.log(`\nimpersonation: ${passed} passed, ${failed} failed`);

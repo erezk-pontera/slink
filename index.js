@@ -19,6 +19,8 @@ import {
   completeLogin,
   COOKIE,
   csrfCookie,
+  oauthBegin,
+  oauthComplete,
   readSession,
   resendLogin,
   safeNext,
@@ -32,11 +34,14 @@ import { serveAsset } from './assets.js';
 import { loadConfig, saveSettings } from './config.js';
 import { ensureBootstrapDomains, resolveDomain } from './domains.js';
 import { clientIp, geoCheck, geoMessage } from './geo.js';
+import { IMP_DENY, openImpersonation, splitImpersonation } from './impersonate.js';
+import { loginBegin as passkeyBegin, loginFinish as passkeyFinish } from './admin-passkeys.js';
+import { methodsFor, normalizeOauth } from './oauth.js';
 import { canonicalHost } from './paths.js';
 import { rootCreateAllowed } from './permissions.js';
 import { getChallenge } from './otp.js';
-import { handleRedirect, handleRoot } from './redirect.js';
-import { clearCookie, harden, parseCookies } from './security.js';
+import { handleRedirect, handleRoot, handleUnlock } from './redirect.js';
+import { clearCookie, harden, parseCookies, withCookies } from './security.js';
 import { isAdmin } from './users.js';
 import { randomId } from './util.js';
 import { html, loginPage, messagePage, verifyPage } from './views.js';
@@ -44,14 +49,6 @@ import { html, loginPage, messagePage, verifyPage } from './views.js';
 const ALLOWED_METHODS = ['GET', 'HEAD', 'POST'];
 
 /** Attach cookies to a response without discarding ones already set. */
-function withCookies(response, cookies) {
-  const list = (cookies || []).filter(Boolean);
-  if (list.length === 0) return response;
-  const out = new Response(response.body, response);
-  for (const cookie of list) out.headers.append('Set-Cookie', cookie);
-  return out;
-}
-
 /** A 303 redirect carrying cookies. */
 function seeOther(location, cookies = []) {
   const headers = new Headers({ Location: location });
@@ -94,6 +91,15 @@ async function signInGet(ctx, { error, info } = {}) {
     }
   }
 
+  // Which routes this host offers. Nobody is signed in here yet, so the
+  // administrator exemption cannot apply: an administrator whose host has
+  // the code switched off reaches it through /admin?otp=1.
+  const methods = methodsFor(ctx.cfg, ctx.domain, {
+    isAdmin: ctx.url.searchParams.get('otp') === '1',
+  });
+  // A credential is bound to the hub host, so the passkey button appears
+  // only there; the other hosts hand sign-in to the hub and come back.
+  const onHub = ctx.host === ctx.cfg.hubHost;
   const page = loginPage({
     cfg: ctx.cfg,
     host: ctx.host,
@@ -102,6 +108,9 @@ async function signInGet(ctx, { error, info } = {}) {
     error,
     info,
     email: ctx.prefillEmail || '',
+    methods: { ...methods, passkey: methods.passkey && onHub },
+    ssoLabel: normalizeOauth(ctx.domain && ctx.domain.oauth).label,
+    passkeyCsrf: onHub ? await tokenFor(ctx, 'passkey.login') : '',
   });
   return withCookies(html(page, { turnstile: true, status: error ? 400 : 200 }), [csrfCookie(ctx)]);
 }
@@ -121,7 +130,7 @@ async function signInPost(ctx) {
   if (stage === 'resend') {
     const guard = await checkCsrf(ctx, 'login.verify', body);
     if (!guard.ok) return signInGet(ctx, { error: 'That request could not be verified. Please try again.' });
-    const result = await resendLogin(ctx);
+    const result = await resendLogin(ctx, body);
     if (!result.ok) {
       if (result.restart) return seeOther('/admin', [clearCookie(COOKIE.login)]);
       return signInGet(ctx, { error: result.error });
@@ -356,6 +365,10 @@ async function route(request, env, exec) {
     session: null,
     isAdmin: false,
     canCreateRoot: false,
+    /** Set only inside an impersonated view: who is really signed in. */
+    impersonator: null,
+    /** URL prefix that keeps an impersonated view in its own namespace. */
+    prefix: '',
   };
 
   ctx.session = await readSession(cfg, request, host);
@@ -367,6 +380,48 @@ async function route(request, env, exec) {
 
   const path = url.pathname.replace(/\/+$/, '') || '/';
   const isHub = host === cfg.hubHost;
+
+  // The identity-provider handshake. Both legs live on every host, because
+  // a host that requires authentication may offer single sign-on of its own.
+  if (path === '/__slink/oauth/start') {
+    if (ctx.session) return seeOther(safeNext(url.searchParams.get('r'), '/admin'));
+    const begin = await oauthBegin(ctx, url.searchParams.get('r') || '/admin');
+    if (!begin.ok) return signInGet(ctx, { error: begin.error });
+    return seeOther(begin.location, [begin.cookie]);
+  }
+  if (path === '/__slink/oauth/callback') {
+    const gate = geoCheck(cfg, request, 'login');
+    if (!gate.allowed) {
+      const page = messagePage({
+        cfg,
+        host,
+        title: 'Unavailable',
+        heading: 'Not available here',
+        message: geoMessage(gate.reason),
+        status: 403,
+      });
+      return html(page.body, { status: 403 });
+    }
+    const done = await oauthComplete(ctx, {
+      code: url.searchParams.get('code'),
+      state: url.searchParams.get('state'),
+    });
+    if (!done.ok) {
+      const refused = await signInGet(ctx, { error: done.error });
+      return withCookies(refused, done.cookies || []);
+    }
+    return seeOther(done.next, done.cookies);
+  }
+
+  // Signing in with a passkey. The credential is bound to the hub host, so
+  // these live there alone; every other host reaches the hub through the
+  // single-sign-on handshake below and comes back with a session.
+  if (path === '/__slink/passkey/login/begin' || path === '/__slink/passkey/login/finish') {
+    if (!isHub || request.method !== 'POST') return textResponse('Not found', 404);
+    const done =
+      path === '/__slink/passkey/login/begin' ? await passkeyBegin(ctx) : await passkeyFinish(ctx);
+    return withCookies(harden(done), [csrfCookie(ctx)]);
+  }
 
   // The SSO handshake endpoints live on every host.
   if (path === '/__slink/sso/callback') return ssoCallbackGet(ctx);
@@ -392,6 +447,38 @@ async function route(request, env, exec) {
     if (path === '/sso/authorize') return ssoAuthorizeGet(ctx);
 
     if (path === '/admin' || path.startsWith('/admin/')) {
+      // An impersonated view lives under /admin/as/<token>/. Resolve it to
+      // the plain path first so the rest of the hub never has to know.
+      const imp = splitImpersonation(path);
+      if (imp && ctx.session) {
+        const target = await openImpersonation(cfg, { token: imp.token, session: ctx.session });
+        if (!target) {
+          const page = messagePage({
+            cfg,
+            host,
+            title: 'Impersonation ended',
+            heading: 'That view is no longer available',
+            message: IMP_DENY.expired,
+            status: 403,
+            actions: [{ href: '/admin', label: 'Back to overview' }],
+          });
+          return html(page.body, { status: 403 });
+        }
+        ctx.impersonator = ctx.session.user;
+        ctx.prefix = imp.prefix;
+        // Non-enumerable so it is readable by the audit log but invisible
+        // to JSON.stringify, and therefore can never be written back into
+        // the stored user record by a later putUser.
+        Object.defineProperty(target, 'impersonatedBy', {
+          value: ctx.session.user.emailNorm,
+          enumerable: false,
+          configurable: true,
+        });
+        ctx.session = { ...ctx.session, user: target };
+        ctx.url = new URL(imp.path + url.search, url.origin);
+        ctx.isAdmin = isAdmin(cfg, target);
+        ctx.canCreateRoot = ctx.isAdmin || rootCreateAllowed(cfg, domain, target);
+      }
       if (!ctx.session) {
         if (path === '/admin') {
           return request.method === 'POST' ? signInPost(ctx) : signInGet(ctx);
@@ -436,6 +523,13 @@ async function route(request, env, exec) {
       });
       return html(page.body, { status: 403 });
     }
+  }
+
+  // Answering a link's password prompt is the one POST a shortcut accepts.
+  if (request.method === 'POST') {
+    const body = await readForm(request);
+    const unlocked = await handleUnlock(ctx, body);
+    if (unlocked) return withCookies(unlocked, [csrfCookie(ctx)]);
   }
 
   if (request.method !== 'GET' && request.method !== 'HEAD') {

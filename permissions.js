@@ -13,10 +13,23 @@
  *     ownership and directory administration alike.
  */
 
-import { getDirectory, getGrant, directoryPathSet } from './directories.js';
+import { getDirectory, getGrant, directoryPathSet, listUserGrants } from './directories.js';
 import { createDomainsFor } from './domains.js';
 import { domainAllowed, parentDirectory } from './paths.js';
-import { isAdmin } from './users.js';
+import { isAdmin, isRootAdmin } from './users.js';
+
+/**
+ * Administrators reach every directory by default. An administrator may turn
+ * that off for themselves or for another administrator, which scopes them to
+ * the directories they hold a grant on while leaving the rest of their
+ * powers intact. A root administrator's access is never removable.
+ */
+export function adminReachesAllDirectories(cfg, user) {
+  if (!user) return false;
+  if (isRootAdmin(cfg, user.emailNorm)) return true;
+  if (!isAdmin(cfg, user)) return false;
+  return user.allDirectories !== false;
+}
 
 export const DENY = {
   anonymous: 'You must sign in.',
@@ -26,6 +39,7 @@ export const DENY = {
   dirDisabled: 'This directory is disabled.',
   dirReadonly: 'This directory is read-only; only administrators may change it.',
   dirNoGrant: 'You do not have permission to create in this directory.',
+  dirNoCreate: 'You do not have permission to create directories on this domain.',
   rootNoPermission: 'You do not have permission to create at the root of this domain.',
   linkReadonly: 'This link is read-only; only administrators may change it.',
   notOwner: 'Only the link owner, a directory administrator or an administrator may change this.',
@@ -61,6 +75,20 @@ export async function resolveGovernor(cfg, host, pathLc, user, { dirSet } = {}) 
   return { dir, grant, parentLc };
 }
 
+/**
+ * Does an administrator act with administrator authority at this spot?
+ *
+ * Scoping only withdraws the blanket reach into directories. Outside any
+ * directory, and inside one they hold a grant on, a scoped administrator is
+ * an administrator like any other; inside one they do not, they are shut out
+ * rather than demoted to an ordinary user.
+ */
+export function adminActsHere(cfg, user, dir, grant) {
+  if (!dir) return true;
+  if (adminReachesAllDirectories(cfg, user)) return true;
+  return !!grant;
+}
+
 /** Does the user satisfy the host's root-level create policy? */
 export function rootCreateAllowed(cfg, domain, user) {
   const policy = (domain && domain.rootCreatePolicy) || 'email_domain';
@@ -84,7 +112,7 @@ export async function canCreate(cfg, { user, domain, host, pathLc, dirSet }) {
   if (domain && domain.enabled === false && !admin) return deny(DENY.domainDisabled);
 
   const { dir, grant } = await resolveGovernor(cfg, host, pathLc, user, { dirSet });
-  if (admin) return allow({ dir, grant, asAdmin: true });
+  if (admin && adminActsHere(cfg, user, dir, grant)) return allow({ dir, grant, asAdmin: true });
 
   if (domain && domain.readonly) return deny(DENY.domainReadonly, { dir, grant });
 
@@ -108,12 +136,11 @@ export async function canManageLink(cfg, { user, link, host, dirSet }) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
   const admin = isAdmin(cfg, user);
-  if (admin) return allow({ asAdmin: true });
+  const { dir, grant } = await resolveGovernor(cfg, host || link.host, link.pathLc, user, { dirSet });
+  if (admin && adminActsHere(cfg, user, dir, grant)) return allow({ asAdmin: true, dir });
 
   if (link.readonly) return deny(DENY.linkReadonly);
   if (link.ownerId && link.ownerId === user.id) return allow({ asOwner: true });
-
-  const { dir, grant } = await resolveGovernor(cfg, host || link.host, link.pathLc, user, { dirSet });
   if (dir && !dir.readonly && grant && grant.canManage) return allow({ asDirAdmin: true, dir, grant });
 
   return deny(DENY.notOwner);
@@ -123,27 +150,81 @@ export async function canManageLink(cfg, { user, link, host, dirSet }) {
 export async function canManageDirectory(cfg, { user, dir }) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
-  if (isAdmin(cfg, user)) return allow({ asAdmin: true });
-  if (!dir) return deny(DENY.notDirAdmin);
-  if (dir.readonly) return deny(DENY.dirReadonly);
+  const admin = isAdmin(cfg, user);
+  if (admin && adminReachesAllDirectories(cfg, user)) return allow({ asAdmin: true });
+  if (!dir) return deny(admin ? DENY.notDirAdmin : DENY.notDirAdmin);
   const grant = await getGrant(cfg, dir.host, dir.pathLc, user.id);
+  // A scoped administrator keeps administrator authority inside the
+  // directories they were granted; what scoping removed is the blanket
+  // reach into the ones they were not.
+  if (admin && grant) return allow({ asAdmin: true, grant });
+  if (dir.readonly) return deny(DENY.dirReadonly);
   if (grant && grant.canManage) return allow({ asDirAdmin: true, grant });
   return deny(DENY.notDirAdmin);
 }
 
 /**
- * May `user` create a directory at `pathLc`? Administrators may create
- * anywhere; a directory administrator may create nested directories inside
- * the directory they administer.
+ * May `user` create a directory at `pathLc`?
+ *
+ *   - An administrator may create one anywhere.
+ *   - A directory administrator may create nested directories inside the
+ *     directory they administer, and may grant that same right to others by
+ *     making them a directory administrator there.
+ *   - Anyone else needs an explicit per-host grant, which permits directories
+ *     at that host's root.
  */
 export async function canCreateDirectory(cfg, { user, domain, host, pathLc, dirSet }) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
-  if (isAdmin(cfg, user)) return allow({ asAdmin: true });
-  if (domain && domain.readonly) return deny(DENY.domainReadonly);
+  const admin = isAdmin(cfg, user);
+  if (admin && adminReachesAllDirectories(cfg, user)) return allow({ asAdmin: true });
+
   const { dir, grant } = await resolveGovernor(cfg, host, pathLc, user, { dirSet });
-  if (dir && !dir.readonly && grant && grant.canManage) return allow({ asDirAdmin: true, dir });
-  return deny(DENY.adminOnly);
+  // A scoped administrator is still an administrator at the host root, which
+  // is not a directory, and inside any directory they were granted.
+  if (admin && (!dir || (grant && grant.canManage))) return allow({ asAdmin: true, dir });
+  if (domain && domain.readonly) return deny(DENY.domainReadonly);
+
+  if (dir) {
+    // Inside a directory, only its administrator may nest another.
+    if (dir.readonly) return deny(DENY.dirReadonly);
+    if (grant && grant.canManage) return allow({ asDirAdmin: true, dir });
+    return deny(DENY.notDirAdmin);
+  }
+
+  if (user.dirCreate && user.dirCreate[host]) return allow({ byGrant: true });
+  return deny(DENY.dirNoCreate);
+}
+
+/**
+ * Could `user` create a directory somewhere on `host`? Used to decide whether
+ * to offer the form at all, not to authorise a particular path.
+ */
+export async function mayCreateAnyDirectory(cfg, { user, host }) {
+  if (!user || user.disabled) return false;
+  if (isAdmin(cfg, user)) return true;
+  if (user.dirCreate && user.dirCreate[host]) return true;
+  const grants = await listUserGrants(cfg, user.id);
+  return grants.some((g) => g.host === host && g.canManage);
+}
+
+/**
+ * May `user` hand this directory to a different owner? The owner may, and an
+ * administrator may. A directory administrator who is not the owner may run
+ * everything inside the directory but may not take the directory itself.
+ * Read-only puts it in administrators' hands alone.
+ */
+export function canTransferDirectory(cfg, { user, dir }) {
+  if (!user) return deny(DENY.anonymous);
+  if (user.disabled) return deny(DENY.disabled);
+  // Reassigning ownership is an administrative act in its own right, so it
+  // stays available to every administrator regardless of read-only marks or
+  // whether their directory access has been scoped.
+  if (isAdmin(cfg, user)) return allow({ asAdmin: true });
+  if (!dir) return deny(DENY.notDirAdmin);
+  if (dir.readonly) return deny(DENY.dirReadonly);
+  if (dir.ownerId && dir.ownerId === user.id) return allow({ asOwner: true });
+  return deny('Only the directory owner or an administrator may change its owner.');
 }
 
 /**
@@ -160,6 +241,19 @@ export function requireAdmin(cfg, user) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
   return isAdmin(cfg, user) ? allow({ asAdmin: true }) : deny(DENY.adminOnly);
+}
+
+/**
+ * May `user` hand this link to someone else? Administrators always may, for
+ * the same reason as directories: ownership is an administrative matter, not
+ * a content one. Everyone else needs the ordinary management right.
+ */
+export async function canTransferLink(cfg, args) {
+  const { user } = args;
+  if (!user) return deny(DENY.anonymous);
+  if (user.disabled) return deny(DENY.disabled);
+  if (isAdmin(cfg, user)) return allow({ asAdmin: true });
+  return canManageLink(cfg, args);
 }
 
 /**

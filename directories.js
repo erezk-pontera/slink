@@ -19,14 +19,34 @@ export function newDirectory(host, path, pathLc, overrides = {}) {
     path,
     pathLc,
     ownerId: null,
+    ownerEmail: null,
     /** Open directories inherit the host's root create policy. */
     open: false,
     /** Read-only directories can only be changed by administrators. */
     readonly: false,
     enabled: true,
     note: '',
-    defaultStatus: null,
-    defaultDelay: null,
+    /** Features withdrawn here. A directory may take away what the host
+     *  allows; it cannot grant what the host withholds. */
+    capabilities: {},
+    /** Narrows the host's invite domains for this directory. null leaves
+     *  the host's list alone; only meaningful where the host delegates.
+     *  See invites.js. */
+    inviteDomains: null,
+    /** Where to send someone who browses this directory's root, or a
+     *  shortcut under it that does not exist. Empty uses the domain's
+     *  MISSING destination. See dirmissing.js. */
+    missingUrl: '',
+    /** Set by a Shrink Link administrator only: lets this directory set its
+     *  own MISSING even where the domain says otherwise. */
+    missingExempt: false,
+    /** Countdown override, used only when the domain delegates or an
+     *  administrator enabled it on this directory. See interstitial.js. */
+    interstitial: null,
+    allowInterstitialOverride: false,
+    /** Per-setting escape hatches from the domain policy, granted by a
+     *  Shrink Link administrator only. See interstitial.js. */
+    interstitialExempt: { countdown: false, destination: false, minDelay: false },
     createdAt: ts,
     updatedAt: ts,
     ...overrides,
@@ -134,4 +154,20 @@ export async function creatableDirectories(cfg, host, userId) {
     .filter((g) => g.host === host && (g.canCreate || g.canManage))
     .map((g) => g.dirPathLc)
     .sort();
+}
+
+/**
+ * The directory that governs `pathLc`, found by probing its ancestors from
+ * the longest down. A root-level path costs no reads and a path one level
+ * deep costs one, which is why the redirect path uses this rather than
+ * listing every directory on the host.
+ */
+export async function governingDirectory(cfg, host, pathLc) {
+  const segments = String(pathLc || '').split('/');
+  for (let i = segments.length - 1; i >= 1; i--) {
+    const candidate = segments.slice(0, i).join('/');
+    const dir = await cfg.store.get(K.dir(host, candidate), { fresh: false });
+    if (dir) return dir;
+  }
+  return null;
 }

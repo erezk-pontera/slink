@@ -1,4 +1,7 @@
 import { Harness } from './harness.js';
+import { normalizeUserCapabilities } from '../capabilities.js';
+import { parseCookies } from '../security.js';
+import { isSafeKey } from '../util.js';
 
 let passed = 0;
 let failed = 0;
@@ -216,6 +219,279 @@ section('rate limiting');
     if (r.status !== 303 && (await r.text()).includes('Too many sign-in attempts')) { blocked = true; break; }
   }
   ok('per-IP code requests are throttled', blocked);
+}
+
+const guest = peer(admin);
+
+/* ----------------------------------------- input handling, end to end */
+section('every form field is escaped on the way back out');
+{
+  // Escaping failed if and only if a payload comes back exactly as it was
+  // sent. Looking for fragments like "onerror=" matches inert escaped text
+  // and proves nothing either way.
+  const PAYLOADS = [
+    '"><img src=x onerror=alert(1)>',
+    "'><script>alert(1)</script>",
+    '</textarea><script>alert(1)</script>',
+    '</title><script>alert(1)</script>',
+    '<svg/onload=alert(1)>',
+    '" autofocus onfocus="alert(1)',
+    '${7*7}',
+  ];
+
+  const nf = async () => Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+  let raw = 0;
+  let crashed = 0;
+  for (const p of PAYLOADS) {
+    const r = await admin.req('https://ptra.dev/admin/links/new', {
+      form: {
+        _csrf: await nf(), host: 'ptra.cc', path: p, target: p, status: '302', note: p,
+        previewTitle: p, previewDescription: p, previewImage: p,
+        rules__default: p, url__mobileAndroid: p, activeFrom: p, expires: p,
+      },
+    });
+    if (r.status >= 500) crashed++;
+    const body = await r.text();
+    if (body.includes(p) && /[<>"']/.test(p)) raw++;
+  }
+  ok('no payload survives the link form unescaped', raw === 0, String(raw));
+  ok('and none of them crashes it', crashed === 0, String(crashed));
+
+  let searchRaw = 0;
+  for (const p of PAYLOADS) {
+    const r = await admin.req(
+      'https://ptra.dev/admin/search?q=' + encodeURIComponent(p) +
+      '&type=' + encodeURIComponent(p) + '&host=' + encodeURIComponent(p) +
+      '&from=' + encodeURIComponent(p)
+    );
+    const body = await r.text();
+    if (r.status >= 500 || (body.includes(p) && /[<>"']/.test(p))) searchRaw++;
+  }
+  ok('search echoes nothing unescaped', searchRaw === 0, String(searchRaw));
+}
+
+section('a destination cannot break out into a header');
+{
+  const nf = async () => Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+  let injected = 0;
+  const raws = [
+    'https://example.com/a\r\nSet-Cookie: evil=1',
+    'https://example.com/a\nSet-Cookie: evil=1',
+  ];
+  for (const [i, t] of raws.entries()) {
+    const r = await admin.req('https://ptra.dev/admin/links/new', {
+      form: { _csrf: await nf(), host: 'ptra.cc', path: 'crlf' + i, target: t, status: '302' },
+    });
+    ok(`a destination with a line break is refused (${i})`,
+       !(r.headers.get('Location') || '').includes('link.created'));
+  }
+
+  // Percent-encoded breaks are legal URL characters and stay encoded.
+  const r = await admin.req('https://ptra.dev/admin/links/new', {
+    form: {
+      _csrf: await nf(), host: 'ptra.cc', path: 'crlfpc',
+      target: 'https://example.com/a%0d%0aSet-Cookie:%20evil=1', status: '302',
+    },
+  });
+  if ((r.headers.get('Location') || '').includes('link.created')) {
+    const hit = await guest.req('https://ptra.cc/crlfpc');
+    const loc = hit.headers.get('Location') || '';
+    if (/[\r\n]/.test(loc) || (hit.headers.get('Set-Cookie') || '').includes('evil')) injected++;
+  }
+  ok('an encoded line break stays encoded in the Location', injected === 0);
+
+  // No response anywhere carries a stray line break in a header.
+  let strays = 0;
+  for (const u of [
+    'https://ptra.dev/admin', 'https://ptra.dev/admin/links', 'https://ptra.cc/',
+    'https://ptra.cc/nope', 'https://ptra.dev/admin/search?q=x',
+  ]) {
+    const r = await admin.req(u);
+    for (const [k, v] of r.headers) if (/[\r\n]/.test(k) || /[\r\n]/.test(v)) strays++;
+  }
+  ok('no response header carries a line break', strays === 0, String(strays));
+}
+
+section('a key from the wire cannot reach a prototype');
+{
+  ok('isSafeKey rejects the three', !isSafeKey('__proto__') && !isSafeKey('constructor') && !isSafeKey('prototype'));
+  ok('and accepts ordinary ones', isSafeKey('session') && isSafeKey('a-b_c'));
+
+  const jar = parseCookies({ headers: new Headers({ Cookie: '__proto__=x; constructor=y; ok=1' }) });
+  ok('a dangerous cookie name is dropped', Object.keys(jar).join(',') === 'ok', Object.keys(jar).join(','));
+  ok('the object prototype is untouched', Object.getPrototypeOf({}) === Object.prototype);
+  ok('an ordinary cookie still parses', jar.ok === '1');
+
+  const caps = normalizeUserCapabilities({ __proto__: { frame: true }, 'ptra.cc': { frame: true } });
+  ok('a dangerous host key is dropped from capabilities',
+     Object.keys(caps).join(',') === 'ptra.cc', Object.keys(caps).join(','));
+  ok('nothing leaked onto Object.prototype', {}.frame === undefined);
+}
+
+section('a forged cookie signs nobody in');
+{
+  let signedIn = 0;
+  for (const cookie of [
+    '__Host-slink_sess=',
+    '__Host-slink_sess=not-a-real-session',
+    '__Host-slink_sess=' + 'x'.repeat(5000),
+    "__Host-slink_sess=' OR 1=1--",
+    '__Host-slink_sess=../../admin',
+  ]) {
+    const r = await admin.req('https://ptra.dev/admin', { headers: { Cookie: cookie }, cookies: false });
+    if (r.status === 200 && (await r.text()).includes('class="who"')) signedIn++;
+  }
+  ok('no forged session cookie is accepted', signedIn === 0, String(signedIn));
+}
+
+section('every state-changing endpoint is guarded, without exception');
+{
+  // Enumerated rather than sampled: a new endpoint that forgets its guard
+  // is exactly the kind of thing a spot check misses.
+  const ENDPOINTS = [
+    ['/admin/links/new', { host: 'ptra.cc', path: 'csrf-x', target: 'evil.example', status: '302' }],
+    ['/admin/links/edit', { host: 'ptra.cc', path: 'csrf-x', newpath: 'csrf-x', target: 'evil.example', status: '302', enabled: '1' }],
+    ['/admin/links/delete', { host: 'ptra.cc', path: 'csrf-x' }],
+    ['/admin/links/transfer', { host: 'ptra.cc', path: 'csrf-x', owner: 'root@pontera.com' }],
+    ['/admin/links/duplicate', { host: 'ptra.cc', path: 'csrf-x' }],
+    ['/admin/links/password', { host: 'ptra.cc', path: 'csrf-x', password: 'x' }],
+    ['/admin/links/move', { host: 'ptra.cc', path: 'csrf-x', toHost: 'ptra.dev', newpath: 'x' }],
+    ['/admin/directories/new', { host: 'ptra.cc', path: 'csrfdir' }],
+    ['/admin/directories/edit', { host: 'ptra.cc', path: 'csrfdir', enabled: '1' }],
+    ['/admin/directories/delete', { host: 'ptra.cc', path: 'csrfdir' }],
+    ['/admin/directories/grant', { host: 'ptra.cc', path: 'csrfdir', email: 'root@pontera.com', canCreate: '1' }],
+    ['/admin/directories/revoke', { host: 'ptra.cc', path: 'csrfdir', userId: 'x' }],
+    ['/admin/directories/transfer', { host: 'ptra.cc', path: 'csrfdir', owner: 'root@pontera.com' }],
+    ['/admin/directories/policy', { host: 'ptra.cc', path: 'csrfdir' }],
+    ['/admin/directories/exempt', { host: 'ptra.cc', path: 'csrfdir' }],
+    ['/admin/directories/capabilities', { host: 'ptra.cc', path: 'csrfdir', cap_frame: 'deny' }],
+    ['/admin/domains/new', { host: 'evil.example' }],
+    ['/admin/domains/edit', { host: 'ptra.cc', defaultStatus: '302', rootCreatePolicy: 'open', enabled: '1' }],
+    ['/admin/domains/delete', { host: 'ptra.cc' }],
+    ['/admin/users/edit', { u: 'root@pontera.com', isAdmin: '1' }],
+    ['/admin/users/revoke', { u: 'root@pontera.com' }],
+    ['/admin/users/delete', { u: 'root@pontera.com' }],
+    ['/admin/users/impersonate', { u: 'root@pontera.com' }],
+    ['/admin/settings', { auditRetentionDays: '1' }],
+    ['/admin/search/batch', { op: 'readonly', sel: 'link:ptra.cc:x' }],
+    ['/admin/passkeys', { id: 'x', action: 'delete' }],
+  ];
+
+  let accepted = 0;
+  for (const [path, form] of ENDPOINTS) {
+    const r = await admin.req('https://ptra.dev' + path, { form: { _csrf: 'forged-token', ...form } });
+    const loc = r.headers.get('Location') || '';
+    if (!(r.status === 403 || r.status === 404 || loc.includes('csrf'))) {
+      console.log('    accepted a forged token: ' + path);
+      accepted++;
+    }
+  }
+  ok(`all ${ENDPOINTS.length} POST endpoints refuse a forged token`, accepted === 0, String(accepted));
+
+  let foreign = 0;
+  for (const [path, form] of ENDPOINTS) {
+    const tok = Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+    const r = await admin.req('https://ptra.dev' + path, {
+      form: { _csrf: tok, ...form },
+      headers: { Origin: 'https://evil.example' },
+    });
+    const loc = r.headers.get('Location') || '';
+    if (!(r.status === 403 || r.status === 404 || loc.includes('csrf'))) {
+      console.log('    accepted a foreign Origin: ' + path);
+      foreign++;
+    }
+  }
+  ok('and all of them refuse a foreign Origin', foreign === 0, String(foreign));
+}
+
+section('a GET changes nothing');
+{
+  const tok = Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+  await admin.req('https://ptra.dev/admin/links/new', {
+    form: { _csrf: tok, host: 'ptra.cc', path: 'getsafe', target: 'example.com/gs', status: '302' },
+  });
+  for (const path of [
+    '/admin/links/delete', '/admin/links/password', '/admin/links/move',
+    '/admin/users/impersonate', '/admin/search/batch', '/admin/directories/delete',
+  ]) {
+    await admin.req(
+      `https://ptra.dev${path}?host=ptra.cc&path=getsafe&u=root@pontera.com` +
+      `&op=readonly&sel=link:ptra.cc:getsafe&password=x&toHost=ptra.dev`
+    );
+  }
+  const still = await guest.req('https://ptra.cc/getsafe');
+  ok('the link survives every state-changing path fetched as a GET',
+     (still.headers.get('Location') || '').includes('example.com/gs'),
+     still.headers.get('Location'));
+}
+
+section('what an identity provider says is not taken on trust');
+{
+  const dom = 'https://ptra.dev/admin/domains/edit?host=ptra.dev';
+  const dt = Harness.csrfFor(await (await admin.req(dom)).text(), '/admin/domains/edit');
+  await admin.req('https://ptra.dev/admin/domains/edit', {
+    form: {
+      _csrf: dt, host: 'ptra.dev', defaultStatus: '302', rootCreatePolicy: 'email_domain',
+      enabled: '1', authRequired: '1', allowedAuthDomains: 'pontera.com',
+      oauthEnabled: '1', oauthClientId: 'c',
+      oauthAuthorizeUrl: 'https://idp.example/authorize',
+      oauthTokenUrl: 'https://idp.example/token',
+      oauthUserinfoUrl: 'https://idp.example/me',
+    },
+  });
+
+  let signedIn = 0;
+  for (const email of [
+    '"><img src=x onerror=alert(1)>@pontera.com',
+    'not-an-email',
+    '',
+    'a'.repeat(400) + '@pontera.com',
+    'a\r\nb@pontera.com',
+    '\u0430dmin@pontera.com',
+    'a\u0000b@pontera.com',
+  ]) {
+    const h = peer(admin);
+    h.idpEmail = email;
+    const s = await h.req('https://ptra.dev/__slink/oauth/start');
+    const st = new URL(s.headers.get('Location')).searchParams.get('state');
+    const r = await h.req('https://ptra.dev/__slink/oauth/callback?code=a&state=' + st);
+    if (r.status === 303) signedIn++;
+    else if ((await r.text()).includes('<img src=x')) signedIn++;
+  }
+  ok('no malformed or confusable address from a provider signs anyone in',
+     signedIn === 0, String(signedIn));
+}
+
+section('credentials never live in a destination');
+{
+  const tok = Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+  const r = await admin.req('https://ptra.dev/admin/links/new', {
+    form: { _csrf: tok, host: 'ptra.cc', path: 'creds', target: 'https://u:hunter2@ex.com/',
+            status: '302' },
+  });
+  ok('a destination carrying a password is refused', r.status === 200);
+  ok('and says why', (await r.text()).includes('cannot carry a password'));
+
+  // Nothing was stored, so the shortcut falls through to the host's own
+  // MISSING destination rather than to ex.com.
+  const check = await admin.req('https://ptra.cc/creds');
+  ok('so nothing was stored', !(check.headers.get('Location') || '').includes('ex.com'),
+     check.status + ' ' + check.headers.get('Location'));
+}
+
+section('a destination that masks its host says so');
+{
+  const tok = Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+  await admin.req('https://ptra.dev/admin/links/new', {
+    form: { _csrf: tok, host: 'ptra.cc', path: 'masked',
+            target: 'https://pontera.example@evil.example/x', status: '302' },
+  });
+  const page = await (await admin.req('https://ptra.dev/admin/links/edit?host=ptra.cc&path=masked')).text();
+  ok('the editor warns', page.includes('is not where this goes'));
+  ok('and names the real host', page.includes('the host is evil.example'));
+  const warning = (page.match(/<div class="alert err"[^>]*>([^<]*)<\/div>/) || [])[1] || '';
+  ok('the warning is escaped like everything else',
+     warning.includes('&quot;pontera.example&quot;'), warning.slice(0, 60));
 }
 
 console.log(`\nsecurity: ${passed} passed, ${failed} failed`);

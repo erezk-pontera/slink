@@ -10,7 +10,7 @@
  * Cloudflare; the page says so rather than pretending otherwise.
  */
 
-import { adminPage, back, denied, flashFrom, formToken, readForm } from './admin.js';
+import { adminPage, back, denied, flashFrom, formToken, policyForm, readForm, readPolicy } from './admin.js';
 import { audit, EVENTS } from './audit.js';
 import { checkCsrf } from './auth.js';
 import {
@@ -23,7 +23,24 @@ import {
   ROOT_CREATE_POLICIES,
 } from './domains.js';
 import { clientIp } from './geo.js';
-import { clampDelay, clampStatus, MAX_DELAY_SECONDS } from './links.js';
+import { describePolicy, normalizePolicy } from './interstitial.js';
+import { clampStatus } from './links.js';
+import { MISSING_MODES, normalizeMissingPolicy } from './dirmissing.js';
+import {
+  CAPABILITIES,
+  CAPABILITY_KEYS,
+  normalizeCapabilities,
+  readCapabilityForm,
+  TRI_OPTIONS,
+  triValue,
+} from './capabilities.js';
+import { INVITE_MODES, normalizeInvitePolicy } from './invites.js';
+import {
+  METHODS,
+  normalizeDisabledMethods,
+  normalizeOauth,
+  oauthReady,
+} from './oauth.js';
 import { canonicalHost, parseDestination, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
 import { esc, listEnv } from './util.js';
@@ -62,7 +79,7 @@ async function listPage(ctx) {
       <td>${d.authRequired ? 'Required' : 'Public'}</td>
       <td>${esc((d.allowedAuthDomains || []).join(', ') || '—')}</td>
       <td>${esc(POLICY_LABELS[d.rootCreatePolicy] || d.rootCreatePolicy)}</td>
-      <td class="num">${esc(d.defaultStatus)}</td>
+      <td><span class="target">${esc(describePolicy(normalizePolicy(d.interstitial)))}</span></td>
     </tr>`
     )
     .join('');
@@ -78,7 +95,7 @@ ${flashFrom(url)}
   ${
     domains.length
       ? `<div class="tablewrap"><table><thead><tr>
-         <th>Host</th><th>Sign-in</th><th>May sign in</th><th>Root creation</th><th>Code</th>
+         <th>Host</th><th>Sign-in</th><th>May sign in</th><th>Root creation</th><th>Countdown</th>
          </tr></thead><tbody>${rows}</tbody></table></div>`
       : '<div class="empty">No domains configured.</div>'
   }
@@ -140,6 +157,12 @@ async function editForm(ctx, { error } = {}) {
   const deleteToken = await formToken(ctx, 'domain.delete');
   const isHub = host === ctx.cfg.hubHost;
   const routed = ctx.cfg.knownHosts.includes(host);
+  const policy = normalizePolicy(domain.interstitial);
+  const missingPolicy = normalizeMissingPolicy(domain.dirMissingPolicy);
+  const invitePolicy = normalizeInvitePolicy(domain.invitePolicy);
+  const oauth = normalizeOauth(domain.oauth);
+  const caps = normalizeCapabilities(domain.capabilities);
+  const disabledMethods = normalizeDisabledMethods(domain.disabledMethods);
 
   const body = `
 ${flashFrom(url)}${alert('error', error)}
@@ -178,16 +201,11 @@ ${routed ? '' : alert('error', 'This host is not in the DOMAINS variable, so the
       value: (domain.allowedCreateDomains || []).join(', '),
       note: 'Used by the email domain policy. Blank falls back to DEFAULT_ALLOWED_DOMAINS.',
     })}
-    <div class="row">
-      ${select({ name: 'defaultStatus', label: 'Default redirect code', value: domain.defaultStatus, options: STATUS_OPTIONS })}
-      ${field({
-        name: 'defaultDelay',
-        label: 'Default delay (seconds)',
-        type: 'number',
-        value: domain.defaultDelay || 0,
-        attrs: `min="0" max="${MAX_DELAY_SECONDS}"`,
-      })}
-    </div>
+    ${select({ name: 'defaultStatus', label: 'Default redirect code', value: domain.defaultStatus, options: STATUS_OPTIONS })}
+
+    <h2>Countdown</h2>
+    <p class="hint">Applies to every link on this host unless a directory narrows it, or is granted an exemption.</p>
+    ${policyForm(ctx, policy, { prefix: 'it', showDelegate: true })}
     ${field({
       name: 'rootRedirect',
       label: 'Where / goes (optional)',
@@ -205,6 +223,102 @@ ${routed ? '' : alert('error', 'This host is not in the DOMAINS variable, so the
       note: ctx.cfg.missingUrl
         ? 'Blank falls back to MISSING: ' + ctx.cfg.missingUrl
         : 'Blank shows a not-found page, because MISSING is not set.',
+    })}
+    <h2>What may be used here</h2>
+    <p class="hint">Each of these can be allowed or withheld on this domain. A directory may withdraw one further; an administrator may settle it for one person either way, and may always use it themselves.</p>
+    ${CAPABILITY_KEYS.map((key) =>
+      select({
+        name: 'cap_' + key,
+        label: CAPABILITIES[key].label,
+        value: triValue(caps, key),
+        options: TRI_OPTIONS.map((o) =>
+          o.value === ''
+            ? { value: '', label: `Inherit (${CAPABILITIES[key].default ? 'allowed' : 'not allowed'})` }
+            : o
+        ),
+        note: CAPABILITIES[key].hint,
+      })
+    ).join('')}
+
+    <h2>Single sign-on</h2>
+    <p class="hint">Authorization Code with PKCE. The provider establishes an address and nothing more: the allowed sign-in domains above still decide who may actually sign in, and an address the provider does not mark verified is refused.</p>
+    ${checkbox({ name: 'oauthEnabled', label: 'Offer single sign-on on this domain', checked: !!oauth.enabled })}
+    ${field({ name: 'oauthLabel', label: 'Button label', value: oauth.label, placeholder: 'Okta' })}
+    ${field({ name: 'oauthClientId', label: 'Client ID', value: oauth.clientId })}
+    ${field({ name: 'oauthAuthorizeUrl', label: 'Authorization endpoint', value: oauth.authorizeUrl, placeholder: 'https://idp.example.com/authorize', note: 'HTTPS only. Anything else is discarded.' })}
+    ${field({ name: 'oauthTokenUrl', label: 'Token endpoint', value: oauth.tokenUrl, placeholder: 'https://idp.example.com/oauth/token' })}
+    ${field({ name: 'oauthUserinfoUrl', label: 'Userinfo endpoint', value: oauth.userinfoUrl, placeholder: 'https://idp.example.com/userinfo' })}
+    ${field({ name: 'oauthScope', label: 'Scope', value: oauth.scope })}
+    <div class="row">
+      ${field({ name: 'oauthEmailField', label: 'Email field', value: oauth.emailField })}
+      ${field({ name: 'oauthVerifiedField', label: 'Verified field', value: oauth.verifiedField })}
+    </div>
+    ${checkbox({
+      name: 'oauthAllowUnverified',
+      label: 'Accept an address the provider has not verified',
+      checked: !!oauth.allowUnverified,
+      note: '(not recommended: an unverified address is a claim, not a fact)',
+    })}
+    <p class="note">Redirect URI to register with the provider: <code>https://${esc(
+      domain.host
+    )}/__slink/oauth/callback</code>. The client secret is the <code>oauth-secret</code> environment variable, never stored here.${
+      oauth.enabled && !oauthReady(ctx.cfg, domain)
+        ? ' <strong>Not usable yet: an endpoint, the client ID or the secret is missing.</strong>'
+        : ''
+    }</p>
+
+    <h3>Other sign-in methods</h3>
+    <p class="hint">Only available once single sign-on works. An administrator always keeps every route, so an outage at the provider cannot lock out the people who would fix it.</p>
+    ${checkbox({
+      name: 'disable_otp',
+      label: 'Turn off the emailed code',
+      checked: disabledMethods.includes('otp'),
+    })}
+    ${checkbox({
+      name: 'disable_passkey',
+      label: 'Turn off passkeys',
+      checked: disabledMethods.includes('passkey'),
+    })}
+
+    <h2>Who may be given access</h2>
+    <p class="hint">Applies when a link or directory changes hands, and when someone is granted access to a directory. The baseline is always whoever could sign in to this host anyway.</p>
+    ${select({
+      name: 'inviteMode',
+      label: 'Beyond the sign-in domains',
+      value: invitePolicy.mode,
+      options: [
+        { value: 'off', label: 'Nobody else' },
+        { value: 'optional', label: 'The list below, and a directory may narrow it' },
+        { value: 'locked', label: 'The list below, fixed for every directory' },
+      ],
+    })}
+    ${field({
+      name: 'inviteDomains',
+      label: 'Email domains that may be given access',
+      value: invitePolicy.domains.join(', '),
+      placeholder: 'pontera.com, partner.com',
+      note: 'Comma separated. Ignored when the choice above is "Nobody else".',
+    })}
+
+    <h2>Directory MISSING destinations</h2>
+    <p class="hint">A directory can answer its own root, and unknown shortcuts under it, with a destination of its own. This decides whether directories may set one.</p>
+    ${select({
+      name: 'dirMissingMode',
+      label: 'Directories may set their own',
+      value: missingPolicy.mode,
+      options: [
+        { value: 'optional', label: 'Yes, each directory decides' },
+        { value: 'locked', label: 'No, use the destination below for all of them' },
+        { value: 'off', label: 'No, they all use this domain MISSING' },
+      ],
+      note: 'An administrator can still exempt one directory on its own screen.',
+    })}
+    ${field({
+      name: 'dirMissingTarget',
+      label: 'Destination for directories that set none (optional)',
+      value: missingPolicy.target || '',
+      placeholder: 'https://example.com/teams',
+      note: 'Used when a directory has nothing of its own, and for every directory when the choice above is locked.',
     })}
     ${textarea({ name: 'note', label: 'Note', value: domain.note || '' })}
     ${checkbox({ name: 'enabled', label: 'Enabled', checked: domain.enabled !== false })}
@@ -247,11 +361,14 @@ async function editSubmit(ctx) {
 
   let rootRedirect = null;
   let notFoundUrl = null;
+  let dirMissingTarget = null;
   try {
     const rr = String(body.get('rootRedirect') || '').trim();
     const nf = String(body.get('notFoundUrl') || '').trim();
     if (rr) rootRedirect = parseDestination(rr, { blockedSchemes: ctx.cfg.settings.blockedSchemes }).target;
     if (nf) notFoundUrl = parseDestination(nf, { blockedSchemes: ctx.cfg.settings.blockedSchemes }).target;
+    const dm = String(body.get('dirMissingTarget') || '').trim();
+    if (dm) dirMissingTarget = parseDestination(dm, { blockedSchemes: ctx.cfg.settings.blockedSchemes }).target;
   } catch (err) {
     if (err instanceof ValidationError) return editForm(ctx, { error: err.message });
     throw err;
@@ -263,9 +380,36 @@ async function editSubmit(ctx) {
   domain.allowedCreateDomains = parseDomainList(body.get('allowedCreateDomains'));
   domain.rootCreatePolicy = ROOT_CREATE_POLICIES.includes(policy) ? policy : 'email_domain';
   domain.defaultStatus = clampStatus(body.get('defaultStatus'), 302);
-  domain.defaultDelay = clampDelay(body.get('defaultDelay'), 0);
+  domain.interstitial = readPolicy(body, 'it');
   domain.rootRedirect = rootRedirect;
   domain.notFoundUrl = notFoundUrl;
+  domain.capabilities = readCapabilityForm(body, 'cap_');
+  domain.oauth = normalizeOauth({
+    enabled: body.get('oauthEnabled') === '1',
+    label: body.get('oauthLabel'),
+    clientId: body.get('oauthClientId'),
+    authorizeUrl: body.get('oauthAuthorizeUrl'),
+    tokenUrl: body.get('oauthTokenUrl'),
+    userinfoUrl: body.get('oauthUserinfoUrl'),
+    scope: body.get('oauthScope'),
+    emailField: body.get('oauthEmailField'),
+    verifiedField: body.get('oauthVerifiedField'),
+    allowUnverified: body.get('oauthAllowUnverified') === '1',
+  });
+  domain.disabledMethods = normalizeDisabledMethods(
+    METHODS.filter((m) => body.get('disable_' + m) === '1')
+  );
+
+  const inviteMode = String(body.get('inviteMode') || 'off');
+  domain.invitePolicy = normalizeInvitePolicy({
+    mode: INVITE_MODES.includes(inviteMode) ? inviteMode : 'off',
+    domains: parseDomainList(body.get('inviteDomains')),
+  });
+  const dirMissingMode = String(body.get('dirMissingMode') || 'optional');
+  domain.dirMissingPolicy = normalizeMissingPolicy({
+    mode: MISSING_MODES.includes(dirMissingMode) ? dirMissingMode : 'optional',
+    target: dirMissingTarget || '',
+  });
   domain.note = String(body.get('note') || '').slice(0, 500);
   domain.enabled = body.get('enabled') === '1';
   domain.readonly = body.get('readonly') === '1';

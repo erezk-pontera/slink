@@ -25,7 +25,7 @@ export function adminUrl(cfg, host) {
 /** Wrap a body fragment in the page chrome. */
 export function layout({
   title,
-  appName = 'Slink',
+  appName = 'Shrink Link',
   body,
   user = null,
   nav = [],
@@ -34,6 +34,7 @@ export function layout({
   host = '',
   footer = '',
   homeHref = '/admin',
+  headerExtra = '',
 }) {
   const navHtml = nav.length
     ? `<nav class="main">${nav
@@ -64,22 +65,23 @@ export function layout({
 ${turnstile ? turnstileScriptTag() : ''}
 </head><body>
 <header class="top"><div class="wrap">
-  <a class="brand" href="${esc(homeHref)}">${esc(appName)}${host ? ` <span>${esc(host)}</span>` : ''}</a>
+  <a class="brand" href="${esc(homeHref)}">${esc(appName)}</a>
+  ${headerExtra || (host ? `<span class="hostname">${esc(host)}</span>` : '')}
   ${navHtml}${whoHtml}
 </div></header>
 <main class="wrap${narrow ? ' narrow' : ''}">${body}</main>
-<footer class="foot">${footer || esc(appName)}</footer>
+<footer class="foot">${footer ? `<div>${footer}</div>` : ''}<div>&copy; Pontera Solutions Inc. All rights reserved</div></footer>
 <script src="${esc(JS_SRC)}" defer></script>
 </body></html>`;
 }
 
 /** Build an HTML response with the hardened header set. */
-export function html(bodyHtml, { status = 200, turnstile = false, headers } = {}) {
+export function html(bodyHtml, { status = 200, turnstile = false, store = false, externalImages = false, headers } = {}) {
   const res = new Response(bodyHtml, {
     status,
     headers: { 'Content-Type': 'text/html; charset=utf-8', ...(headers || {}) },
   });
-  return harden(res, { turnstile });
+  return harden(res, { turnstile, store, externalImages });
 }
 
 export function alert(kind, message) {
@@ -159,10 +161,45 @@ export function statusBadges(rec) {
   const out = [];
   if (rec.enabled === false) out.push('<span class="badge off">disabled</span>');
   if (rec.readonly) out.push('<span class="badge ro">read-only</span>');
+  if (rec.activeFrom && rec.activeFrom > 0 && rec.activeFrom > Math.floor(Date.now() / 1000)) {
+    out.push(`<span class="badge ro">starts ${esc(fmtTime(rec.activeFrom))}</span>`);
+  }
   if (rec.expiresAt && rec.expiresAt > 0) {
     out.push(`<span class="badge">expires ${esc(fmtTime(rec.expiresAt))}</span>`);
   }
   return out.join(' ');
+}
+
+/**
+ * A bar chart of daily hits as inline SVG. Inline markup, not script, so it
+ * costs nothing in the content security policy and renders with JavaScript
+ * off. Colours come from the theme tokens, so it follows light and dark.
+ */
+export function clickChart(series, { height = 56 } = {}) {
+  if (!series || !series.length) return '';
+  const peak = series.reduce((m, d) => Math.max(m, d.n), 0);
+  if (!peak) {
+    return '<p class="note">No hits recorded in this period.</p>';
+  }
+  const gap = 2;
+  const barWidth = 6;
+  const width = series.length * (barWidth + gap) - gap;
+  const bars = series
+    .map((d, i) => {
+      const h = Math.max(1, Math.round((d.n / peak) * height));
+      const x = i * (barWidth + gap);
+      return `<rect x="${x}" y="${height - h}" width="${barWidth}" height="${h}" rx="1"><title>${esc(
+        d.day
+      )}: ${esc(d.n)}</title></rect>`;
+    })
+    .join('');
+  return `<div class="chart">
+  <svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img"
+       preserveAspectRatio="none" aria-label="Daily hits, peak ${esc(peak)}">${bars}</svg>
+  <p class="note">${esc(series[0].day)} to ${esc(series[series.length - 1].day)} &middot; peak ${esc(
+    peak
+  )} in a day</p>
+</div>`;
 }
 
 export function pager(prevHref, nextHref) {
@@ -174,12 +211,46 @@ export function pager(prevHref, nextHref) {
 
 /* ---------------------------------------------------------------- sign-in */
 
-export function loginPage({ cfg, host, error, info, csrf, next, email = '' }) {
-  const body = `
-${alert('error', error)}${alert('info', info)}
-<div class="card">
-  <h1>Sign in</h1>
-  <p class="sub">We will email you a ${cfg.settings.otpLength}-digit code.</p>
+export function loginPage({
+  cfg,
+  host,
+  error,
+  info,
+  csrf,
+  next,
+  email = '',
+  methods = { otp: true, oauth: false, passkey: false },
+  ssoLabel = 'Single sign-on',
+  passkeyCsrf = '',
+}) {
+  const ssoHref = '/__slink/oauth/start?r=' + encodeURIComponent(next || '/admin');
+  const sso = methods.oauth
+    ? `<div class="sso">
+    <a class="btn" href="${esc(ssoHref)}">Continue with ${esc(ssoLabel)}</a>
+  </div>`
+    : '';
+
+  // With the code switched off, single sign-on is the only way in and the
+  // page should not present a form that cannot succeed.
+  const rule = '<p class="divider"><span>or</span></p>';
+  const divider = methods.oauth && methods.otp ? rule : '';
+
+  // The whole passkey block stays hidden until the script has confirmed
+  // this browser can use one, its own divider included, so a visitor
+  // without JavaScript is never shown a stray rule above a control that
+  // was never going to appear.
+  const passkey =
+    methods.passkey && passkeyCsrf
+      ? `<div data-slink-passkey-login data-token="${esc(passkeyCsrf)}"
+       data-next="${esc(next || '/admin')}" hidden>
+    <div class="sso">
+      <button type="button" class="btn secondary" data-slink-passkey-go>Sign in with a passkey</button>
+    </div>
+    <p class="hint" data-slink-passkey-msg role="status"></p>${methods.otp ? rule : ''}
+  </div>`
+      : '';
+  const byEmail = methods.otp
+    ? `<p class="sub">We will email you a ${cfg.settings.otpLength}-digit code.</p>
   <form method="post" action="/admin" data-no-busy>
     ${csrfField(csrf)}${hidden('stage', 'email')}${hidden('next', next)}
     ${field({
@@ -193,7 +264,19 @@ ${alert('error', error)}${alert('info', info)}
     })}
     ${turnstileWidget(cfg.turnstileSiteKey, 'login')}
     <div class="actions"><button type="submit">Send code</button></div>
-  </form>
+  </form>`
+    : '';
+
+  const body = `
+${alert('error', error)}${alert('info', info)}
+<div class="card">
+  <h1>Sign in</h1>
+  ${sso}${passkey}${divider}${byEmail}
+  ${
+    !methods.otp && !methods.oauth && !methods.passkey
+      ? '<p class="sub">No sign-in method is available on this domain. An administrator needs to enable one.</p>'
+      : ''
+  }
 </div>`;
   return layout({
     title: 'Sign in - ' + cfg.appName,
@@ -203,6 +286,79 @@ ${alert('error', error)}${alert('info', info)}
     narrow: true,
     turnstile: true,
   });
+}
+
+/**
+ * The screen a visitor meets when a link is password-protected.
+ *
+ * Deliberately says as little as possible: no destination, no owner, no
+ * shortcut beyond what is already in the address bar. A wrong answer and an
+ * unknown link should look the same to someone probing.
+ *
+ * Autofill is turned off on the field. A link password is shared with a
+ * group and typed once, not a credential a browser should remember, and a
+ * saved one would hand the link to the next person at that machine.
+ */
+export function passwordPage({ cfg, host, path, error, csrf, next = '' }) {
+  const body = `
+${alert('error', error)}
+<div class="card">
+  <h1>This link is protected</h1>
+  <p class="sub">Enter the password for <code>${esc(host)}/${esc(path)}</code>.</p>
+  <form method="post" action="/${esc(path)}" data-no-busy autocomplete="off" data-slink-unlock>
+    ${csrfField(csrf)}${hidden('slink-unlock', '1')}${next ? hidden('next', next) : ''}
+    <div class="field">
+      <label for="f_linkpw">Password</label>
+      <input id="f_linkpw" name="password" type="password" required autofocus
+        autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+        data-lpignore="true" data-1p-ignore data-bwignore maxlength="128">
+    </div>
+    ${turnstileWidget(cfg.turnstileSiteKey, 'unlock')}
+    <div class="actions"><button type="submit">Open the link</button></div>
+  </form>
+</div>`;
+  return layout({
+    title: 'Protected link - ' + cfg.appName,
+    appName: cfg.appName,
+    host,
+    body,
+    narrow: true,
+    turnstile: true,
+    homeHref: '/',
+  });
+}
+
+/**
+ * Deliver a destination inside a frame instead of redirecting to it.
+ *
+ * Whether this works at all is up to the destination: a site that sends
+ * X-Frame-Options or a frame-ancestors policy will refuse, and there is
+ * nothing this end can do about that. The page says so, visibly, because a
+ * silent blank frame is the worst version of that failure.
+ */
+export function framePage({ cfg, host, link, url: target }) {
+  const title = (link.preview && link.preview.title) || link.path;
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<title>${esc(title)}</title>
+<link rel="stylesheet" href="${ASSET_PREFIX}/app.css?v=${ASSET_VERSION}">
+<link rel="icon" type="image/svg+xml" href="${ASSET_PREFIX}/logo.svg?v=${ASSET_VERSION}">
+</head><body class="framed">
+<noscript><p class="framefail">This page shows another site in a frame. <a href="${esc(
+    target
+  )}" rel="noreferrer">Open it directly</a>.</p></noscript>
+<div class="framefail" id="slink-frame-note">
+  If nothing appears, the destination does not allow being framed.
+  <a href="${esc(target)}" rel="noreferrer">Open it directly</a>.
+</div>
+<iframe class="slink-frame" src="${esc(target)}" title="${esc(title)}"
+  referrerpolicy="no-referrer" loading="eager"
+  sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"></iframe>
+</body></html>`;
 }
 
 export function verifyPage({ cfg, host, error, info, csrf, email, expiresIn }) {
@@ -228,10 +384,11 @@ ${alert('error', error)}${alert('info', info)}
 </div>
 <div class="card">
   <h2>Did not get it?</h2>
-  <p class="hint">Check your spam folder, or request a new code.</p>
-  <form method="post" action="/admin" class="actions tight">
+  <p class="hint">Check your spam folder, or ask for the same code again. It stays valid either way.</p>
+  <form method="post" action="/admin" data-no-busy>
     ${csrfField(csrf)}${hidden('stage', 'resend')}
-    <button type="submit" class="secondary">Send a new code</button>
+    ${turnstileWidget(cfg.turnstileSiteKey, 'resend')}
+    <div class="actions tight"><button type="submit" class="secondary">Send it again</button></div>
   </form>
   <form method="post" action="/admin" class="actions">
     ${csrfField(csrf)}${hidden('stage', 'restart')}
@@ -251,21 +408,40 @@ ${alert('error', error)}${alert('info', info)}
 /* ------------------------------------------------------------- interstitial */
 
 /** The delayed redirect page. Works without JavaScript via meta refresh. */
-export function interstitialPage({ cfg, host, link, target, delay }) {
+export function interstitialPage({
+  cfg,
+  host,
+  link,
+  target,
+  delay,
+  showTarget = true,
+  continueHref,
+  returnHere = false,
+}) {
   const home = adminUrl(cfg, host);
+  // Where the page sends the visitor. With the destination hidden this is a
+  // path on this host, so the real target appears nowhere in the markup.
+  // A framed link comes back here too even when the destination is shown,
+  // because leaving straight for it would skip the frame.
+  const go = showTarget && !returnHere ? target : continueHref;
+
   const body = `
 <div class="card center">
   <p class="hint">You are being redirected</p>
   <p class="count"><span data-slink-count>${esc(delay)}</span></p>
-  <p class="dest mono">${esc(target)}</p>
+  ${
+    showTarget
+      ? `<p class="dest mono">${esc(target)}</p>`
+      : '<p class="dest hint">The destination is not shown for this link.</p>'
+  }
   <div class="actions" style="justify-content:center">
-    <a class="btn" href="${esc(target)}" rel="noopener noreferrer nofollow">Go now</a>
+    <a class="btn" href="${esc(go)}" rel="noopener noreferrer nofollow">Go now</a>
   </div>
 </div>
-<div data-slink-redirect="${esc(target)}" data-slink-delay="${esc(delay)}" hidden></div>`;
+<div data-slink-redirect="${esc(go)}" data-slink-delay="${esc(delay)}" hidden></div>`;
 
   // The meta refresh is the no-script fallback; the counter above is cosmetic.
-  const head = `<meta http-equiv="refresh" content="${esc(delay)};url=${esc(target)}">`;
+  const head = `<meta http-equiv="refresh" content="${esc(delay)};url=${esc(go)}">`;
   const page = layout({
     title: 'Redirecting - ' + cfg.appName,
     appName: cfg.appName,

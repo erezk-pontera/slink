@@ -25,6 +25,7 @@ import {
   VERIFY,
   verifyChallenge,
   verifyMessage,
+  RESEND,
 } from './otp.js';
 import { domainAllowed, normalizeEmail, ValidationError } from './paths.js';
 import * as rl from './ratelimit.js';
@@ -38,8 +39,24 @@ import {
   signToken,
   verifyToken,
 } from './security.js';
+import {
+  authorizeUrl,
+  exchangeCode,
+  fetchEmail,
+  methodsFor,
+  oauthReady,
+  pkcePair,
+  STATE_TTL_SECONDS,
+} from './oauth.js';
 import { turnstileVerifyOrFail } from './turnstile.js';
-import { findOrCreateUser, getUserById, isAdmin, putUser } from './users.js';
+import {
+  findOrCreateUser,
+  getUserById,
+  getUserByNorm,
+  isAdmin,
+  isRootAdmin,
+  putUser,
+} from './users.js';
 import { now, randomId, sha256Hex } from './util.js';
 
 export const COOKIE = {
@@ -47,6 +64,7 @@ export const COOKIE = {
   login: '__Host-slink_login',
   csrf: '__Host-slink_csrf',
   sso: '__Host-slink_sso',
+  oauth: '__Host-slink_oauth',
 };
 
 /** Only same-origin absolute paths may be used as a post-login destination. */
@@ -185,6 +203,18 @@ export function csrfCookie(ctx) {
 /* ------------------------------------------------------------ sign-in flow */
 
 /** Is this address allowed to authenticate on this host? */
+/**
+ * Is this address an administrator? Used before anyone is signed in, so it
+ * has to go to the record rather than to a session. A root administrator
+ * counts even with no account yet, which is what makes a first sign-in on a
+ * host with the code switched off possible at all.
+ */
+export async function isAdminAddress(cfg, emailNorm) {
+  if (isRootAdmin(cfg, emailNorm)) return true;
+  const user = await getUserByNorm(cfg, emailNorm);
+  return !!(user && !user.disabled && isAdmin(cfg, user));
+}
+
 export function mayAuthenticate(cfg, domain, emailNorm) {
   const emailDomain = emailNorm.slice(emailNorm.lastIndexOf('@') + 1);
   const allowed = authDomainsFor(cfg, domain);
@@ -253,6 +283,25 @@ export async function beginLogin(ctx, body) {
       })
     );
     return { ok: false, error: 'That email address is not permitted to sign in here.' };
+  }
+
+  // Where the host has switched the emailed code off, it stays available to
+  // administrators and to nobody else. The page cannot know who is asking
+  // before they type an address, so the rule is enforced here, where it can.
+  // A refusal is silent for the same reason the rest of this flow is: saying
+  // "not an administrator" would turn the sign-in form into a way of asking
+  // who the administrators are.
+  if (!methodsFor(cfg, ctx.domain, { isAdmin: await isAdminAddress(cfg, parsed.emailNorm) }).otp) {
+    ctx.waitUntil(
+      audit(cfg, {
+        event: EVENTS.loginBlocked,
+        host,
+        ip,
+        outcome: 'denied',
+        detail: { email: parsed.emailNorm, reason: 'otp-disabled-on-domain' },
+      })
+    );
+    return { ok: true, cookies: [] };
   }
 
   const next = safeNext(body.get('next'), '/admin');
@@ -374,17 +423,31 @@ export async function completeLogin(ctx, body) {
 }
 
 /** Re-send a code for the challenge the browser already holds. */
-export async function resendLogin(ctx) {
+export async function resendLogin(ctx, body) {
   const { cfg, request, host } = ctx;
   const cookies = parseCookies(request);
   const loginId = cookies[COOKIE.login];
   if (!loginId) return { ok: false, error: 'Your sign-in session has expired. Start again.', restart: true };
 
+  // A resend sends mail, so it is a challenge of its own rather than a
+  // free button: without this, the page is a way to have us email somebody
+  // repeatedly on request.
+  const turn = await turnstileVerifyOrFail(ctx, body, 'resend');
+  if (!turn.ok) return { ok: false, error: turn.error };
+
   const record = await getChallenge(cfg, loginId);
   if (!record) return { ok: false, error: 'Your sign-in session has expired. Start again.', restart: true };
 
   const issued = await resendChallenge(cfg, loginId, record);
-  if (!issued) return { ok: false, error: 'Please wait a moment before requesting another code.' };
+  if (issued.status === RESEND.expired || issued.status === RESEND.lost) {
+    return { ok: false, error: 'Your sign-in session has expired. Start again.', restart: true };
+  }
+  if (issued.status === RESEND.tooSoon) {
+    return { ok: false, error: 'Please wait a moment before requesting the code again.' };
+  }
+  if (issued.status === RESEND.tooMany) {
+    return { ok: false, error: 'That code has been sent several times already. Start again.' };
+  }
 
   try {
     await sendOtpEmail(cfg, {
@@ -397,7 +460,8 @@ export async function resendLogin(ctx) {
   } catch {
     return { ok: false, error: 'We could not send the code. Try again shortly.' };
   }
-  return { ok: true, info: 'A new code is on its way.' };
+  // Deliberately the same code: one already in transit stays valid.
+  return { ok: true, info: 'We have sent the same code again. It is still the one to use.' };
 }
 
 /** Sign out: revoke this session, and every other session the user holds. */
@@ -418,6 +482,115 @@ export async function signOut(ctx, { everywhere = true } = {}) {
 /* ----------------------------------------------------------------- SSO */
 
 const SSO_TTL = 120;
+
+/* ------------------------------------------- external identity provider */
+
+/**
+ * Begin an authorization-code exchange.
+ *
+ * The state and the PKCE verifier travel in a signed cookie rather than in
+ * storage, so an abandoned attempt costs nothing and expires by itself. The
+ * cookie is `__Host-`, SameSite=Lax and short lived, so the callback can only
+ * be completed by the browser that started it.
+ */
+export async function oauthBegin(ctx, returnPath) {
+  const { cfg, domain, origin } = ctx;
+  if (!oauthReady(cfg, domain)) return { ok: false, error: 'Single sign-on is not configured here.' };
+
+  const state = randomId(18);
+  const { verifier, challenge } = await pkcePair();
+  const token = await signToken(cfg.authSecret, 'oauth-state', {
+    s: state,
+    v: verifier,
+    r: safeNext(returnPath, '/admin'),
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + STATE_TTL_SECONDS,
+  });
+
+  return {
+    ok: true,
+    location: authorizeUrl(domain, { origin, state, challenge }),
+    cookie: serializeCookie(COOKIE.oauth, token, {
+      maxAge: STATE_TTL_SECONDS,
+      sameSite: 'Lax',
+    }),
+  };
+}
+
+/**
+ * Complete the exchange and sign the person in.
+ *
+ * The provider establishes an address and nothing more: the host's
+ * allowed-domain list still decides whether that address may sign in, and a
+ * disabled account is still refused.
+ */
+export async function oauthComplete(ctx, { code, state }) {
+  const { cfg, domain, host, request, origin } = ctx;
+  const ip = clientIp(request);
+  const fail = (error) => ({ ok: false, error, cookies: [clearCookie(COOKIE.oauth)] });
+
+  if (!oauthReady(cfg, domain)) return fail('Single sign-on is not configured here.');
+
+  const cookies = parseCookies(request);
+  const payload = await verifyToken(cfg.authSecret, 'oauth-state', cookies[COOKIE.oauth], {
+    maxAgeSeconds: STATE_TTL_SECONDS,
+  });
+  if (!payload) return fail('That sign-in took too long. Please try again.');
+  // Constant-time is unnecessary here: both values are random and single
+  // use, and a mismatch reveals nothing about either.
+  if (!state || state !== payload.s) return fail('That sign-in could not be verified.');
+  if (!code) return fail('The identity provider did not return a code.');
+
+  const token = await exchangeCode(cfg, domain, { code, verifier: payload.v, origin });
+  if (!token.ok) return fail(token.error);
+
+  const profile = await fetchEmail(domain, token.accessToken);
+  if (!profile.ok) return fail(profile.error);
+
+  let parsed;
+  try {
+    parsed = normalizeEmail(profile.email, cfg.emailOpts);
+  } catch {
+    return fail('The identity provider supplied an address we cannot use.');
+  }
+
+  if (!mayAuthenticate(cfg, domain, parsed.emailNorm)) {
+    ctx.waitUntil(
+      audit(cfg, {
+        event: EVENTS.loginBlocked,
+        host,
+        ip,
+        detail: { via: 'oauth', reason: 'domain-not-allowed' },
+        outcome: 'denied',
+      })
+    );
+    return fail('That address may not sign in to this domain.');
+  }
+
+  const { user } = await findOrCreateUser(cfg, parsed.email);
+  if (!user || user.disabled) {
+    ctx.waitUntil(
+      audit(cfg, { event: EVENTS.loginBlocked, actor: user, host, ip, detail: { via: 'oauth' }, outcome: 'denied' })
+    );
+    return fail('That account is disabled.');
+  }
+
+  user.lastLoginAt = now();
+  user.loginCount = (user.loginCount || 0) + 1;
+  await putUser(cfg, user);
+
+  const session = await createSession(cfg, { user, host, request });
+  ctx.waitUntil(
+    audit(cfg, { event: EVENTS.loginSucceeded, actor: user, host, ip, detail: { via: 'oauth' } })
+  );
+
+  return {
+    ok: true,
+    user,
+    next: safeNext(payload.r, '/admin'),
+    cookies: [session.cookie, clearCookie(COOKIE.oauth), clearCookie(COOKIE.csrf)],
+  };
+}
 
 /** On a non-hub host: start the handshake and remember a nonce. */
 export function ssoStart(ctx, returnPath) {

@@ -6,37 +6,76 @@
  */
 
 import { adminPage, back, denied, flashFrom, formToken, readForm } from './admin.js';
-import { audit, EVENTS, listAudit } from './audit.js';
+import { audit, EVENTS, listAudit, purgeAudit } from './audit.js';
 import { checkCsrf, destroyAllSessions } from './auth.js';
 import { saveSettings } from './config.js';
 import { listUserGrants } from './directories.js';
 import { clientIp } from './geo.js';
+import { ANY_HOST, EXEMPTIBLE, normalizeExempt } from './interstitial.js';
 import { PROVIDERS } from './mailer.js';
 import { HARD_BLOCKED_SCHEMES, normalizeEmail, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
+import { canImpersonate, mintImpersonation } from './impersonate.js';
+import {
+  ANY_HOST as CAP_ANY_HOST,
+  CAPABILITIES,
+  CAPABILITY_KEYS,
+  normalizeUserCapabilities,
+  TRI_OPTIONS,
+  triValue,
+} from './capabilities.js';
+import { deleteAllPasskeys } from './passkeys.js';
 import { deleteUser, getUserByNorm, isRootAdmin, listUsers, putUser } from './users.js';
 import { esc, fmtTime, intEnv, listEnv } from './util.js';
 import { alert, checkbox, csrfField, field, hidden, select, textarea } from './views.js';
 
+const EXEMPT_LABELS = {
+  countdown: 'may set the countdown against the policy',
+  destination: 'may show or hide the destination against the policy',
+  minDelay: 'may go below the minimum delay',
+};
+
+const ROOT_IMMUTABLE =
+  'That account is a root administrator, set by the ADMIN variable. It always holds every ' +
+  'permission and cannot be changed, disabled or deleted here. Edit ADMIN and redeploy instead.';
+
 /* ----------------------------------------------------------------- users */
+
+/**
+ * Root administrators are configured in the ADMIN environment variable, hold
+ * every permission unconditionally, and are not manageable from here at all:
+ * they are left out of the list and every write that names one is refused.
+ * Their authority comes from the deployment, so the UI must not suggest it
+ * can be edited away.
+ */
+function isRootAccount(cfg, user) {
+  return !!user && isRootAdmin(cfg, user.emailNorm);
+}
 
 async function usersPage(ctx, { error } = {}) {
   const { cfg, url } = ctx;
-  const users = await listUsers(cfg);
-  const token = await formToken(ctx, 'user.update');
+  const all = await listUsers(cfg);
+  const users = all.filter((u) => !isRootAdmin(cfg, u.emailNorm));
+  const hidden = all.length - users.length;
+  const impToken = await formToken(ctx, 'user.impersonate');
 
   const rows = users
     .map((u) => {
-      const root = isRootAdmin(cfg, u.emailNorm);
       return `<tr>
       <td>${esc(u.email)}
-        ${root ? '<span class="badge ok">root admin</span>' : u.isAdmin ? '<span class="badge ok">admin</span>' : ''}
+        ${u.isAdmin ? '<span class="badge ok">admin</span>' : ''}
+        ${
+          u.isAdmin && u.allDirectories === false
+            ? '<span class="badge ro" title="Reaches only the directories they are granted on">scoped</span>'
+            : ''
+        }
         ${u.disabled ? '<span class="badge off">disabled</span>' : ''}
         ${u.emailNorm !== u.email ? `<div class="note">identity: ${esc(u.emailNorm)}</div>` : ''}
       </td>
       <td class="num">${esc(fmtTime(u.lastLoginAt))}</td>
       <td class="num">${esc(u.loginCount || 0)}</td>
       <td><a href="/admin/users/edit?u=${encodeURIComponent(u.emailNorm)}">Manage</a></td>
+      <td>${impersonateButton(ctx, u, impToken)}</td>
     </tr>`;
     })
     .join('');
@@ -44,12 +83,17 @@ async function usersPage(ctx, { error } = {}) {
   const body = `
 ${flashFrom(url)}${alert('error', error)}
 <h1>Users</h1>
-<p class="sub">Accounts are created the first time someone completes a sign-in. Root administrators come from the ADMIN variable and cannot be demoted here.</p>
+<p class="sub">Accounts are created the first time someone completes a sign-in.</p>
+${
+  hidden
+    ? `<p class="sub">${hidden} root administrator${hidden === 1 ? ' is' : 's are'} not listed. They are set by the ADMIN variable, always hold every permission, and cannot be changed, disabled or deleted from here — edit ADMIN and redeploy instead.</p>`
+    : ''
+}
 
 <div class="card">
   ${
     users.length
-      ? `<div class="tablewrap"><table><thead><tr><th>User</th><th>Last sign-in</th><th>Sign-ins</th><th></th></tr></thead>
+      ? `<div class="tablewrap"><table><thead><tr><th>User</th><th>Last sign-in</th><th>Sign-ins</th><th></th><th></th></tr></thead>
          <tbody>${rows}</tbody></table></div>`
       : '<div class="empty">No users yet.</div>'
   }
@@ -63,20 +107,58 @@ async function userEditForm(ctx, { error } = {}) {
   const emailNorm = String(url.searchParams.get('u') || '').toLowerCase();
   const user = await getUserByNorm(cfg, emailNorm);
   if (!user) return back('/admin/users', 'notfound');
+  if (isRootAccount(cfg, user)) return denied(ctx, ROOT_IMMUTABLE);
 
-  const root = isRootAdmin(cfg, user.emailNorm);
+  const root = false;
   const grants = await listUserGrants(cfg, user.id);
   const token = await formToken(ctx, 'user.update');
   const revokeToken = await formToken(ctx, 'user.revoke');
   const deleteToken = await formToken(ctx, 'user.delete');
 
-  const rootCreateBoxes = cfg.knownHosts
-    .map((h) =>
-      checkbox({
-        name: 'root__' + h,
-        label: 'May create at the root of ' + h,
-        checked: !!(user.rootCreate && user.rootCreate[h]),
+  // Per-domain grants. An administrator already holds all of these, so the
+  // boxes render ticked and disabled rather than implying a restriction.
+  const isAdminAccount = root || !!user.isAdmin;
+  const exemptTable = {};
+  for (const key of [ANY_HOST, ...cfg.knownHosts]) {
+    exemptTable[key] = normalizeExempt((user.interstitialExempt || {})[key]);
+  }
+  const capTable = normalizeUserCapabilities(user.capabilities);
+  const capSelects = (host) =>
+    CAPABILITY_KEYS.map((key) =>
+      select({
+        name: 'cap__' + host + '__' + key,
+        label: CAPABILITIES[key].label,
+        value: triValue(capTable[host], key),
+        options: TRI_OPTIONS,
       })
+    ).join('');
+  const perDomainBoxes = cfg.knownHosts
+    .map(
+      (h) => `<fieldset class="grants">
+        <legend class="note">${esc(h)}</legend>
+        ${checkbox({
+          name: 'root__' + h,
+          label: 'May create links at the root',
+          checked: isAdminAccount || !!(user.rootCreate && user.rootCreate[h]),
+          disabled: isAdminAccount,
+          note: isAdminAccount ? '(administrator)' : '',
+        })}
+        ${checkbox({
+          name: 'dir__' + h,
+          label: 'May create directories',
+          checked: isAdminAccount || !!(user.dirCreate && user.dirCreate[h]),
+          disabled: isAdminAccount,
+          note: isAdminAccount ? '(administrator)' : '',
+        })}
+        ${EXEMPTIBLE.map((k) =>
+          checkbox({
+            name: 'ex__' + h + '__' + k,
+            label: 'Countdown exemption: ' + EXEMPT_LABELS[k],
+            checked: !!exemptTable[h][k],
+          })
+        ).join('')}
+        ${capSelects(h)}
+      </fieldset>`
     )
     .join('');
 
@@ -106,13 +188,39 @@ ${flashFrom(url)}${alert('error', error)}
       note: root ? '(set by the ADMIN variable)' : '(full control over everything)',
     })}
     ${checkbox({
+      name: 'allDirectories',
+      label: 'Reaches every directory',
+      checked: root || user.allDirectories !== false,
+      disabled: root || !isAdminAccount,
+      note: root
+        ? '(a root administrator always reaches every directory)'
+        : isAdminAccount
+          ? '(turn off to scope this administrator to the directories they are granted on; they keep every other administrative power, ownership changes included)'
+          : '(administrators only)',
+    })}
+    ${checkbox({
       name: 'disabled',
       label: 'Disabled',
       checked: !!user.disabled,
       disabled: root,
       note: root ? '(root administrators cannot be disabled)' : '(blocks sign-in and revokes access)',
     })}
-    ${rootCreateBoxes}
+    <h2>Countdown exemptions on every domain</h2>
+    <p class="hint">A global exemption lets this person set that one thing on any domain, against the policy. Leave these off and grant per domain below where possible.</p>
+    ${EXEMPTIBLE.map((k) =>
+      checkbox({
+        name: 'ex__' + ANY_HOST + '__' + k,
+        label: EXEMPT_LABELS[k],
+        checked: !!exemptTable[ANY_HOST][k],
+      })
+    ).join('')}
+
+    <h2>What this person may use, on every domain</h2>
+    <p class="hint">A ruling here settles the question wherever the domain and the directory would otherwise decide it, in either direction. Leave it on Inherit to let them decide. It never applies to an administrator, who may use everything.</p>
+    ${capSelects(CAP_ANY_HOST)}
+
+    <h2>Per domain</h2>
+    ${perDomainBoxes}
     ${textarea({ name: 'note', label: 'Note', value: user.note || '' })}
     <div class="actions">
       <button type="submit">Save</button>
@@ -161,17 +269,55 @@ async function userEditSubmit(ctx) {
   const emailNorm = String(body.get('u') || '').toLowerCase();
   const user = await getUserByNorm(ctx.cfg, emailNorm);
   if (!user) return back('/admin/users', 'notfound');
+  if (isRootAccount(ctx.cfg, user)) return denied(ctx, ROOT_IMMUTABLE);
 
-  const root = isRootAdmin(ctx.cfg, user.emailNorm);
+  const root = false;
   if (!root) {
     user.isAdmin = body.get('isAdmin') === '1';
     user.disabled = body.get('disabled') === '1';
+    // Only an administrator can be scoped, and the box only renders for one.
+    // An ordinary account keeps the default so a later promotion starts with
+    // the full reach rather than a silent restriction.
+    user.allDirectories = user.isAdmin ? body.get('allDirectories') === '1' : true;
   }
-  const rootCreate = {};
-  for (const host of ctx.cfg.knownHosts) {
-    if (body.get('root__' + host) === '1') rootCreate[host] = true;
+  // An administrator's boxes render disabled, so a browser submits none of
+  // them. Leaving the stored grants untouched keeps them intact if the
+  // account is later demoted, rather than silently clearing them on save.
+  if (!root && !user.isAdmin) {
+    const rootCreate = {};
+    const dirCreate = {};
+    for (const host of ctx.cfg.knownHosts) {
+      if (body.get('root__' + host) === '1') rootCreate[host] = true;
+      if (body.get('dir__' + host) === '1') dirCreate[host] = true;
+    }
+    user.rootCreate = rootCreate;
+    user.dirCreate = dirCreate;
   }
-  user.rootCreate = rootCreate;
+
+  // Capability rulings apply to administrators' accounts too, because an
+  // account can be demoted later and the ruling should still be there.
+  const capabilities = {};
+  for (const host of [CAP_ANY_HOST, ...ctx.cfg.knownHosts]) {
+    const map = {};
+    for (const key of CAPABILITY_KEYS) {
+      const v = String(body.get('cap__' + host + '__' + key) || '');
+      if (v === 'allow') map[key] = true;
+      else if (v === 'deny') map[key] = false;
+    }
+    if (Object.keys(map).length) capabilities[host] = map;
+  }
+  user.capabilities = normalizeUserCapabilities(capabilities);
+
+  // Exemptions apply to administrators too, since they are about policy
+  // rather than permission, and an administrator's links are served by the
+  // same rules as anyone else's.
+  const exemptTable = {};
+  for (const key of [ANY_HOST, ...ctx.cfg.knownHosts]) {
+    const flags = {};
+    for (const k of EXEMPTIBLE) flags[k] = body.get('ex__' + key + '__' + k) === '1';
+    if (EXEMPTIBLE.some((k) => flags[k])) exemptTable[key] = normalizeExempt(flags);
+  }
+  user.interstitialExempt = exemptTable;
   user.note = String(body.get('note') || '').slice(0, 500);
   await putUser(ctx.cfg, user);
 
@@ -185,7 +331,13 @@ async function userEditSubmit(ctx) {
       host: ctx.host,
       ip: clientIp(ctx.request),
       object: user.emailNorm,
-      detail: { isAdmin: user.isAdmin, disabled: user.disabled, rootCreate },
+      detail: {
+        isAdmin: user.isAdmin,
+        disabled: user.disabled,
+        rootCreate: user.rootCreate,
+        dirCreate: user.dirCreate,
+        interstitialExempt: user.interstitialExempt,
+      },
     })
   );
   return back('/admin/users/edit?u=' + encodeURIComponent(user.emailNorm), 'user.updated');
@@ -200,6 +352,7 @@ async function userRevokeSubmit(ctx) {
   const emailNorm = String(body.get('u') || '').toLowerCase();
   const user = await getUserByNorm(ctx.cfg, emailNorm);
   if (!user) return back('/admin/users', 'notfound');
+  if (isRootAccount(ctx.cfg, user)) return denied(ctx, ROOT_IMMUTABLE);
   const count = await destroyAllSessions(ctx.cfg, user.id);
 
   ctx.waitUntil(
@@ -224,11 +377,12 @@ async function userDeleteSubmit(ctx) {
   const emailNorm = String(body.get('u') || '').toLowerCase();
   const user = await getUserByNorm(ctx.cfg, emailNorm);
   if (!user) return back('/admin/users', 'notfound');
-  if (isRootAdmin(ctx.cfg, user.emailNorm)) {
-    return denied(ctx, 'Root administrators cannot be deleted. Remove them from ADMIN first.');
-  }
+  if (isRootAccount(ctx.cfg, user)) return denied(ctx, ROOT_IMMUTABLE);
 
   await destroyAllSessions(ctx.cfg, user.id);
+  // Otherwise the credentials outlive the account, and an address reused
+  // later would inherit somebody else's devices.
+  await deleteAllPasskeys(ctx.cfg, user.id);
   await deleteUser(ctx.cfg, user);
   ctx.waitUntil(
     audit(ctx.cfg, {
@@ -337,11 +491,24 @@ ${flashFrom(url)}${alert('error', error)}
       note: 'Always blocked regardless: ' + HARD_BLOCKED_SCHEMES.join(', ') + '.',
     })}
     ${checkbox({ name: 'countClicks', label: 'Count hits on each link', checked: s.countClicks !== false, note: '(approximate)' })}
-    ${field({ name: 'auditRetentionDays', label: 'Audit retention (days)', type: 'number', value: s.auditRetentionDays, attrs: 'min="1" max="3650"' })}
+    ${field({
+      name: 'auditRetentionDays',
+      label: 'Audit retention (days)',
+      type: 'number',
+      value: s.auditRetentionDays,
+      attrs: 'min="1" max="3650"',
+      note: 'Shortening this removes entries already past the new limit, because a stored entry keeps the expiry it was written with.',
+    })}
 
     <h2>Mail</h2>
     <div class="row">
-      ${field({ name: 'mailFromName', label: 'Sender name', value: s.mail.fromName || '' })}
+      ${field({
+        name: 'mailFromName',
+        label: 'Sender name',
+        value: s.mail.fromName || '',
+        placeholder: cfg.appName,
+        note: 'Blank uses the application name.',
+      })}
       ${field({ name: 'mailReplyTo', label: 'Reply-to (optional)', type: 'email', value: s.mail.replyTo || '' })}
     </div>
     ${field({ name: 'mailSubject', label: 'Subject template', value: s.mail.subject || '', note: 'Placeholders: {{app}}, {{code}}, {{host}}.' })}
@@ -411,6 +578,7 @@ async function settingsSubmit(ctx) {
     },
   };
 
+  const shortened = patch.auditRetentionDays < s.auditRetentionDays;
   await saveSettings(ctx.cfg, patch);
   ctx.waitUntil(
     audit(ctx.cfg, {
@@ -421,6 +589,18 @@ async function settingsSubmit(ctx) {
       detail: { geo: patch.geo, sessionPermanent: patch.sessionPermanent },
     })
   );
+
+  // A KV expiry is fixed when the entry is written, so a shorter retention
+  // only takes effect on what comes next unless the old entries are removed.
+  if (shortened) {
+    const purge = await purgeAudit(ctx.cfg, { days: patch.auditRetentionDays });
+    if (purge.deleted) {
+      return back(
+        '/admin/settings',
+        purge.more ? 'audit.purged.partial' : 'audit.purged'
+      );
+    }
+  }
   return back('/admin/settings', 'settings.updated');
 }
 
@@ -435,7 +615,11 @@ async function auditPage(ctx) {
       (e) => `<tr>
       <td class="num">${esc(fmtTime(e.ts))}</td>
       <td>${esc(e.event)}${e.outcome && e.outcome !== 'ok' ? ` <span class="badge off">${esc(e.outcome)}</span>` : ''}</td>
-      <td>${esc(e.actor || '—')}</td>
+      <td>${esc(e.actor || '—')}${
+        e.via
+          ? ` <span class="badge ro" title="Done while viewing the hub as this person">via ${esc(e.via)}</span>`
+          : ''
+      }</td>
       <td>${esc(e.host || '—')}${e.object ? '/' + esc(e.object) : ''}</td>
       <td><span class="target" title="${esc(JSON.stringify(e.detail || {}))}">${esc(
         e.detail ? JSON.stringify(e.detail) : ''
@@ -467,6 +651,47 @@ ${flashFrom(ctx.url)}
 
 /* --------------------------------------------------------------- router */
 
+/**
+ * Opens a view of the hub as this person, in a new tab. It is a POST because
+ * it is a privileged act that belongs in the audit log, and the new tab is
+ * what keeps each impersonation to itself.
+ */
+function impersonateButton(ctx, user, token) {
+  const permit = canImpersonate(ctx.cfg, { actor: ctx.session.user, target: user });
+  if (!permit.allowed) return `<span class="note">${esc(permit.reason)}</span>`;
+  return `<form method="post" action="/admin/users/impersonate" target="_blank" rel="noopener">
+    ${csrfField(token)}${hidden('u', user.emailNorm)}
+    <button type="submit" class="link">View as</button>
+  </form>`;
+}
+
+async function impersonateSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/users', 'csrf');
+  const guard = await checkCsrf(ctx, 'user.impersonate', body);
+  if (!guard.ok) return back('/admin/users', 'csrf');
+
+  const emailNorm = String(body.get('u') || '').toLowerCase();
+  const target = await getUserByNorm(ctx.cfg, emailNorm);
+  const permit = canImpersonate(ctx.cfg, {
+    actor: ctx.session.user,
+    target,
+    impersonating: !!ctx.impersonator,
+  });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.impersonationStarted,
+      actor: ctx.session.user,
+      host: ctx.host,
+      ip: ctx.ip,
+      object: target.emailNorm,
+    })
+  );
+  return back(await mintImpersonation(ctx.cfg, { session: ctx.session, target }));
+}
+
 export async function adminUsers(ctx, path) {
   const gate = requireAdmin(ctx.cfg, ctx.session.user);
   if (!gate.allowed) return denied(ctx, gate.reason);
@@ -476,6 +701,7 @@ export async function adminUsers(ctx, path) {
   if (path === '/admin/users/edit') return method === 'POST' ? userEditSubmit(ctx) : userEditForm(ctx);
   if (path === '/admin/users/revoke' && method === 'POST') return userRevokeSubmit(ctx);
   if (path === '/admin/users/delete' && method === 'POST') return userDeleteSubmit(ctx);
+  if (path === '/admin/users/impersonate' && method === 'POST') return impersonateSubmit(ctx);
   if (path === '/admin/settings') return method === 'POST' ? settingsSubmit(ctx) : settingsPage(ctx);
   if (path === '/admin/audit') return auditPage(ctx);
   return back('/admin');

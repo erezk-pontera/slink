@@ -8,7 +8,7 @@
 
 import { K, Store } from './kv.js';
 import { parseDestination } from './paths.js';
-import { boolEnv, intEnv, listEnv, now } from './util.js';
+import { boolEnv, intEnv, isSafeKey, listEnv, now } from './util.js';
 
 /** Read an env value under either the hyphenated or the SCREAMING_SNAKE name. */
 export function envVar(env, ...names) {
@@ -45,7 +45,9 @@ export const DEFAULTS = {
     otpWindowSeconds: 900,
   },
   mail: {
-    fromName: 'Slink',
+    // Blank falls back to the application name, so renaming the app renames
+    // the sender too unless an administrator sets something else.
+    fromName: '',
     replyTo: '',
     subject: 'Your {{app}} sign-in code: {{code}}',
   },
@@ -58,6 +60,7 @@ function mergeSettings(base, override) {
   const out = { ...base };
   for (const [key, value] of Object.entries(override || {})) {
     if (value === undefined) continue;
+    if (!isSafeKey(key)) continue;
     if (value && typeof value === 'object' && !Array.isArray(value) && typeof base[key] === 'object') {
       out[key] = { ...base[key], ...value };
     } else {
@@ -78,11 +81,21 @@ export class Config {
     this.settings = settings;
 
     this.authSecret = envVar(env, 'AUTH_SECRET', 'auth-secret');
+    /**
+     * The secret this deployment used before the current one, if it has
+     * just been rotated. Optional, and only ever used to *read*: a link
+     * password sealed under the old secret stays readable, and is re-sealed
+     * under the new one the next time it is saved. Without it, rotating
+     * AUTH_SECRET leaves every protected link stuck behind a password
+     * nobody can read or type.
+     */
+    this.authSecretPrevious = envVar(env, 'AUTH_SECRET_PREVIOUS', 'auth-secret-previous') || '';
     this.turnstileSiteKey = envVar(env, 'turnstile-sitekey', 'TURNSTILE_SITEKEY', 'TURNSTILE_SITE_KEY');
     this.turnstileSecret = envVar(env, 'turnstile-secret', 'TURNSTILE_SECRET');
+    this.oauthSecret = envVar(env, 'oauth-secret', 'OAUTH_SECRET');
 
     this.hubHost = String(envVar(env, 'HUB_HOST') || 'ptra.dev').toLowerCase().replace(/^www\./, '');
-    this.appName = String(envVar(env, 'APP_NAME') || 'Slink');
+    this.appName = String(envVar(env, 'APP_NAME') || 'Shrink Link');
     this.knownHosts = listEnv(envVar(env, 'DOMAINS'), ['ptra.cc', 'ptra.dev']);
 
     this.rootAdmins = listEnv(envVar(env, 'ADMIN'));
@@ -137,6 +150,9 @@ export class Config {
     }
     if (!this.turnstileSiteKey) out.push('turnstile-sitekey is not configured.');
     if (!this.turnstileSecret) out.push('turnstile-secret is not configured.');
+    // oauth-secret is only needed where a host actually offers single
+    // sign-on, so its absence is reported by the domain screen rather than
+    // held against the whole installation here.
     if (this.rootAdmins.length === 0) out.push('ADMIN is not configured.');
     return out;
   }

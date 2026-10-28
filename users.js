@@ -17,13 +17,26 @@ export function newUser(email, emailNorm, overrides = {}) {
     emailNorm,
     isAdmin: false,
     disabled: false,
+    /** Administrators only: false scopes them to directories they are
+     *  granted on. Never applies to a root administrator. */
+    allDirectories: true,
     note: '',
-    /** Per-host explicit permission to create at the root, keyed by host. */
+    /** Per-host explicit permission to create links at the root. */
     rootCreate: {},
+    /** Per-host explicit permission to create directories at the root. */
+    dirCreate: {},
+    /** Countdown-policy exemptions, keyed by host or '*' for every host. */
+    interstitialExempt: {},
+    /** Per-host capability rulings an administrator recorded against this
+     *  person, keyed by host or '*'. See capabilities.js. */
+    capabilities: {},
     createdAt: ts,
     updatedAt: ts,
     lastLoginAt: 0,
     loginCount: 0,
+    /** Created by an invite rather than by signing in. The account holds
+     *  whatever it was given but has never authenticated. */
+    invitedBy: null,
     ...overrides,
   };
 }
@@ -47,6 +60,25 @@ export async function putUser(cfg, user) {
   });
   await cfg.store.put(K.userId(user.id), user.emailNorm);
   return user;
+}
+
+/**
+ * The account for an invited address, created if it does not exist yet.
+ *
+ * Without this an invite can only ever name someone who has already signed
+ * in, which makes an invite-domain list that reaches beyond the sign-in
+ * domains silently inert. Creating the account grants nothing on its own:
+ * the person still has to authenticate, and `mayAuthenticate` decides that
+ * separately. It only lets a link or a grant be put in their name first.
+ */
+export async function inviteUser(cfg, { email, emailNorm, invitedBy }) {
+  const existing = await getUserByNorm(cfg, emailNorm);
+  if (existing) return { user: existing, created: false };
+  const user = newUser(email || emailNorm, emailNorm, {
+    invitedBy: invitedBy ? invitedBy.emailNorm || invitedBy.email || null : null,
+  });
+  await putUser(cfg, user);
+  return { user, created: true };
 }
 
 export async function deleteUser(cfg, user) {

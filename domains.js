@@ -5,6 +5,10 @@
  */
 
 import { K } from './kv.js';
+import { defaultPolicy } from './interstitial.js';
+import { defaultMissingPolicy } from './dirmissing.js';
+import { defaultInvitePolicy } from './invites.js';
+import { defaultOauth } from './oauth.js';
 import { now } from './util.js';
 
 export const ROOT_CREATE_POLICIES = ['email_domain', 'explicit', 'open', 'admins_only'];
@@ -22,11 +26,27 @@ export function newDomain(host, overrides = {}) {
     allowedCreateDomains: [],
     rootCreatePolicy: 'email_domain',
     defaultStatus: 302,
-    defaultDelay: 0,
+    /** Countdown policy for every link on this host. See interstitial.js. */
+    interstitial: defaultPolicy(),
     /** Where `/` goes; null renders the default landing page. */
     rootRedirect: null,
     /** Where an unknown shortcut goes; null renders a 404 page. */
     notFoundUrl: null,
+    /** Features this host allows. Absent means the capability's own
+     *  default; see capabilities.js. */
+    capabilities: {},
+    /** External identity provider for this host. See oauth.js. */
+    oauth: defaultOauth(),
+    /** Which email domains may be handed a link or a directory, beyond the
+     *  ones that may sign in here. See invites.js. */
+    invitePolicy: defaultInvitePolicy(),
+    /** Whether directories here may answer with their own MISSING
+     *  destination, and the fallback for those that set none. See
+     *  dirmissing.js. */
+    dirMissingPolicy: defaultMissingPolicy(),
+    /** Sign-in methods switched off here. Never applies to administrators,
+     *  and single sign-on can never be among them. */
+    disabledMethods: [],
     /** Read-only hosts can only be modified by administrators. */
     readonly: false,
     note: '',
@@ -79,6 +99,9 @@ export async function ensureBootstrapDomains(cfg) {
       authRequired: isHub,
       allowedAuthDomains: [...cfg.defaultAllowedDomains],
       allowedCreateDomains: [...cfg.defaultAllowedDomains],
+      // The countdown is available everywhere but only defaults to on for the
+      // authenticated host; a public short link should go straight through.
+      interstitial: defaultPolicy({ defaultOn: isHub }),
       note: isHub ? 'Administration host (created automatically).' : 'Created automatically.',
     });
     await putDomain(cfg, domain);
@@ -99,6 +122,7 @@ export async function resolveDomain(cfg, host) {
       authRequired: host === cfg.hubHost,
       allowedAuthDomains: [...cfg.defaultAllowedDomains],
       allowedCreateDomains: [...cfg.defaultAllowedDomains],
+      interstitial: defaultPolicy({ defaultOn: host === cfg.hubHost }),
     });
   }
   return null;

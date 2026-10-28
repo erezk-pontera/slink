@@ -13,6 +13,11 @@
 
 import { esc } from './util.js';
 
+/** The display name on outgoing mail; blank means "use the app name". */
+function senderName(cfg) {
+  return cfg.settings.mail.fromName || cfg.appName;
+}
+
 export class MailError extends Error {
   constructor(message, cause) {
     super(message);
@@ -84,9 +89,7 @@ async function sendViaCloudflare(cfg, message) {
   try {
     const result = await cfg.emailBinding.send({
       to: message.to,
-      from: cfg.settings.mail.fromName
-        ? { email: cfg.mailFrom, name: cfg.settings.mail.fromName }
-        : cfg.mailFrom,
+      from: { email: cfg.mailFrom, name: senderName(cfg) },
       subject: message.subject,
       text: message.text,
       html: message.html,
@@ -134,7 +137,7 @@ async function sendViaResend(cfg, message) {
   const key = cfg.env.RESEND_API_KEY;
   if (!key) throw new MailError('RESEND_API_KEY is not configured.');
   const data = await postJson('https://api.resend.com/emails', { Authorization: 'Bearer ' + key }, {
-    from: cfg.settings.mail.fromName ? `${cfg.settings.mail.fromName} <${cfg.mailFrom}>` : cfg.mailFrom,
+    from: `${senderName(cfg)} <${cfg.mailFrom}>`,
     to: [message.to],
     subject: message.subject,
     text: message.text,
@@ -148,7 +151,7 @@ async function sendViaSendgrid(cfg, message) {
   if (!key) throw new MailError('SENDGRID_API_KEY is not configured.');
   await postJson('https://api.sendgrid.com/v3/mail/send', { Authorization: 'Bearer ' + key }, {
     personalizations: [{ to: [{ email: message.to }] }],
-    from: { email: cfg.mailFrom, name: cfg.settings.mail.fromName || undefined },
+    from: { email: cfg.mailFrom, name: senderName(cfg) },
     subject: message.subject,
     content: [
       { type: 'text/plain', value: message.text },
@@ -162,7 +165,7 @@ async function sendViaPostmark(cfg, message) {
   const key = cfg.env.POSTMARK_TOKEN;
   if (!key) throw new MailError('POSTMARK_TOKEN is not configured.');
   const data = await postJson('https://api.postmarkapp.com/email', { 'X-Postmark-Server-Token': key }, {
-    From: cfg.settings.mail.fromName ? `${cfg.settings.mail.fromName} <${cfg.mailFrom}>` : cfg.mailFrom,
+    From: `${senderName(cfg)} <${cfg.mailFrom}>`,
     To: message.to,
     Subject: message.subject,
     TextBody: message.text,
@@ -177,7 +180,7 @@ async function sendViaMailgun(cfg, message) {
   const domain = cfg.env.MAILGUN_DOMAIN;
   if (!key || !domain) throw new MailError('MAILGUN_API_KEY and MAILGUN_DOMAIN are required.');
   const body = new URLSearchParams();
-  body.set('from', cfg.settings.mail.fromName ? `${cfg.settings.mail.fromName} <${cfg.mailFrom}>` : cfg.mailFrom);
+  body.set('from', `${senderName(cfg)} <${cfg.mailFrom}>`);
   body.set('to', message.to);
   body.set('subject', message.subject);
   body.set('text', message.text);

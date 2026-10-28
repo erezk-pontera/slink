@@ -8,6 +8,18 @@ const dec = new TextDecoder();
 export const te = enc;
 export const td = dec;
 
+/**
+ * Is this a key it is safe to assign on a plain object?
+ *
+ * Writing `__proto__` on an object literal sets its prototype rather than a
+ * property, so a key taken from a request or from stored JSON has to be
+ * checked before it is used as one. The other two are not assignments that
+ * reach the prototype, but they shadow things code expects to find.
+ */
+export function isSafeKey(key) {
+  return key !== '__proto__' && key !== 'constructor' && key !== 'prototype';
+}
+
 /** Current unix time in seconds. */
 export function now() {
   return Math.floor(Date.now() / 1000);
@@ -57,6 +69,12 @@ export function randomInt(max) {
     v = buf[0];
   } while (v >= limit);
   return v % max;
+}
+
+/** SHA-256 as raw bytes, for callers that base64url-encode the digest. */
+export async function sha256Bytes(input) {
+  const data = typeof input === 'string' ? enc.encode(input) : input;
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
 }
 
 export async function sha256Hex(input) {

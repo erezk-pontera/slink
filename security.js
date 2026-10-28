@@ -6,13 +6,27 @@
  * token minted for one purpose can never be replayed as another.
  */
 
-import { b64urlDecode, b64urlEncode, randomId, te } from './util.js';
+import { b64urlDecode, b64urlEncode, isSafeKey, randomId, te } from './util.js';
 
+/**
+ * Derived keys are cached because deriving one on every signature would be
+ * wasteful on a hot path.
+ *
+ * The cache is keyed by the secret as well as the purpose. Keying it by
+ * purpose alone looked harmless - an installation only ever has one secret
+ * - but a Workers isolate outlives a deployment, so after AUTH_SECRET was
+ * rotated the isolate went on signing and verifying with the key derived
+ * from the *old* one until it happened to recycle. A rotation is usually a
+ * response to a leak, and that made it quietly do nothing.
+ */
 const keyCache = new Map();
+
+/** Keep the cache bounded; there are only a few purposes and one secret. */
+const MAX_CACHED_KEYS = 64;
 
 /** Import a purpose-scoped HMAC key derived from the master secret. */
 async function hmacKey(secret, purpose) {
-  const cacheKey = purpose;
+  const cacheKey = purpose + '\u0000' + secret;
   const cached = keyCache.get(cacheKey);
   if (cached) return cached;
   const master = await crypto.subtle.importKey(
@@ -30,6 +44,7 @@ async function hmacKey(secret, purpose) {
     false,
     ['sign', 'verify']
   );
+  if (keyCache.size >= MAX_CACHED_KEYS) keyCache.clear();
   keyCache.set(cacheKey, key);
   return key;
 }
@@ -105,9 +120,9 @@ export function parseCookies(request) {
     const value = part.slice(idx + 1).trim();
     if (!name) continue;
     try {
-      out[name] = decodeURIComponent(value);
+      if (isSafeKey(name)) out[name] = decodeURIComponent(value);
     } catch {
-      out[name] = value;
+      if (isSafeKey(name)) out[name] = value;
     }
   }
   return out;
@@ -118,6 +133,39 @@ export function parseCookies(request) {
  * Secure, Path=/ and carry no Domain, so they cannot be injected by a sibling
  * subdomain.
  */
+/**
+ * The content security policy for a page whose whole job is to show one
+ * other site in a frame. Everything stays locked down except `frame-src`,
+ * which is narrowed to that single origin rather than opened to the web.
+ */
+export function frameCsp(target) {
+  let origin = "'none'";
+  try {
+    origin = new URL(target).origin;
+  } catch {
+    origin = "'none'";
+  }
+  return [
+    "default-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+    `frame-src ${origin}`,
+    "style-src 'self'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+  ].join('; ');
+}
+
+/** Attach Set-Cookie headers to a response without rebuilding it by hand. */
+export function withCookies(response, cookies) {
+  const list = (cookies || []).filter(Boolean);
+  if (list.length === 0) return response;
+  const out = new Response(response.body, response);
+  for (const cookie of list) out.headers.append('Set-Cookie', cookie);
+  return out;
+}
+
 export function serializeCookie(name, value, opts = {}) {
   const { maxAge, sameSite = 'Lax', httpOnly = true, secure = true, path = '/' } = opts;
   let out = name + '=' + encodeURIComponent(value);
@@ -205,7 +253,10 @@ export function originCheck(request, expectedOrigin) {
  * escaped, so there is no path by which a user-supplied value becomes a style
  * attribute; the real injection risk, script execution, stays locked down.
  */
-export function harden(response, { turnstile = false, store = false, referrerPolicy = 'same-origin' } = {}) {
+export function harden(
+  response,
+  { turnstile = false, store = false, referrerPolicy = 'same-origin', externalImages = false } = {}
+) {
   const h = response.headers;
   h.set('X-Content-Type-Options', 'nosniff');
   // 'same-origin' keeps the referrer off every cross-origin request while
@@ -217,11 +268,16 @@ export function harden(response, { turnstile = false, store = false, referrerPol
   h.set('Cross-Origin-Opener-Policy', 'same-origin');
   h.set('Cross-Origin-Resource-Policy', 'same-origin');
   h.set('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+  // Everything is denied outright except the two WebAuthn features, which
+  // are allowed to this origin alone: the hub needs them to register and
+  // use a passkey, and `self` still refuses to delegate them to an embedded
+  // cross-origin page, which is what the directive is really guarding.
   h.set(
     'Permissions-Policy',
     'accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), ' +
       'fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), ' +
-      'midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), usb=(), xr-spatial-tracking=()'
+      'midi=(), payment=(), publickey-credentials-create=(self), publickey-credentials-get=(self), ' +
+      'screen-wake-lock=(), usb=(), xr-spatial-tracking=()'
   );
   if (!store) h.set('Cache-Control', 'no-store, max-age=0');
   h.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
@@ -236,7 +292,10 @@ export function harden(response, { turnstile = false, store = false, referrerPol
       `frame-ancestors 'none'`,
       `script-src 'self'` + (turnstile ? ' ' + CF : ''),
       `style-src 'self' 'unsafe-inline'`,
-      `img-src 'self' data:`,
+      // The link editor renders the card's image, which is an arbitrary
+      // https URL by nature. Images cannot execute, and this is not relaxed
+      // anywhere else.
+      externalImages ? `img-src 'self' data: https:` : `img-src 'self' data:`,
       `font-src 'self'`,
       `connect-src 'self'` + (turnstile ? ' ' + CF : ''),
       `frame-src ` + (turnstile ? CF : `'none'`),

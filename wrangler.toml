@@ -36,9 +36,14 @@
 #
 #   wrangler secret put AUTH_SECRET
 #   wrangler secret put turnstile-secret
+#   wrangler secret put oauth-secret          # only if a host uses single sign-on
 #
 # The Turnstile widget already exists; only its secret needs installing, and
 # its sitekey (not a secret) is set in [vars] below.
+#
+# oauth-secret is the client secret of the identity provider. It is optional:
+# single sign-on is offered on a host only once the secret is present and the
+# host's endpoints are filled in on its domain screen.
 
 name = "slink-redir"
 main = "index.js"
@@ -69,7 +74,7 @@ DOMAINS = "ptra.cc,ptra.dev"
 # through a signed handshake against this one.
 HUB_HOST = "ptra.dev"
 
-APP_NAME = "Slink"
+APP_NAME = "Shrink Link"
 
 # Where a visitor goes when there is nothing to show them: a host root, an
 # unknown shortcut, or one that is disabled or expired. An administrator can

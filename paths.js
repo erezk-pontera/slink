@@ -73,8 +73,11 @@ export function parsePath(raw, { reserved = RESERVED_PATHS, allowReserved = fals
     if (seg.length > MAX_SEGMENT) throw new ValidationError('Shortcut segment is too long.', 'path');
   }
 
-  const path = segments.join('/');
-  const pathLc = path.toLowerCase();
+  // Shortcuts are case-agnostic, so the stored form is the lowercase one and
+  // that is what gets displayed too: a shortcut never renders in a case that
+  // differs from the one the redirect actually matches on.
+  const path = segments.join('/').toLowerCase();
+  const pathLc = path;
   if (!allowReserved && reserved.includes(segments[0].toLowerCase())) {
     throw new ValidationError('That name is reserved.', 'path');
   }
@@ -82,8 +85,89 @@ export function parsePath(raw, { reserved = RESERVED_PATHS, allowReserved = fals
 }
 
 /**
+ * `new URL()` lowercases the scheme and the host, and changes the case of
+ * nothing else. This puts those two back exactly as they were typed, so a
+ * destination is stored the way it was entered, while everything else the
+ * parser produced is kept - percent-encoding, punycode, a dropped default
+ * port - because a Location header needs those.
+ *
+ * Where the parser changed the authority by more than case it keeps the
+ * parser's version: that difference is an encoding, not a case difference,
+ * and undoing it would break the URL.
+ */
+export function keepTypedCase(typed, normalized) {
+  const split = (value) => {
+    const at = value.indexOf('://');
+    if (at < 0) return null;
+    const rest = value.slice(at + 3);
+    const end = rest.search(/[/?#]/);
+    return {
+      scheme: value.slice(0, at),
+      authority: end < 0 ? rest : rest.slice(0, end),
+      tail: end < 0 ? '' : rest.slice(end),
+    };
+  };
+  // The host within an authority, leaving aside any userinfo and port.
+  const hostOf = (authority) => {
+    const afterUser = authority.slice(authority.lastIndexOf('@') + 1);
+    const colon = afterUser.lastIndexOf(':');
+    const bracket = afterUser.lastIndexOf(']');
+    return colon > bracket ? afterUser.slice(0, colon) : afterUser;
+  };
+
+  const typedParts = split(typed);
+  const normalParts = split(normalized);
+  if (!typedParts || !normalParts) return normalized;
+
+  const scheme =
+    typedParts.scheme.toLowerCase() === normalParts.scheme.toLowerCase()
+      ? typedParts.scheme
+      : normalParts.scheme;
+
+  let authority = normalParts.authority;
+  if (typedParts.authority.toLowerCase() === authority.toLowerCase()) {
+    authority = typedParts.authority;
+  } else {
+    // The authority changed by more than case - a dropped default port, an
+    // encoded userinfo - so the parser's version stands, except for the
+    // host inside it, which is put back when only its case moved.
+    const typedHost = hostOf(typedParts.authority);
+    const normalHost = hostOf(authority);
+    if (typedHost.toLowerCase() === normalHost.toLowerCase() && typedHost !== normalHost) {
+      const at = authority.lastIndexOf(normalHost);
+      authority = authority.slice(0, at) + typedHost + authority.slice(at + normalHost.length);
+    }
+  }
+  return scheme + '://' + authority + normalParts.tail;
+}
+
+/**
+ * The username in a destination's authority, or ''.
+ *
+ * `https://trusted.example@evil.example/` reads as the trusted host to
+ * almost everybody, while the browser goes to the second one. Nothing here
+ * refuses it - it is occasionally meant - but a screen showing a
+ * destination should be able to say so.
+ */
+export function destinationUserinfo(target) {
+  const value = String(target || '');
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) return '';
+  try {
+    return decodeURIComponent(new URL(value).username || '');
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Canonicalise a destination. A bare value gets an https:// prefix; anything
  * carrying an explicit scheme (`mailto:`, `slack://`, `ts3server:`) is kept.
+ *
+ * Nothing here changes the case of what was typed. A shortcut is lowercased,
+ * because that is ours to define and people type it from memory; a
+ * destination belongs to somebody else's service, and the only safe
+ * assumption about any part of it - host included - is that it is theirs
+ * exactly as given.
  */
 export function parseDestination(raw, { blockedSchemes = [] } = {}) {
   const value = String(raw ?? '').trim();
@@ -94,10 +178,16 @@ export function parseDestination(raw, { blockedSchemes = [] } = {}) {
   }
 
   let out;
+  // A username in the authority, which is the shape that makes
+  // `https://trusted.example@evil.example/` read as the wrong host.
+  let userinfo = '';
   if (SCHEME_RE.test(value)) out = value;
   else if (value.startsWith('//')) out = 'https:' + value;
   else out = 'https://' + value;
 
+  // The scheme is compared in lowercase because the policy lists are
+  // lowercase, but `out` itself is left alone: what gets stored is what was
+  // typed.
   const scheme = out.slice(0, out.indexOf(':')).toLowerCase();
   if (HARD_BLOCKED_SCHEMES.includes(scheme)) {
     throw new ValidationError('That destination scheme is not allowed.', 'target');
@@ -117,17 +207,46 @@ export function parseDestination(raw, { blockedSchemes = [] } = {}) {
       throw new ValidationError('Destination is not a valid URL.', 'target');
     }
     if (!parsed.hostname) throw new ValidationError('Destination has no host.', 'target');
-    out = parsed.toString();
+    // A password in the authority would be stored here in the clear, shown
+    // on the edit screen, written into the audit log and encoded into the
+    // QR code. None of that is somewhere a password belongs.
+    if (parsed.password) {
+      throw new ValidationError(
+        'A destination cannot carry a password. Use a link without credentials in it.',
+        'target'
+      );
+    }
+    userinfo = decodeURIComponent(parsed.username || '');
+    out = keepTypedCase(out, parsed.toString());
   }
 
   // A header value must not be able to inject a second header.
   if (/[\r\n]/.test(out)) throw new ValidationError('Destination is not valid.', 'target');
-  return { target: out, scheme };
+  return { target: out, scheme, userinfo };
 }
 
 /* -------------------------------------------------------------------- email */
 
-const EMAIL_RE = /^[^\s@,;:<>()[\]\\"]{1,64}@[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/;
+/**
+ * An address we will treat as an identity.
+ *
+ * The local part is the set RFC 5322 allows unquoted, and nothing else.
+ * It was a negated class before, which accepted any character that was not
+ * explicitly listed — including control characters, and including letters
+ * from other scripts. The second of those matters: an address whose local
+ * part is Cyrillic can be pixel-identical to a colleague's while being a
+ * different account, and these addresses are what directory grants, link
+ * ownership and the administrator list are keyed on. Someone reading a
+ * grant list has no way to tell the two apart.
+ *
+ * Internationalised addresses are real, but this is an internal tool gated
+ * on a company domain, and the trade is not close: confusable identities in
+ * an authorization decision are worse than turning away an address nobody
+ * here has. The domain part was already ASCII-only, so only the local part
+ * changes.
+ */
+const EMAIL_RE =
+  /^[A-Za-z0-9!#$%&'*+\-/=?^_`{|}~.]{1,64}@[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/;
 
 /**
  * Normalise an address for identity purposes.
@@ -137,6 +256,12 @@ const EMAIL_RE = /^[^\s@,;:<>()[\]\\"]{1,64}@[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9
  */
 export function normalizeEmail(raw, { ignoreDot = false, ignorePlus = false } = {}) {
   const value = String(raw ?? '').trim().toLowerCase();
+  if (value.length > 254) throw new ValidationError('That email address is too long.', 'email');
+  // Said separately so someone with a perfectly ordinary address in another
+  // script is told why, rather than being left to guess at "invalid".
+  if (/[^\x20-\x7e]/.test(value)) {
+    throw new ValidationError('Email addresses here must use ASCII characters only.', 'email');
+  }
   if (!value || !EMAIL_RE.test(value)) throw new ValidationError('Enter a valid email address.', 'email');
   const at = value.lastIndexOf('@');
   let local = value.slice(0, at);

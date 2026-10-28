@@ -7,6 +7,7 @@
  * the KV namespace does not yield usable codes.
  */
 
+import { open, seal } from './crypt.js';
 import { K } from './kv.js';
 import { hmac, timingSafeEqualStr } from './security.js';
 import { now, randomId, randomInt, sha256Hex } from './util.js';
@@ -41,6 +42,9 @@ export async function createChallenge(cfg, { email, emailNorm, host, next, ip, g
     next: next || '/admin',
     salt,
     codeHash: await hashCode(cfg, { loginId, salt, code }),
+    // Sealed rather than hashed, because a resend has to send the same code
+    // again. The hash above is still what a submission is checked against.
+    codeSealed: await seal(cfg.authSecret, 'otp-code', code),
     createdAt: ts,
     expiresAt: ts + ttl,
     attempts: 0,
@@ -72,28 +76,42 @@ export async function deleteChallenge(cfg, loginId) {
   await cfg.store.delete(K.otp(loginId));
 }
 
+export const RESEND = {
+  ok: 'ok',
+  tooSoon: 'too-soon',
+  tooMany: 'too-many',
+  expired: 'expired',
+  lost: 'lost',
+};
+
 /**
- * Issue a fresh code for an existing challenge, keeping the same loginId so
- * the browser cookie stays valid. Returns null when a resend is too soon.
+ * Send the same code again.
+ *
+ * A resend is a delivery problem, not a new attempt: the code, its expiry
+ * and the attempts already spent are all left exactly as they were. Issuing
+ * a fresh code instead would invalidate one that may still be in transit,
+ * and extending the expiry on each press would let anyone keep a challenge
+ * alive for as long as they liked.
+ *
+ * Returns { status, code }.
  */
 export async function resendChallenge(cfg, loginId, record) {
-  const minGap = cfg.settings.otpResendSeconds || 45;
   const ts = now();
-  if (record.resentAt && ts - record.resentAt < minGap) return null;
-  if (record.resendCount >= 5) return null;
+  if (record.consumed || record.expiresAt <= ts) return { status: RESEND.expired };
 
-  const salt = randomId(12);
-  const code = generateCode(cfg.settings.otpLength || 6);
-  const ttl = cfg.settings.otpTtlSeconds || 600;
-  record.salt = salt;
-  record.codeHash = await hashCode(cfg, { loginId, salt, code });
-  record.expiresAt = ts + ttl;
-  record.attempts = 0;
-  record.consumed = false;
+  const minGap = cfg.settings.otpResendSeconds || 45;
+  if (record.resentAt && ts - record.resentAt < minGap) return { status: RESEND.tooSoon };
+  if ((record.resendCount || 0) >= 5) return { status: RESEND.tooMany };
+
+  const code = await open(cfg.authSecret, 'otp-code', record.codeSealed);
+  // A challenge from before this field existed, or one whose sealed copy
+  // cannot be read, has no code to send again.
+  if (!code) return { status: RESEND.lost };
+
   record.resentAt = ts;
   record.resendCount = (record.resendCount || 0) + 1;
   await putChallenge(cfg, loginId, record);
-  return { code, record };
+  return { status: RESEND.ok, code };
 }
 
 export const VERIFY = {

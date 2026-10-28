@@ -5,12 +5,14 @@
  * entirely. Page-specific values reach the script through `data-` attributes.
  */
 
+import { HASH_PREFIX } from './linkpass.js';
 import { LOGO_SVG } from './logo.js';
+import { harden } from './security.js';
 
 export const ASSET_PREFIX = '/__slink';
 
 /** Bumped whenever the asset bodies change; used for immutable caching. */
-export const ASSET_VERSION = '2';
+export const ASSET_VERSION = '8';
 
 export const CSS = `
 :root{
@@ -42,11 +44,46 @@ nav.main a{padding:6px 10px;border-radius:7px;text-decoration:none;color:var(--m
 nav.main a:hover{background:var(--bg);color:var(--ink)}
 nav.main a[aria-current=page]{background:var(--bg);color:var(--ink);font-weight:550}
 .who{font-size:13px;color:var(--muted);white-space:nowrap}
+.hostname{font-size:13px;color:var(--muted)}
+.hostpick{display:flex;gap:6px;align-items:center}
+.hostpick select{width:auto;min-width:9.5rem;padding:5px 8px;font-size:13px;border-radius:7px}
+.hostpick .nojs{padding:5px 10px;font-size:13px}
+.js .hostpick .nojs{display:none}
+.visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+  clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .badge{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid var(--line);
   font-size:11.5px;color:var(--muted);vertical-align:middle}
 .badge.ok{color:var(--ok);border-color:currentColor}
 .badge.ro{color:var(--warn);border-color:currentColor}
 .badge.off{color:var(--danger);border-color:currentColor}
+.impbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  margin:0 0 18px;padding:10px 14px;border:1px solid var(--warn);border-radius:8px;
+  color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent)}
+.impbar strong{color:inherit}
+.impbar .btn{flex:none}
+.chart{margin:8px 0 0}
+.chart svg{display:block;overflow:visible}
+.chart rect{fill:var(--accent,currentColor);opacity:.75}
+.chart rect:hover{opacity:1}
+.qrwrap{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+.qrwrap form{flex:1 1 260px;min-width:0}
+img.qr{flex:none;width:220px;height:220px;border:1px solid var(--line);border-radius:8px;background:#fff}
+details.group{border-top:1px solid var(--line);padding:10px 0 2px}
+details.group:first-of-type{border-top:0}
+details.group>summary{cursor:pointer;font-weight:600;padding:4px 0;list-style:revert}
+details.group>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+details.group[open]>summary{margin-bottom:6px}
+.sso{margin:0 0 4px}
+.sso .btn{display:block;text-align:center}
+.divider{display:flex;align-items:center;gap:12px;color:var(--muted);margin:16px 0;font-size:.9em}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
+.target-big{word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:1.05em;margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:8px;
+  background:color-mix(in srgb,var(--line) 18%,transparent)}
+body.framed{margin:0;padding:0;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+.framefail{flex:none;margin:0;padding:8px 14px;font-size:.9em;color:var(--muted);
+  background:var(--bg);border-bottom:1px solid var(--line)}
+.slink-frame{flex:1 1 auto;width:100%;border:0;display:block}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:var(--shadow);padding:18px;margin:0 0 16px}
 .card h2{margin:0 0 4px;font-size:16px;font-weight:600}
@@ -96,11 +133,23 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .count{font-size:38px;font-weight:650;font-variant-numeric:tabular-nums;margin:8px 0}
 .dest{word-break:break-all;font-size:14px;margin:0 0 18px}
 footer.foot{color:var(--muted);font-size:12px;text-align:center;padding:22px 16px}
+footer.foot div+div{margin-top:4px}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:13.5px;margin:0}
 .kv dt{color:var(--muted)}
 .kv dd{margin:0;word-break:break-word}
+.grants{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:0 0 10px}
+.grants legend{padding:0 6px}
+.ogcard{border:1px solid var(--line);border-radius:10px;overflow:hidden;max-width:520px;background:var(--bg)}
+.ogimg{aspect-ratio:1.91/1;background:var(--line);display:flex;align-items:center;justify-content:center}
+.ogimg img{width:100%;height:100%;object-fit:cover;display:block}
+.ogimg-none{color:var(--muted);font-size:13px}
+.ogbody{padding:10px 12px}
+.oghost{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.ogtitle{font-weight:600;margin:2px 0}
+.ogdesc{font-size:13px;color:var(--muted)}
 .tools{display:flex;gap:7px;flex-wrap:wrap}
-.tools form{display:inline}
+.tools form{display:inline-flex;gap:6px;align-items:center}
+.tools input[type=text]{width:auto;min-width:9rem;padding:5px 8px;font-size:13px}
 @media (max-width:620px){
   .wrap{padding:12px}
   header.top .wrap{gap:8px}
@@ -112,6 +161,74 @@ footer.foot{color:var(--muted);font-size:12px;text-align:center;padding:22px 16p
 export const JS = `
 (function () {
   'use strict';
+
+  // Lets CSS hide controls that only exist for the no-JavaScript path.
+  document.documentElement.classList.add('js');
+
+  // A password carried in the fragment: \`#${HASH_PREFIX}secret\`.
+  //
+  // A fragment never reaches the server, so this is the only place it can
+  // be read. It is cleared from the address bar before anything else
+  // happens, so it does not survive into the next page, get carried to the
+  // destination by the redirect, or sit in the history for the next person
+  // at this machine.
+  var unlock = document.querySelector('[data-slink-unlock]');
+  if (unlock && location.hash) {
+    var carried = '';
+    var parts = location.hash.replace(/^#/, '').split('&');
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].indexOf('${HASH_PREFIX}') !== 0) continue;
+      var raw = parts[i].slice(${HASH_PREFIX.length}).replace(/\\+/g, ' ');
+      try { carried = decodeURIComponent(raw); } catch (e) { carried = raw; }
+      break;
+    }
+    if (carried) {
+      try {
+        history.replaceState(null, '', location.pathname + location.search);
+      } catch (e) {
+        location.hash = '';
+      }
+      var pwField = unlock.querySelector('input[type="password"]');
+      if (pwField) pwField.value = carried;
+
+      // Wait for the challenge to produce a token, then submit exactly as
+      // pressing the button would. If it never arrives, the form is simply
+      // left filled in for the person to submit themselves.
+      var waited = 0;
+      var poll = setInterval(function () {
+        var token = unlock.querySelector('[name="cf-turnstile-response"]');
+        if (token && token.value) {
+          clearInterval(poll);
+          unlock.submit();
+        } else if (++waited > 60) {
+          clearInterval(poll);
+        }
+      }, 250);
+    }
+  }
+
+  // The domain picker in the header applies as soon as it changes.
+  var picker = document.querySelector('[data-slink-autosubmit] select');
+  if (picker) {
+    picker.addEventListener('change', function () {
+      var form = picker.form;
+      if (form) form.submit();
+    });
+  }
+
+  // Bulk selection on the search page. Without JavaScript the checkboxes
+  // still work one by one; these only save the clicking.
+  var batch = document.querySelector('[data-slink-batch]');
+  if (batch) {
+    var setAll = function (on) {
+      var boxes = batch.querySelectorAll('[data-slink-pick]');
+      for (var i = 0; i < boxes.length; i++) boxes[i].checked = on;
+    };
+    var all = batch.querySelector('[data-slink-pick-all]');
+    var none = batch.querySelector('[data-slink-pick-none]');
+    if (all) all.addEventListener('click', function () { setAll(true); });
+    if (none) none.addEventListener('click', function () { setAll(false); });
+  }
 
   // Delayed-redirect interstitial. The destination is carried in a data
   // attribute; a <meta http-equiv="refresh"> in the page is the no-JS path.
@@ -173,6 +290,164 @@ export const JS = `
     });
   }
 
+  // ---------------------------------------------------------- passkeys
+  //
+  // Everything here is progressive: the buttons start hidden and are only
+  // revealed once this browser is known to support WebAuthn, so a browser
+  // that cannot do it never shows a control that would fail.
+
+  var b64url = function (buffer) {
+    var bytes = new Uint8Array(buffer);
+    var out = '';
+    for (var i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+    return btoa(out).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+  };
+
+  var fromB64url = function (value) {
+    var padded = String(value).replace(/-/g, '+').replace(/_/g, '/');
+    while (padded.length % 4) padded += '=';
+    var raw = atob(padded);
+    var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return bytes;
+  };
+
+  var postJson = function (url, payload) {
+    return fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok || data.error) {
+          throw new Error(data.error || 'That did not work. Please try again.');
+        }
+        return data;
+      });
+    });
+  };
+
+  var hasWebAuthn = function () {
+    return !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.get);
+  };
+
+  // Adding a passkey, on the account's own page.
+  var add = document.querySelector('[data-slink-passkey-add]');
+  if (add) {
+    var addBtn = add.querySelector('[data-slink-passkey-go]');
+    var addMsg = add.querySelector('[data-slink-passkey-msg]');
+    var nameField = add.querySelector('[data-slink-passkey-name]');
+    // Say so rather than leaving a field with no button beside it.
+    if (!hasWebAuthn() && addMsg) {
+      addMsg.textContent = 'This browser cannot use passkeys. The emailed code still works.';
+    }
+    if (addBtn && hasWebAuthn()) {
+      addBtn.hidden = false;
+      addBtn.addEventListener('click', function () {
+        addBtn.disabled = true;
+        if (addMsg) addMsg.textContent = 'Follow your device’s prompt…';
+        var token = add.getAttribute('data-token');
+        postJson('/admin/passkeys/register/begin', { _csrf: token })
+          .then(function (opts) {
+            return navigator.credentials.create({
+              publicKey: {
+                challenge: fromB64url(opts.challenge),
+                rp: opts.rp,
+                user: {
+                  id: new TextEncoder().encode(opts.user.id),
+                  name: opts.user.name,
+                  displayName: opts.user.displayName
+                },
+                pubKeyCredParams: opts.algorithms.map(function (alg) {
+                  return { type: 'public-key', alg: alg };
+                }),
+                timeout: opts.timeout,
+                attestation: 'none',
+                excludeCredentials: (opts.exclude || []).map(function (id) {
+                  return { type: 'public-key', id: fromB64url(id) };
+                }),
+                authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' }
+              }
+            }).then(function (credential) {
+              if (!credential) throw new Error('No passkey was created.');
+              return postJson('/admin/passkeys/register/finish', {
+                _csrf: token,
+                token: opts.token,
+                name: nameField ? nameField.value : '',
+                attestationObject: b64url(credential.response.attestationObject),
+                clientDataJSON: b64url(credential.response.clientDataJSON)
+              });
+            });
+          })
+          .then(function () {
+            window.location.assign('/admin/passkeys?m=passkey.added');
+          })
+          .catch(function (err) {
+            addBtn.disabled = false;
+            if (addMsg) {
+              addMsg.textContent =
+                err && err.name === 'NotAllowedError'
+                  ? 'That was cancelled, or it timed out.'
+                  : (err && err.message) || 'That did not work.';
+            }
+          });
+      });
+    }
+  }
+
+  // Signing in with a passkey, on the sign-in page. The whole block is
+  // revealed at once, so a browser that cannot do this shows nothing at
+  // all rather than a dead control.
+  var login = document.querySelector('[data-slink-passkey-login]');
+  if (login && hasWebAuthn()) {
+    var inBtn = login.querySelector('[data-slink-passkey-go]');
+    var inMsg = login.querySelector('[data-slink-passkey-msg]');
+    if (inBtn) {
+      login.hidden = false;
+      inBtn.addEventListener('click', function () {
+        inBtn.disabled = true;
+        if (inMsg) inMsg.textContent = 'Follow your device’s prompt…';
+        var token = login.getAttribute('data-token');
+        postJson('/__slink/passkey/login/begin', { _csrf: token })
+          .then(function (opts) {
+            return navigator.credentials.get({
+              publicKey: {
+                challenge: fromB64url(opts.challenge),
+                rpId: opts.rpId,
+                timeout: opts.timeout,
+                userVerification: 'preferred'
+              },
+              mediation: 'optional'
+            }).then(function (assertion) {
+              if (!assertion) throw new Error('No passkey was offered.');
+              return postJson('/__slink/passkey/login/finish', {
+                _csrf: token,
+                token: opts.token,
+                next: login.getAttribute('data-next') || '/admin',
+                id: assertion.id,
+                authenticatorData: b64url(assertion.response.authenticatorData),
+                clientDataJSON: b64url(assertion.response.clientDataJSON),
+                signature: b64url(assertion.response.signature)
+              });
+            });
+          })
+          .then(function (done) {
+            window.location.assign(done.next || '/admin');
+          })
+          .catch(function (err) {
+            inBtn.disabled = false;
+            if (inMsg) {
+              inMsg.textContent =
+                err && err.name === 'NotAllowedError'
+                  ? 'That was cancelled, or no passkey was available.'
+                  : (err && err.message) || 'That did not work.';
+            }
+          });
+      });
+    }
+  }
+
   // Suggest the shortcut path from the destination when the field is empty.
   var slug = document.querySelector('[data-slink-slug]');
   if (slug) {
@@ -187,35 +462,48 @@ export const JS = `
 })();
 `.trim();
 
-/** Serve a static asset, or null when the path is not one. */
+/**
+ * Serve a static asset, or null when the path is not one.
+ *
+ * These go through harden() like every other response. They are answered
+ * before configuration is even loaded, so without it a browser whose very
+ * first request here is for the stylesheet would get no HSTS, and the
+ * script would be served without `nosniff`.
+ *
+ * `store: true` keeps each asset's own caching; the SVG's stricter policy
+ * is re-applied after hardening because that one has to stay inert.
+ */
+const SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+const IMMUTABLE = 'public, max-age=31536000, immutable';
+
 export function serveAsset(pathname) {
   if (pathname === ASSET_PREFIX + '/app.css') {
-    return new Response(CSS, {
-      headers: {
-        'Content-Type': 'text/css; charset=utf-8',
-        'Cache-Control': 'public, max-age=31536000, immutable',
-      },
-    });
+    return harden(
+      new Response(CSS, {
+        headers: { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': IMMUTABLE },
+      }),
+      { store: true }
+    );
   }
   if (pathname === ASSET_PREFIX + '/app.js') {
-    return new Response(JS, {
-      headers: {
-        'Content-Type': 'text/javascript; charset=utf-8',
-        'Cache-Control': 'public, max-age=31536000, immutable',
-      },
-    });
+    return harden(
+      new Response(JS, {
+        headers: { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': IMMUTABLE },
+      }),
+      { store: true }
+    );
   }
   if (pathname === ASSET_PREFIX + '/logo.svg') {
-    return new Response(LOGO_SVG, {
-      headers: {
-        'Content-Type': 'image/svg+xml; charset=utf-8',
-        'Cache-Control': 'public, max-age=31536000, immutable',
-        // An SVG is active content when a browser navigates straight to it,
-        // so this one is served inert: no script, no network, no framing.
-        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
-        'X-Content-Type-Options': 'nosniff',
-      },
-    });
+    const response = harden(
+      new Response(LOGO_SVG, {
+        headers: { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': IMMUTABLE },
+      }),
+      { store: true }
+    );
+    // An SVG is active content when a browser navigates straight to it, so
+    // this one keeps the inert policy rather than the ordinary page one.
+    response.headers.set('Content-Security-Policy', SVG_CSP);
+    return response;
   }
   return null;
 }

@@ -309,6 +309,42 @@ section('audit');
   ok('stores no raw IPs', !body.includes('CF-Connecting'));
 }
 
+/* ------------------------------------------- audit retention purge */
+section('shortening audit retention removes what is already past it');
+{
+  // A stored entry keeps the expiry it was written with, so shortening the
+  // window has to delete rather than wait. Backdate one entry by writing it
+  // under an older inverted timestamp, which is how the key encodes its age.
+  const kv = admin.env.KV;
+  const existing = [...kv.map.keys()].filter((k) => k.startsWith('aud:'));
+  ok('there are audit entries to work with', existing.length > 0, String(existing.length));
+  const oldTs = Math.floor(Date.now() / 1000) - 400 * 86400;
+  const inv = String(9999999999 - oldTs).padStart(10, '0');
+  const oldKey = 'aud:' + inv + ':planted';
+  kv.map.set(oldKey, kv.map.get(existing[0]));
+
+  const url = 'https://ptra.dev/admin/settings';
+  const base = {
+    otpLength: '6', otpTtlSeconds: '600', otpMaxAttempts: '5', otpResendSeconds: '30',
+    sessionTtlSeconds: '604800', sessionIdleSeconds: '0', rlOtpIp: '10', rlOtpEmail: '5',
+    rlOtpVerify: '5', rlWindow: '3600', mailSubject: 'x', geoMode: 'off', geoApplyTo: 'login',
+  };
+  const tok = Harness.csrfFor(await (await admin.req(url)).text(), '/admin/settings');
+  const saved = await admin.req(url, { form: { _csrf: tok, ...base, auditRetentionDays: '30' } });
+
+  ok('the purge is reported', (saved.headers.get('Location') || '').includes('audit.purged'),
+     saved.headers.get('Location'));
+  ok('the backdated entry is gone', !kv.map.has(oldKey));
+  ok('recent entries survive', [...kv.map.keys()].some((k) => k.startsWith('aud:')));
+
+  // Lengthening it again purges nothing.
+  const tok2 = Harness.csrfFor(await (await admin.req(url)).text(), '/admin/settings');
+  const longer = await admin.req(url, { form: { _csrf: tok2, ...base, auditRetentionDays: '180' } });
+  ok('lengthening retention purges nothing',
+     !(longer.headers.get('Location') || '').includes('audit.purged'),
+     longer.headers.get('Location'));
+}
+
 console.log(`\nflows: ${passed} passed, ${failed} failed`);
 admin.restore();
 if (failed) process.exit(1);

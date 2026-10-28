@@ -48,8 +48,37 @@ export class Harness {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
+      // A stand-in identity provider, so the whole authorization-code
+      // exchange can be driven without reaching the network.
+      if (url.startsWith('https://idp.example/')) return this.idp(url, init);
       throw new Error('unexpected outbound fetch to ' + url);
     };
+  }
+
+  /**
+   * The stand-in provider. `idpState` lets a test make the token exchange or
+   * the profile lookup fail, and records what the Worker actually sent.
+   */
+  idp(url, init) {
+    const json = (body, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+    if (url === 'https://idp.example/token') {
+      const sent = new URLSearchParams(init && init.body ? String(init.body) : '');
+      this.idpToken = Object.fromEntries(sent.entries());
+      if (this.idpTokenStatus && this.idpTokenStatus !== 200) return json({ error: 'nope' }, this.idpTokenStatus);
+      if (this.idpNoToken) return json({ token_type: 'Bearer' });
+      return json({ access_token: 'at-' + (sent.get('code') || ''), token_type: 'Bearer' });
+    }
+    if (url === 'https://idp.example/me') {
+      this.idpAuth = init && init.headers ? init.headers.Authorization : null;
+      if (this.idpUserStatus && this.idpUserStatus !== 200) return json({ error: 'nope' }, this.idpUserStatus);
+      return json({
+        email: this.idpEmail === undefined ? 'sso@pontera.com' : this.idpEmail,
+        email_verified: this.idpVerified === undefined ? true : this.idpVerified,
+      });
+    }
+    throw new Error('unexpected provider call to ' + url);
   }
 
   restore() {
@@ -80,15 +109,32 @@ export class Harness {
     }
   }
 
-  /** Issue a request through the worker. `form` sends a urlencoded POST. */
-  async req(url, { method = 'GET', form, country = 'IL', headers = {}, cookies = true } = {}) {
+  /**
+   * Issue a request through the worker. `form` sends a urlencoded POST;
+   * `json` sends a JSON one, which is what the passkey endpoints take.
+   */
+  async req(url, { method = 'GET', form, json, country = 'IL', headers = {}, cookies = true } = {}) {
     const target = new URL(url);
     const host = target.hostname;
     const init = { method, headers: { ...headers } };
 
+    if (json !== undefined) {
+      init.method = 'POST';
+      init.body = JSON.stringify(json);
+      init.headers['Content-Type'] = 'application/json';
+      if (!('Origin' in init.headers) && init.headers.Origin !== null) {
+        init.headers.Origin = target.origin;
+      }
+    }
+
     if (form) {
       init.method = 'POST';
-      const body = new URLSearchParams(form);
+      // An array value means the same field repeated, which is how a set of
+      // checkboxes actually arrives.
+      const body = new URLSearchParams();
+      for (const [k, v] of Object.entries(form)) {
+        for (const one of Array.isArray(v) ? v : [v]) body.append(k, one);
+      }
       init.body = body.toString();
       init.headers['Content-Type'] = 'application/x-www-form-urlencoded';
       if (!('Origin' in init.headers) && init.headers.Origin !== null) {

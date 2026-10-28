@@ -39,8 +39,8 @@ import { methodsFor, normalizeOauth } from './oauth.js';
 import { canonicalHost } from './paths.js';
 import { rootCreateAllowed } from './permissions.js';
 import { getChallenge } from './otp.js';
-import { handleRedirect, handleRoot } from './redirect.js';
-import { clearCookie, harden, parseCookies } from './security.js';
+import { handleRedirect, handleRoot, handleUnlock } from './redirect.js';
+import { clearCookie, harden, parseCookies, withCookies } from './security.js';
 import { isAdmin } from './users.js';
 import { randomId } from './util.js';
 import { html, loginPage, messagePage, verifyPage } from './views.js';
@@ -48,14 +48,6 @@ import { html, loginPage, messagePage, verifyPage } from './views.js';
 const ALLOWED_METHODS = ['GET', 'HEAD', 'POST'];
 
 /** Attach cookies to a response without discarding ones already set. */
-function withCookies(response, cookies) {
-  const list = (cookies || []).filter(Boolean);
-  if (list.length === 0) return response;
-  const out = new Response(response.body, response);
-  for (const cookie of list) out.headers.append('Set-Cookie', cookie);
-  return out;
-}
-
 /** A 303 redirect carrying cookies. */
 function seeOther(location, cookies = []) {
   const headers = new Headers({ Location: location });
@@ -133,7 +125,7 @@ async function signInPost(ctx) {
   if (stage === 'resend') {
     const guard = await checkCsrf(ctx, 'login.verify', body);
     if (!guard.ok) return signInGet(ctx, { error: 'That request could not be verified. Please try again.' });
-    const result = await resendLogin(ctx);
+    const result = await resendLogin(ctx, body);
     if (!result.ok) {
       if (result.restart) return seeOther('/admin', [clearCookie(COOKIE.login)]);
       return signInGet(ctx, { error: result.error });
@@ -516,6 +508,13 @@ async function route(request, env, exec) {
       });
       return html(page.body, { status: 403 });
     }
+  }
+
+  // Answering a link's password prompt is the one POST a shortcut accepts.
+  if (request.method === 'POST') {
+    const body = await readForm(request);
+    const unlocked = await handleUnlock(ctx, body);
+    if (unlocked) return withCookies(unlocked, [csrfCookie(ctx)]);
   }
 
   if (request.method !== 'GET' && request.method !== 'HEAD') {

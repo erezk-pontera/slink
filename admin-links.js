@@ -19,8 +19,10 @@ import {
   previewBlockedReason,
   previewCard,
 } from './preview.js';
-import { ALL_SLOTS, normalizeRouting, SLOT_LABELS } from './targets.js';
+import { ALL_SLOTS, normalizeFrame, normalizeRouting, SLOT_LABELS } from './targets.js';
 import { resolveDomain } from './domains.js';
+import { capabilityAllowed, describeCapability } from './capabilities.js';
+import { hasPassword, MAX_PASSWORD, readPassword, setPassword } from './linkpass.js';
 import {
   DEFAULT_LOGO_SCALE,
   DEFAULT_SIZE,
@@ -148,8 +150,9 @@ function textToRules(text) {
 }
 
 /** The five destination slots, with their optional country rules. */
-function routingFields(routing, { blockedSchemes } = {}) {
+function routingFields(routing, { frame, mayFrame = false } = {}) {
   const r = normalizeRouting(routing);
+  const frames = normalizeFrame(frame);
   const slot = (key) => {
     const isDefault = key === 'default';
     return `<fieldset class="grants">
@@ -171,9 +174,30 @@ function routingFields(routing, { blockedSchemes } = {}) {
         placeholder: 'IL,US https://example.com/local',
         note: 'One per line: comma-separated two-letter codes, a space, then the destination. The first match wins; anything else falls through.',
       })}
+      ${
+        mayFrame
+          ? checkbox({
+              name: 'frame__' + key,
+              label: 'Show in a frame instead of sending the visitor there',
+              checked: frames[key] === true,
+            })
+          : ''
+      }
     </fieldset>`;
   };
-  return ALL_SLOTS.map(slot).join('');
+  return (
+    ALL_SLOTS.map(slot).join('') +
+    (mayFrame
+      ? `<p class="note">Framing keeps the visitor on this domain. Many sites refuse to be framed &mdash; they send <code>X-Frame-Options</code> or a <code>frame-ancestors</code> policy &mdash; and there is nothing this end can do about that. <strong>Test every framed destination before you share the link.</strong></p>`
+      : '')
+  );
+}
+
+/** Read the per-slot frame flags back out of a submitted form. */
+function readFrame(body) {
+  const out = {};
+  for (const key of ALL_SLOTS) if (body.get('frame__' + key) === '1') out[key] = true;
+  return out;
 }
 
 /** Read the five slots back out of a submitted form. */
@@ -317,6 +341,11 @@ async function newForm(ctx, { error, info, values = {} } = {}) {
 
   const parentDomain = await resolveDomain(cfg, chosenHost);
   const preview = normalizePreview(values.preview);
+  const chosenDomain = await resolveDomain(cfg, chosenHost);
+  const mayFrame = capabilityAllowed(cfg, 'frame', {
+    user: ctx.session.user,
+    domain: chosenDomain,
+  }).allowed;
   const previewBlocked = previewBlockedReason(parentDomain);
 
   const body = `
@@ -375,7 +404,7 @@ ${alert('error', error)}${alert('ok', info)}
 
     <h2>Where different visitors go</h2>
     <p class="hint">All optional. A device slot left blank falls through to the main destination.</p>
-    ${routingFields(values.routing)}
+    ${routingFields(values.routing, { frame: values.frame, mayFrame })}
 
     <h2>Preview card</h2>
     ${
@@ -462,6 +491,7 @@ async function createSubmit(ctx) {
     forwardQuery: body.get('forwardQuery') === '1',
     readonly: body.get('readonly') === '1',
     routing: readRouting(body),
+    frame: readFrame(body),
     preview: {
       enabled: body.get('previewEnabled') === '1',
       title: body.get('previewTitle'),
@@ -525,6 +555,11 @@ async function createSubmit(ctx) {
     forwardQuery: values.forwardQuery,
     readonly: canSetReadonly(ctx.cfg, ctx.session.user) ? values.readonly : false,
     routing,
+    // Framing is only stored where the person creating the link may use it,
+    // so a submitted flag cannot grant what the host withheld.
+    frame: capabilityAllowed(ctx.cfg, 'frame', { user: ctx.session.user, domain }).allowed
+      ? normalizeFrame(values.frame)
+      : {},
     preview: previewBlockedReason(domain) ? emptyPreview() : normalizePreview(values.preview),
   });
   await putLink(ctx.cfg, link);
@@ -642,8 +677,20 @@ async function editForm(ctx, { error, info } = {}) {
   const behaviour = resolveLink(policy, link, userExemption(ctx.session.user, host));
   const parentDomain = await resolveDomain(cfg, host);
   const preview = normalizePreview(link.preview);
+  const mayFrame = capabilityAllowed(cfg, 'frame', {
+    user: ctx.session.user,
+    domain: parentDomain,
+    dir,
+  }).allowed;
+  const mayPassword = capabilityAllowed(cfg, 'password', {
+    user: ctx.session.user,
+    domain: parentDomain,
+    dir,
+  }).allowed;
+  const currentPassword = await readPassword(cfg, link);
   const previewBlocked = previewBlockedReason(parentDomain);
   const dupToken = await formToken(ctx, 'link.duplicate');
+  const passwordToken = await formToken(ctx, 'link.password');
   const shortUrl = 'https://' + host + '/' + link.path;
   const mayReadonly = canSetReadonly(cfg, ctx.session.user);
 
@@ -679,7 +726,7 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
 
     <h2>Where different visitors go</h2>
     <p class="hint">All optional. A device slot left blank falls through to the main destination, so configuring only one is perfectly normal.</p>
-    ${routingFields(link.routing)}
+    ${routingFields(link.routing, { frame: link.frame, mayFrame })}
 
     <h2>Preview card</h2>
     ${
@@ -706,6 +753,33 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
       <button class="link" type="button" data-copy="${esc(shortUrl)}">Copy short link</button>
     </div>
   </form>
+</div>
+
+<div class="card">
+  <h2>Password</h2>
+  ${
+    mayPassword
+      ? `<p class="hint">A visitor has to type this before the link resolves, on any domain. It is stored encrypted and shown here because you have to be able to tell people what it is. Changing it closes every browser that had already answered.</p>
+  <form method="post" action="/admin/links/password" autocomplete="off">
+    ${csrfField(passwordToken)}${hidden('host', host)}${hidden('path', pathLc)}
+    ${field({
+      name: 'password',
+      label: 'Password',
+      value: currentPassword,
+      placeholder: hasPassword(link) ? '' : 'leave blank for no password',
+      attrs: 'autocomplete="off" spellcheck="false" maxlength="' + MAX_PASSWORD + '"',
+      note: hasPassword(link)
+        ? 'Clear the field and save to remove the password.'
+        : 'Setting one also hides this link\'s destinations from anyone who cannot edit it.',
+    })}
+    <div class="actions"><button type="submit" class="secondary">${
+      hasPassword(link) ? 'Update password' : 'Set a password'
+    }</button></div>
+  </form>`
+      : `<p class="hint">${esc(
+          describeCapability(cfg, 'password', { user: ctx.session.user, domain: parentDomain, dir })
+        )}${hasPassword(link) ? ' This link already has one, which still applies.' : ''}</p>`
+  }
 </div>
 
 ${qrCard(host, link, url)}
@@ -773,6 +847,53 @@ ${flashFrom(ctx.url)}${alert('error', error)}${alert('ok', info)}
 
 <div class="actions"><a class="btn secondary" href="/admin/links">Back</a></div>`;
   return adminPage(ctx, { title: link.path, nav: 'links', body });
+}
+
+/** Set, change or clear a link's password. */
+async function passwordSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/links', 'csrf');
+  const guard = await checkCsrf(ctx, 'link.password', body);
+  if (!guard.ok) return back('/admin/links', 'csrf');
+
+  const host = String(body.get('host') || '');
+  const pathLc = String(body.get('path') || '').toLowerCase();
+  const link = await getLink(ctx.cfg, host, pathLc);
+  if (!link) return back('/admin/links', 'notfound');
+
+  const permit = await canManageLink(ctx.cfg, { user: ctx.session.user, link, host });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  ctx.url.searchParams.set('host', host);
+  ctx.url.searchParams.set('path', pathLc);
+
+  const dir = await governingDirectory(ctx.cfg, host, pathLc);
+  const may = capabilityAllowed(ctx.cfg, 'password', {
+    user: ctx.session.user,
+    domain: await resolveDomain(ctx.cfg, host),
+    dir,
+  });
+  // Clearing a password is always allowed, even where setting one is not:
+  // a capability withdrawn later must not strand a link behind a prompt.
+  const raw = String(body.get('password') || '');
+  if (raw && !may.allowed) return denied(ctx, may.reason || 'Not permitted here.');
+
+  const result = await setPassword(ctx.cfg, link, raw);
+  if (!result.ok) return editForm(ctx, { error: result.error });
+  await putLink(ctx.cfg, link);
+
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.linkUpdated,
+      actor: ctx.session.user,
+      host,
+      ip: clientIp(ctx.request),
+      object: pathLc,
+      // Never the password itself, only whether there is now one.
+      detail: { password: result.cleared ? 'cleared' : 'set' },
+    })
+  );
+  return back(linkEditHref(host, pathLc), result.cleared ? 'link.unlocked' : 'link.locked');
 }
 
 async function editSubmit(ctx) {
@@ -868,6 +989,14 @@ async function editSubmit(ctx) {
     });
   }
   link.note = String(body.get('note') || '').slice(0, 500);
+  // Same reasoning as on create: a flag only lands if the capability holds.
+  link.frame = capabilityAllowed(ctx.cfg, 'frame', {
+    user: ctx.session.user,
+    domain,
+    dir: await governingDirectory(ctx.cfg, host, pathLc),
+  }).allowed
+    ? normalizeFrame(readFrame(body))
+    : link.frame || {};
   link.activeFrom = activeFrom;
   link.expiresAt = expiresAt;
   link.enabled = body.get('enabled') === '1';
@@ -1044,5 +1173,6 @@ export async function adminLinks(ctx, path) {
   if (path === '/admin/links/transfer' && method === 'POST') return transferSubmit(ctx);
   if (path === '/admin/links/duplicate' && method === 'POST') return duplicateSubmit(ctx);
   if (path === '/admin/links/qr') return qrSvg(ctx);
+  if (path === '/admin/links/password' && method === 'POST') return passwordSubmit(ctx);
   return back('/admin/links');
 }

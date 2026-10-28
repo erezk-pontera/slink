@@ -26,6 +26,14 @@ import { clientIp } from './geo.js';
 import { describePolicy, normalizePolicy } from './interstitial.js';
 import { clampStatus } from './links.js';
 import { MISSING_MODES, normalizeMissingPolicy } from './dirmissing.js';
+import {
+  CAPABILITIES,
+  CAPABILITY_KEYS,
+  normalizeCapabilities,
+  readCapabilityForm,
+  TRI_OPTIONS,
+  triValue,
+} from './capabilities.js';
 import { INVITE_MODES, normalizeInvitePolicy } from './invites.js';
 import {
   METHODS,
@@ -153,6 +161,7 @@ async function editForm(ctx, { error } = {}) {
   const missingPolicy = normalizeMissingPolicy(domain.dirMissingPolicy);
   const invitePolicy = normalizeInvitePolicy(domain.invitePolicy);
   const oauth = normalizeOauth(domain.oauth);
+  const caps = normalizeCapabilities(domain.capabilities);
   const disabledMethods = normalizeDisabledMethods(domain.disabledMethods);
 
   const body = `
@@ -215,6 +224,22 @@ ${routed ? '' : alert('error', 'This host is not in the DOMAINS variable, so the
         ? 'Blank falls back to MISSING: ' + ctx.cfg.missingUrl
         : 'Blank shows a not-found page, because MISSING is not set.',
     })}
+    <h2>What may be used here</h2>
+    <p class="hint">Each of these can be allowed or withheld on this domain. A directory may withdraw one further; an administrator may settle it for one person either way, and may always use it themselves.</p>
+    ${CAPABILITY_KEYS.map((key) =>
+      select({
+        name: 'cap_' + key,
+        label: CAPABILITIES[key].label,
+        value: triValue(caps, key),
+        options: TRI_OPTIONS.map((o) =>
+          o.value === ''
+            ? { value: '', label: `Inherit (${CAPABILITIES[key].default ? 'allowed' : 'not allowed'})` }
+            : o
+        ),
+        note: CAPABILITIES[key].hint,
+      })
+    ).join('')}
+
     <h2>Single sign-on</h2>
     <p class="hint">Authorization Code with PKCE. The provider establishes an address and nothing more: the allowed sign-in domains above still decide who may actually sign in, and an address the provider does not mark verified is refused.</p>
     ${checkbox({ name: 'oauthEnabled', label: 'Offer single sign-on on this domain', checked: !!oauth.enabled })}
@@ -358,6 +383,7 @@ async function editSubmit(ctx) {
   domain.interstitial = readPolicy(body, 'it');
   domain.rootRedirect = rootRedirect;
   domain.notFoundUrl = notFoundUrl;
+  domain.capabilities = readCapabilityForm(body, 'cap_');
   domain.oauth = normalizeOauth({
     enabled: body.get('oauthEnabled') === '1',
     label: body.get('oauthLabel'),

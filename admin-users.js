@@ -16,6 +16,14 @@ import { PROVIDERS } from './mailer.js';
 import { HARD_BLOCKED_SCHEMES, normalizeEmail, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
 import { canImpersonate, mintImpersonation } from './impersonate.js';
+import {
+  ANY_HOST as CAP_ANY_HOST,
+  CAPABILITIES,
+  CAPABILITY_KEYS,
+  normalizeUserCapabilities,
+  TRI_OPTIONS,
+  triValue,
+} from './capabilities.js';
 import { deleteUser, getUserByNorm, isRootAdmin, listUsers, putUser } from './users.js';
 import { esc, fmtTime, intEnv, listEnv } from './util.js';
 import { alert, checkbox, csrfField, field, hidden, select, textarea } from './views.js';
@@ -113,6 +121,16 @@ async function userEditForm(ctx, { error } = {}) {
   for (const key of [ANY_HOST, ...cfg.knownHosts]) {
     exemptTable[key] = normalizeExempt((user.interstitialExempt || {})[key]);
   }
+  const capTable = normalizeUserCapabilities(user.capabilities);
+  const capSelects = (host) =>
+    CAPABILITY_KEYS.map((key) =>
+      select({
+        name: 'cap__' + host + '__' + key,
+        label: CAPABILITIES[key].label,
+        value: triValue(capTable[host], key),
+        options: TRI_OPTIONS,
+      })
+    ).join('');
   const perDomainBoxes = cfg.knownHosts
     .map(
       (h) => `<fieldset class="grants">
@@ -138,6 +156,7 @@ async function userEditForm(ctx, { error } = {}) {
             checked: !!exemptTable[h][k],
           })
         ).join('')}
+        ${capSelects(h)}
       </fieldset>`
     )
     .join('');
@@ -194,6 +213,10 @@ ${flashFrom(url)}${alert('error', error)}
         checked: !!exemptTable[ANY_HOST][k],
       })
     ).join('')}
+
+    <h2>What this person may use, on every domain</h2>
+    <p class="hint">A ruling here settles the question wherever the domain and the directory would otherwise decide it, in either direction. Leave it on Inherit to let them decide. It never applies to an administrator, who may use everything.</p>
+    ${capSelects(CAP_ANY_HOST)}
 
     <h2>Per domain</h2>
     ${perDomainBoxes}
@@ -269,6 +292,20 @@ async function userEditSubmit(ctx) {
     user.rootCreate = rootCreate;
     user.dirCreate = dirCreate;
   }
+
+  // Capability rulings apply to administrators' accounts too, because an
+  // account can be demoted later and the ruling should still be there.
+  const capabilities = {};
+  for (const host of [CAP_ANY_HOST, ...ctx.cfg.knownHosts]) {
+    const map = {};
+    for (const key of CAPABILITY_KEYS) {
+      const v = String(body.get('cap__' + host + '__' + key) || '');
+      if (v === 'allow') map[key] = true;
+      else if (v === 'deny') map[key] = false;
+    }
+    if (Object.keys(map).length) capabilities[host] = map;
+  }
+  user.capabilities = normalizeUserCapabilities(capabilities);
 
   // Exemptions apply to administrators too, since they are about policy
   // rather than permission, and an administrator's links are served by the

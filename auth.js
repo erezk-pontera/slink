@@ -25,6 +25,7 @@ import {
   VERIFY,
   verifyChallenge,
   verifyMessage,
+  RESEND,
 } from './otp.js';
 import { domainAllowed, normalizeEmail, ValidationError } from './paths.js';
 import * as rl from './ratelimit.js';
@@ -422,17 +423,31 @@ export async function completeLogin(ctx, body) {
 }
 
 /** Re-send a code for the challenge the browser already holds. */
-export async function resendLogin(ctx) {
+export async function resendLogin(ctx, body) {
   const { cfg, request, host } = ctx;
   const cookies = parseCookies(request);
   const loginId = cookies[COOKIE.login];
   if (!loginId) return { ok: false, error: 'Your sign-in session has expired. Start again.', restart: true };
 
+  // A resend sends mail, so it is a challenge of its own rather than a
+  // free button: without this, the page is a way to have us email somebody
+  // repeatedly on request.
+  const turn = await turnstileVerifyOrFail(ctx, body, 'resend');
+  if (!turn.ok) return { ok: false, error: turn.error };
+
   const record = await getChallenge(cfg, loginId);
   if (!record) return { ok: false, error: 'Your sign-in session has expired. Start again.', restart: true };
 
   const issued = await resendChallenge(cfg, loginId, record);
-  if (!issued) return { ok: false, error: 'Please wait a moment before requesting another code.' };
+  if (issued.status === RESEND.expired || issued.status === RESEND.lost) {
+    return { ok: false, error: 'Your sign-in session has expired. Start again.', restart: true };
+  }
+  if (issued.status === RESEND.tooSoon) {
+    return { ok: false, error: 'Please wait a moment before requesting the code again.' };
+  }
+  if (issued.status === RESEND.tooMany) {
+    return { ok: false, error: 'That code has been sent several times already. Start again.' };
+  }
 
   try {
     await sendOtpEmail(cfg, {
@@ -445,7 +460,8 @@ export async function resendLogin(ctx) {
   } catch {
     return { ok: false, error: 'We could not send the code. Try again shortly.' };
   }
-  return { ok: true, info: 'A new code is on its way.' };
+  // Deliberately the same code: one already in transit stays valid.
+  return { ok: true, info: 'We have sent the same code again. It is still the one to use.' };
 }
 
 /** Sign out: revoke this session, and every other session the user holds. */

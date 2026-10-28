@@ -59,6 +59,14 @@ import {
   mayCreateAnyDirectory,
   requireAdmin,
 } from './permissions.js';
+import {
+  CAPABILITIES,
+  CAPABILITY_KEYS,
+  normalizeCapabilities,
+  readCapabilityForm,
+  TRI_OPTIONS,
+  triValue,
+} from './capabilities.js';
 import { describeMissingPolicy, directoryMaySetMissing, resolveMissing } from './dirmissing.js';
 import {
   describeInvitePolicy,
@@ -68,7 +76,15 @@ import {
 } from './invites.js';
 import { getUserByNorm, inviteUser, isAdmin } from './users.js';
 import { esc, fmtTime } from './util.js';
-import { alert, checkbox, csrfField, field, hidden, textarea } from './views.js';
+import {
+  alert,
+  checkbox,
+  csrfField,
+  field,
+  hidden,
+  select,
+  textarea,
+} from './views.js';
 
 function dirHref(host, pathLc) {
   return `/admin/directories/edit?host=${encodeURIComponent(host)}&path=${encodeURIComponent(pathLc)}`;
@@ -265,11 +281,13 @@ async function editForm(ctx, { error } = {}) {
   const moveToken = await formToken(ctx, 'dir.transfer');
   const policyToken = await formToken(ctx, 'dir.policy');
   const exemptToken = await formToken(ctx, 'dir.exempt');
+  const capToken = await formToken(ctx, 'dir.capabilities');
   const parentDomain = await resolveDomain(cfg, host);
   const domainPolicy = normalizePolicy(parentDomain && parentDomain.interstitial);
   const exempt = normalizeExempt(dir.interstitialExempt);
   const exemptions = EXEMPTIBLE.filter((k) => exempt[k]);
   const maySetMissing = directoryMaySetMissing(parentDomain, dir);
+  const dirCaps = normalizeCapabilities(dir.capabilities);
   const mayNarrowInvites = directoryMayNarrowInvites(parentDomain);
   const effectiveMissing = resolveMissing(parentDomain, dir);
   const mayOverride = directoryMayOverride(domainPolicy, dir);
@@ -382,6 +400,24 @@ ${flashFrom(url)}${alert('error', error)}
             describePolicy(domainPolicy)
           )} An administrator can let this directory set its own.</p>`
     }
+  </details>
+
+  <details class="group">
+    <summary>What may be used in here</summary>
+    <p class="hint">A directory may withdraw what the domain allows. It cannot grant what the domain withholds, and it never applies to an administrator.</p>
+  <form method="post" action="/admin/directories/capabilities">
+    ${csrfField(capToken)}${hidden('host', host)}${hidden('path', pathLc)}
+    ${CAPABILITY_KEYS.map((key) =>
+      select({
+        name: 'cap_' + key,
+        label: CAPABILITIES[key].label,
+        value: triValue(dirCaps, key),
+        options: TRI_OPTIONS,
+        note: CAPABILITIES[key].hint,
+      })
+    ).join('')}
+    <div class="actions"><button type="submit">Save</button></div>
+  </form>
   </details>
 
 ${
@@ -718,6 +754,41 @@ async function exemptSubmit(ctx) {
   return back(dirHref(host, pathLc), 'dir.updated');
 }
 
+/**
+ * Withdraw a capability inside this directory. Available to whoever may
+ * manage the directory, because withdrawing is always narrowing: the
+ * resolver never lets a directory grant past its host.
+ */
+async function capabilitiesSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/directories', 'csrf');
+  const guard = await checkCsrf(ctx, 'dir.capabilities', body);
+  if (!guard.ok) return back('/admin/directories', 'csrf');
+
+  const host = String(body.get('host') || '');
+  const pathLc = String(body.get('path') || '').toLowerCase();
+  const dir = await getDirectory(ctx.cfg, host, pathLc);
+  if (!dir) return back('/admin/directories', 'notfound');
+
+  const permit = await canManageDirectory(ctx.cfg, { user: ctx.session.user, dir });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  dir.capabilities = readCapabilityForm(body, 'cap_');
+  await putDirectory(ctx.cfg, dir);
+
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.dirUpdated,
+      actor: ctx.session.user,
+      host,
+      ip: clientIp(ctx.request),
+      object: pathLc,
+      detail: { capabilities: dir.capabilities },
+    })
+  );
+  return back(dirHref(host, pathLc), 'dir.updated');
+}
+
 async function transferSubmit(ctx) {
   const body = await readForm(ctx.request);
   if (!body) return back('/admin/directories', 'csrf');
@@ -831,6 +902,7 @@ export async function adminDirectories(ctx, path) {
   if (path === '/admin/directories/revoke' && method === 'POST') return revokeSubmit(ctx);
   if (path === '/admin/directories/policy' && method === 'POST') return policySubmit(ctx);
   if (path === '/admin/directories/exempt' && method === 'POST') return exemptSubmit(ctx);
+  if (path === '/admin/directories/capabilities' && method === 'POST') return capabilitiesSubmit(ctx);
   if (path === '/admin/directories/transfer' && method === 'POST') return transferSubmit(ctx);
   if (path === '/admin/directories/delete' && method === 'POST') return deleteSubmit(ctx);
   return back('/admin/directories');

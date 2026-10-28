@@ -147,6 +147,8 @@ export const MESSAGES = {
   'user.updated': ['ok', 'User updated.'],
   'user.deleted': ['ok', 'User removed.'],
   'settings.updated': ['ok', 'Settings saved.'],
+  'link.locked': ['ok', 'Password saved. Anyone who had already answered will be asked again.'],
+  'link.unlocked': ['ok', 'Password removed. The link resolves without one now.'],
   'audit.purged': ['ok', 'Settings saved. Audit entries past the new retention were removed.'],
   'audit.purged.partial': [
     'ok',

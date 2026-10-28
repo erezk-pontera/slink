@@ -26,6 +26,9 @@ export function newDirectory(host, path, pathLc, overrides = {}) {
     readonly: false,
     enabled: true,
     note: '',
+    /** Features withdrawn here. A directory may take away what the host
+     *  allows; it cannot grant what the host withholds. */
+    capabilities: {},
     /** Narrows the host's invite domains for this directory. null leaves
      *  the host's list alone; only meaningful where the host delegates.
      *  See invites.js. */

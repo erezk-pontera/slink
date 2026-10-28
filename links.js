@@ -31,6 +31,12 @@ export function newLink(host, parsed, target, owner, overrides = {}) {
     showTarget: null,
     /** Optional per-device and per-country destinations. See targets.js. */
     routing: emptyRouting(),
+    /** Which destination slots are shown inside a frame rather than
+     *  redirected to. One flag per slot; see targets.js for the slots. */
+    frame: {},
+    /** Encrypted link password, empty when the link is open. See
+     *  linkpass.js. */
+    password: '',
     /** Optional unfurling card, public domains only. See preview.js. */
     preview: emptyPreview(),
     ownerId: owner ? owner.id : null,

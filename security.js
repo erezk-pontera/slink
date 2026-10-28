@@ -118,6 +118,39 @@ export function parseCookies(request) {
  * Secure, Path=/ and carry no Domain, so they cannot be injected by a sibling
  * subdomain.
  */
+/**
+ * The content security policy for a page whose whole job is to show one
+ * other site in a frame. Everything stays locked down except `frame-src`,
+ * which is narrowed to that single origin rather than opened to the web.
+ */
+export function frameCsp(target) {
+  let origin = "'none'";
+  try {
+    origin = new URL(target).origin;
+  } catch {
+    origin = "'none'";
+  }
+  return [
+    "default-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+    `frame-src ${origin}`,
+    "style-src 'self'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+  ].join('; ');
+}
+
+/** Attach Set-Cookie headers to a response without rebuilding it by hand. */
+export function withCookies(response, cookies) {
+  const list = (cookies || []).filter(Boolean);
+  if (list.length === 0) return response;
+  const out = new Response(response.body, response);
+  for (const cookie of list) out.headers.append('Set-Cookie', cookie);
+  return out;
+}
+
 export function serializeCookie(name, value, opts = {}) {
   const { maxAge, sameSite = 'Lax', httpOnly = true, secure = true, path = '/' } = opts;
   let out = name + '=' + encodeURIComponent(value);

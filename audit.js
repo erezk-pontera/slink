@@ -29,6 +29,7 @@ export const EVENTS = {
   domainCreated: 'domain.created',
   domainUpdated: 'domain.updated',
   domainDeleted: 'domain.deleted',
+  linkUnlockFailed: 'link.unlock.failed',
   userUpdated: 'user.updated',
   impersonationStarted: 'user.impersonated',
   userDeleted: 'user.deleted',

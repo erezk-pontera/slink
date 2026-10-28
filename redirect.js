@@ -7,17 +7,58 @@
  * seconds first.
  */
 
+import { audit, EVENTS } from './audit.js';
+import * as rl from './ratelimit.js';
+import { turnstileVerifyOrFail } from './turnstile.js';
 import { getDirectory, governingDirectory } from './directories.js';
 import { resolveMissing } from './dirmissing.js';
 import { GO_PARAM, needsExemption, policyFor, resolveLink, userExemption } from './interstitial.js';
 import { bumpClicks, getLink, isExpired, isPending, isServable } from './links.js';
 import { isCrawler, previewAllowed, previewPage } from './preview.js';
-import { deviceClass, resolveTarget } from './targets.js';
+import {
+  cookieName,
+  hasPassword,
+  isUnlocked,
+  mintUnlock,
+  passwordMatches,
+  UNLOCK_TTL_SECONDS,
+} from './linkpass.js';
+import { deviceClass, resolveTarget, shouldFrame } from './targets.js';
+import { checkCsrf, csrfCookie, tokenFor } from './auth.js';
 import { getUserById } from './users.js';
-import { harden } from './security.js';
-import { adminUrl, html, interstitialPage, landingPage, messagePage } from './views.js';
+import { frameCsp, harden, parseCookies, serializeCookie, withCookies } from './security.js';
+import { capabilityAllowed } from './capabilities.js';
+import {
+  adminUrl,
+  framePage,
+  html,
+  interstitialPage,
+  landingPage,
+  messagePage,
+  passwordPage,
+  revealPage,
+} from './views.js';
 
 /** Decode a URL path into the lowercase lookup key, or null when unusable. */
+/**
+ * The suffix a signed-in person adds to ask where a link goes instead of
+ * going there. A `+` cannot appear in a shortcut, so it is unambiguous.
+ */
+export const REVEAL_SUFFIX = '+';
+
+/** Split a trailing `+` off a pathname, if there is one. */
+export function splitReveal(pathname) {
+  const raw = String(pathname || '');
+  // Both the literal and the percent-encoded form, since a browser may send
+  // either and a copied link often carries the encoded one.
+  const trimmed = raw.replace(/\/+$/, '');
+  if (trimmed.endsWith('%2B') || trimmed.endsWith('%2b')) {
+    return { path: trimmed.slice(0, -3), reveal: true };
+  }
+  if (trimmed.endsWith(REVEAL_SUFFIX)) return { path: trimmed.slice(0, -1), reveal: true };
+  return { path: raw, reveal: false };
+}
+
 export function lookupKey(pathname) {
   let raw = String(pathname || '');
   raw = raw.replace(/^\/+/, '').replace(/\/+$/, '');
@@ -122,7 +163,8 @@ export async function handleRoot(ctx) {
 export async function handleRedirect(ctx) {
   const { cfg, domain, host, url } = ctx;
 
-  const key = lookupKey(url.pathname);
+  const asked = splitReveal(url.pathname);
+  const key = lookupKey(asked.path);
   if (key === null) return notFound(ctx);
   if (key === '') return handleRoot(ctx);
 
@@ -162,11 +204,41 @@ export async function handleRedirect(ctx) {
   const incoming = stripGoParam(url.search);
   // Which destination this particular visitor gets: their device first, then
   // any country rule inside that slot, falling back to the default.
-  const chosen = resolveTarget(link, {
+  const picked = resolveTarget(link, {
     device: deviceClass(ctx.request),
     country: (ctx.request.cf && ctx.request.cf.country) || '',
-  }).url;
+  });
+  const chosen = picked.url;
   const target = link.forwardQuery ? applyQuery(chosen, incoming) : chosen;
+
+  // A password turns the link into a question before it is an answer. It
+  // comes before everything below: the countdown, the preview card, the
+  // frame and the reveal are all things you get after answering.
+  if (hasPassword(link)) {
+    const unlocked = await isUnlocked(
+      cfg,
+      link,
+      parseCookies(ctx.request)[await cookieName(host, key)]
+    );
+    if (!unlocked) return askForPassword(ctx, { link, path: asked.path.replace(/^\/+/, '') });
+  }
+
+  // `shortcut+` asks where the link goes rather than going there. Only for
+  // someone signed in: to anyone else the suffix is simply not a link.
+  if (asked.reveal) {
+    if (!ctx.session) return notFound(ctx, await missingDirectory(cfg, host, key));
+    return html(
+      revealPage({
+        cfg,
+        host,
+        path: link.path,
+        target,
+        slot: picked.slot,
+        byCountry: !!picked.byCountry,
+        user: ctx.session.user,
+      })
+    );
+  }
   const status = link.status || domain.defaultStatus || 302;
   const skip = url.searchParams.get(GO_PARAM) === '1';
 
@@ -180,6 +252,27 @@ export async function handleRedirect(ctx) {
   // redirect, and never a countdown page.
   if (previewAllowed(domain, link) && isCrawler(ctx.request)) {
     return html(previewPage(cfg, { host, link, url: target }), { store: true });
+  }
+
+  // A destination the owner chose to show in place rather than send to.
+  // The capability is checked against the owner, not the visitor: the
+  // visitor is usually not signed in, and it is the owner's decision.
+  if (shouldFrame(link, picked.slot) && !skip) {
+    const owner = link.ownerId ? await getUserById(cfg, link.ownerId) : null;
+    const permit = capabilityAllowed(cfg, 'frame', { user: owner, domain, dir });
+    if (permit.allowed) {
+      const page = framePage({ cfg, host, link, url: target });
+      return new Response(page, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Security-Policy': frameCsp(target),
+          'Referrer-Policy': 'no-referrer',
+          'X-Content-Type-Options': 'nosniff',
+          'Cache-Control': 'no-store, max-age=0',
+        },
+      });
+    }
   }
 
   if (behaviour.show && !skip) {
@@ -200,6 +293,89 @@ export async function handleRedirect(ctx) {
     );
   }
   return redirectResponse(target, status);
+}
+
+/**
+ * Answer the password prompt.
+ *
+ * Returns a response, or null when this is not an unlock submission and the
+ * caller should carry on resolving the link normally.
+ */
+export async function handleUnlock(ctx, body) {
+  const { cfg, host, url } = ctx;
+  if (!body || body.get('slink-unlock') !== '1') return null;
+
+  const asked = splitReveal(url.pathname);
+  const key = lookupKey(asked.path);
+  if (key === null || key === '') return notFound(ctx);
+
+  const link = await getLink(cfg, host, key, { fresh: false });
+  if (!link || !isServable(link) || !hasPassword(link)) {
+    return notFound(ctx, await missingDirectory(cfg, host, key));
+  }
+  const path = asked.path.replace(/^\/+/, '');
+
+  const guard = await checkCsrf(ctx, 'link.unlock', body);
+  if (!guard.ok) {
+    return askForPassword(ctx, { link, path, error: 'That request could not be verified. Try again.' });
+  }
+
+  const turn = await turnstileVerifyOrFail(ctx, body, 'unlock');
+  if (!turn.ok) return askForPassword(ctx, { link, path, error: turn.error });
+
+  // Rate limited per link and per address, so the prompt is not a place to
+  // sit and guess.
+  const limits = cfg.settings.rateLimits || {};
+  const allowed = await rl.consume(
+    cfg,
+    'link-unlock',
+    (ctx.ip || 'none') + ':' + host + ':' + key,
+    limits.otpVerifyPerLogin || 5,
+    limits.otpWindowSeconds || 900
+  );
+  if (!allowed.allowed) {
+    return askForPassword(ctx, { link, path, error: 'Too many attempts. Try again later.' });
+  }
+
+  if (!(await passwordMatches(cfg, link, body.get('password')))) {
+    ctx.waitUntil(
+      audit(cfg, {
+        event: EVENTS.linkUnlockFailed,
+        host,
+        ip: ctx.ip,
+        object: key,
+        outcome: 'denied',
+      })
+    );
+    return askForPassword(ctx, { link, path, error: 'That password is not right.' });
+  }
+
+  // Scoped to this one link, so unlocking one does not unlock another.
+  const cookie = serializeCookie(await cookieName(host, key), await mintUnlock(cfg, link), {
+    maxAge: UNLOCK_TTL_SECONDS,
+    sameSite: 'Lax',
+  });
+  const headers = new Headers({ Location: '/' + path + (url.search || '') });
+  headers.append('Set-Cookie', cookie);
+  return new Response(null, { status: 303, headers });
+}
+
+/**
+ * Ask for the link's password.
+ *
+ * The token is bound to the browser's CSRF nonce rather than to a session,
+ * because the visitor is very likely not signed in at all.
+ */
+export async function askForPassword(ctx, { link, path, error }) {
+  const { cfg, host } = ctx;
+  const page = passwordPage({
+    cfg,
+    host,
+    path: path || link.path,
+    error,
+    csrf: await tokenFor(ctx, 'link.unlock'),
+  });
+  return withCookies(html(page, { turnstile: true, status: error ? 400 : 200 }), [csrfCookie(ctx)]);
 }
 
 function notFound(ctx, dir = null) {

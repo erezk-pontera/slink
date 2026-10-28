@@ -20,6 +20,8 @@ const suites = [
   'test/qr.test.mjs',
   'test/oauth.test.mjs',
   'test/schedule.test.mjs',
+  'test/resend.test.mjs',
+  'test/render.test.mjs',
 ];
 
 let bad = 0;

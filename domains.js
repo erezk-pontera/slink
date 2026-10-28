@@ -32,6 +32,9 @@ export function newDomain(host, overrides = {}) {
     rootRedirect: null,
     /** Where an unknown shortcut goes; null renders a 404 page. */
     notFoundUrl: null,
+    /** Features this host allows. Absent means the capability's own
+     *  default; see capabilities.js. */
+    capabilities: {},
     /** External identity provider for this host. See oauth.js. */
     oauth: defaultOauth(),
     /** Which email domains may be handed a link or a directory, beyond the

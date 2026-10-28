@@ -75,6 +75,13 @@ details.group[open]>summary{margin-bottom:6px}
 .sso .btn{display:block;text-align:center}
 .divider{display:flex;align-items:center;gap:12px;color:var(--muted);margin:16px 0;font-size:.9em}
 .divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
+.target-big{word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:1.05em;margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:8px;
+  background:color-mix(in srgb,var(--line) 18%,transparent)}
+body.framed{margin:0;padding:0;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+.framefail{flex:none;margin:0;padding:8px 14px;font-size:.9em;color:var(--muted);
+  background:var(--bg);border-bottom:1px solid var(--line)}
+.slink-frame{flex:1 1 auto;width:100%;border:0;display:block}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:var(--shadow);padding:18px;margin:0 0 16px}
 .card h2{margin:0 0 4px;font-size:16px;font-weight:600}

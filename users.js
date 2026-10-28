@@ -27,6 +27,9 @@ export function newUser(email, emailNorm, overrides = {}) {
     dirCreate: {},
     /** Countdown-policy exemptions, keyed by host or '*' for every host. */
     interstitialExempt: {},
+    /** Per-host capability rulings an administrator recorded against this
+     *  person, keyed by host or '*'. See capabilities.js. */
+    capabilities: {},
     createdAt: ts,
     updatedAt: ts,
     lastLoginAt: 0,

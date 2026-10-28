@@ -110,6 +110,24 @@ function matchCountry(rules, country) {
  * The destination for one visitor. Returns { url, slot, byCountry } so the
  * caller can say why, which the admin preview uses.
  */
+/**
+ * Should this slot be shown in a frame rather than redirected to? Stored per
+ * slot, so a link can frame its mobile destination and redirect for the rest.
+ */
+export function shouldFrame(link, slot) {
+  const map = link && link.frame;
+  if (!map || typeof map !== 'object') return false;
+  return map[slot] === true;
+}
+
+/** Keep only the known slots, as booleans. */
+export function normalizeFrame(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const slot of ALL_SLOTS) if (raw[slot] === true) out[slot] = true;
+  return out;
+}
+
 export function resolveTarget(link, { device = 'desktop', country = '' } = {}) {
   const routing = normalizeRouting(link && link.routing);
   const fallback = (link && link.target) || '';

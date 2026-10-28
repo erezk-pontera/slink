@@ -270,6 +270,108 @@ ${alert('error', error)}${alert('info', info)}
   });
 }
 
+/**
+ * The screen a visitor meets when a link is password-protected.
+ *
+ * Deliberately says as little as possible: no destination, no owner, no
+ * shortcut beyond what is already in the address bar. A wrong answer and an
+ * unknown link should look the same to someone probing.
+ *
+ * Autofill is turned off on the field. A link password is shared with a
+ * group and typed once, not a credential a browser should remember, and a
+ * saved one would hand the link to the next person at that machine.
+ */
+export function passwordPage({ cfg, host, path, error, csrf, next = '' }) {
+  const body = `
+${alert('error', error)}
+<div class="card">
+  <h1>This link is protected</h1>
+  <p class="sub">Enter the password for <code>${esc(host)}/${esc(path)}</code>.</p>
+  <form method="post" action="/${esc(path)}" data-no-busy autocomplete="off">
+    ${csrfField(csrf)}${hidden('slink-unlock', '1')}${next ? hidden('next', next) : ''}
+    <div class="field">
+      <label for="f_linkpw">Password</label>
+      <input id="f_linkpw" name="password" type="password" required autofocus
+        autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+        data-lpignore="true" data-1p-ignore data-bwignore maxlength="128">
+    </div>
+    ${turnstileWidget(cfg.turnstileSiteKey, 'unlock')}
+    <div class="actions"><button type="submit">Open the link</button></div>
+  </form>
+</div>`;
+  return layout({
+    title: 'Protected link - ' + cfg.appName,
+    appName: cfg.appName,
+    host,
+    body,
+    narrow: true,
+    turnstile: true,
+    homeHref: '/',
+  });
+}
+
+/**
+ * What a signed-in person sees when they ask where a link goes, by putting
+ * a `+` after it, rather than following it.
+ */
+export function revealPage({ cfg, host, path, target, slot, byCountry, user }) {
+  const body = `
+<div class="card">
+  <h1>${esc(host)}/${esc(path)}</h1>
+  <p class="sub">Where this link sends you, from this device and this country. Someone else may be sent somewhere else.</p>
+  <p class="target-big"><a href="${esc(target)}" rel="noreferrer nofollow">${esc(target)}</a></p>
+  <p class="note">${esc(slot === 'default' ? 'The main destination' : 'The ' + slot + ' destination')}${
+    byCountry ? ', chosen by country rule' : ''
+  }.</p>
+  <div class="actions">
+    <a class="btn" href="/${esc(path)}">Open it</a>
+    <button class="btn secondary" type="button" data-copy="${esc(target)}">Copy</button>
+  </div>
+</div>`;
+  return layout({
+    title: 'Where it goes - ' + cfg.appName,
+    appName: cfg.appName,
+    host,
+    user,
+    body,
+    narrow: true,
+    homeHref: '/',
+  });
+}
+
+/**
+ * Deliver a destination inside a frame instead of redirecting to it.
+ *
+ * Whether this works at all is up to the destination: a site that sends
+ * X-Frame-Options or a frame-ancestors policy will refuse, and there is
+ * nothing this end can do about that. The page says so, visibly, because a
+ * silent blank frame is the worst version of that failure.
+ */
+export function framePage({ cfg, host, link, url: target }) {
+  const title = (link.preview && link.preview.title) || link.path;
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<title>${esc(title)}</title>
+<link rel="stylesheet" href="${ASSET_PREFIX}/app.css?v=${ASSET_VERSION}">
+<link rel="icon" type="image/svg+xml" href="${ASSET_PREFIX}/logo.svg?v=${ASSET_VERSION}">
+</head><body class="framed">
+<noscript><p class="framefail">This page shows another site in a frame. <a href="${esc(
+    target
+  )}" rel="noreferrer">Open it directly</a>.</p></noscript>
+<div class="framefail" id="slink-frame-note">
+  If nothing appears, the destination does not allow being framed.
+  <a href="${esc(target)}" rel="noreferrer">Open it directly</a>.
+</div>
+<iframe class="slink-frame" src="${esc(target)}" title="${esc(title)}"
+  referrerpolicy="no-referrer" loading="eager"
+  sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"></iframe>
+</body></html>`;
+}
+
 export function verifyPage({ cfg, host, error, info, csrf, email, expiresIn }) {
   const len = cfg.settings.otpLength || 6;
   const body = `
@@ -293,10 +395,11 @@ ${alert('error', error)}${alert('info', info)}
 </div>
 <div class="card">
   <h2>Did not get it?</h2>
-  <p class="hint">Check your spam folder, or request a new code.</p>
-  <form method="post" action="/admin" class="actions tight">
+  <p class="hint">Check your spam folder, or ask for the same code again. It stays valid either way.</p>
+  <form method="post" action="/admin" data-no-busy>
     ${csrfField(csrf)}${hidden('stage', 'resend')}
-    <button type="submit" class="secondary">Send a new code</button>
+    ${turnstileWidget(cfg.turnstileSiteKey, 'resend')}
+    <div class="actions tight"><button type="submit" class="secondary">Send it again</button></div>
   </form>
   <form method="post" action="/admin" class="actions">
     ${csrfField(csrf)}${hidden('stage', 'restart')}

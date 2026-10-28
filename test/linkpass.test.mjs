@@ -303,6 +303,35 @@ section('a password can travel in the link fragment');
   ok('the script waits for the challenge', JS.includes('cf-turnstile-response'));
   ok('the script never puts it in a URL', !JS.includes('?' + HASH_PREFIX));
 
+  // A fragment never reaches us, so `?ptrap=` in the query is always a
+  // mistyped `#`. It must not ride through the unlock and on to the
+  // destination, where it would land in somebody else's logs.
+  await create({ path: 'fragq', target: 'example.com/fragq', forwardQuery: '1' });
+  await setPw('fragq', 'q-secret');
+  const typo = peer(root);
+  const askedQ = await typo.req('https://ptra.cc/fragq?ptrap=q-secret&keep=1');
+  const bodyQ = await askedQ.text();
+  ok('a query ptrap does not open the link', bodyQ.includes('f_linkpw'));
+  const unlockedQ = await typo.req('https://ptra.cc/fragq?ptrap=q-secret&keep=1', {
+    form: {
+      _csrf: Harness.csrf(bodyQ),
+      'slink-unlock': '1',
+      password: 'q-secret',
+      'cf-turnstile-response': 't:unlock:ptra.cc',
+    },
+  });
+  const backTo = unlockedQ.headers.get('Location') || '';
+  ok('and is dropped from the unlock redirect', !backTo.includes('ptrap'), backTo);
+  ok('while the rest of the query survives', backTo.includes('keep=1'), backTo);
+  const landed = await typo.req('https://ptra.cc' + backTo);
+  const dest = landed.headers.get('Location') || '';
+  ok('so it never reaches the destination', !dest.includes('ptrap') && !dest.includes('q-secret'), dest);
+  ok('while the rest of the query still does', dest.includes('keep=1'), dest);
+
+  // The continue flag is ours too, and is dropped the same way.
+  const go = await peer(root).req('https://ptra.cc/fragq?slink-go=1&keep=2');
+  ok('the continue flag is not forwarded either', !(go.headers.get('Location') || '').includes('slink-go'));
+
   // The editor explains how to share it.
   const edit = await (await root.req(editHref('ptra.cc', 'frag'))).text();
   ok('the editor shows the shareable link', edit.includes('#ptrap=frag-secret'));

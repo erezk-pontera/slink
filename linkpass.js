@@ -35,7 +35,9 @@ export const MAX_PASSWORD = 128;
  * proxy. The page reads it, clears it from the address bar before doing
  * anything else, and submits it the way a person typing it would.
  */
-export const HASH_PREFIX = 'ptrap=';
+/** The parameter name a link password travels under, in the fragment. */
+export const PASSWORD_PARAM = 'ptrap';
+export const HASH_PREFIX = PASSWORD_PARAM + '=';
 
 /**
  * Pull the password out of a location fragment, or '' when there is none.

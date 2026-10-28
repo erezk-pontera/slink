@@ -20,6 +20,7 @@ import {
   hasPassword,
   isUnlocked,
   mintUnlock,
+  PASSWORD_PARAM,
   passwordMatches,
   UNLOCK_TTL_SECONDS,
 } from './linkpass.js';
@@ -77,11 +78,21 @@ export function applyQuery(target, incoming) {
   return keepTypedCase(target, url.toString());
 }
 
-/** Drop our own continue flag so it is never forwarded to a destination. */
-export function stripGoParam(search) {
+/**
+ * Drop our own parameter names so they are never forwarded to a
+ * destination.
+ *
+ * `slink-go` is the continue flag. `ptrap` is the name a link password
+ * travels under in the fragment; a fragment never reaches us, so a query
+ * parameter of that name is always a mistyped `#` - and forwarding it
+ * would carry the password to the destination and into its logs. Stripping
+ * it costs a name nobody should be using as their own anyway.
+ */
+export function stripOwnParams(search) {
   if (!search) return '';
   const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
   params.delete(GO_PARAM);
+  params.delete(PASSWORD_PARAM);
   const out = params.toString();
   return out ? '?' + out : '';
 }
@@ -183,7 +194,7 @@ export async function handleRedirect(ctx) {
   }
   const behaviour = resolveLink(policy, link, exempt);
 
-  const incoming = stripGoParam(url.search);
+  const incoming = stripOwnParams(url.search);
   // Which destination this particular visitor gets: their device first, then
   // any country rule inside that slot, falling back to the default.
   const picked = resolveTarget(link, {
@@ -330,7 +341,9 @@ export async function handleUnlock(ctx, body) {
     maxAge: UNLOCK_TTL_SECONDS,
     sameSite: 'Lax',
   });
-  const headers = new Headers({ Location: '/' + path + (url.search || '') });
+  // Carry the query over, minus our own names: a mistyped `?ptrap=` must
+  // not ride along to the destination.
+  const headers = new Headers({ Location: '/' + path + stripOwnParams(url.search) });
   headers.append('Set-Cookie', cookie);
   return new Response(null, { status: 303, headers });
 }

@@ -403,6 +403,26 @@ is punycoded, a default port is dropped and `..` segments are resolved.
 `javascript:`, `data:`, `vbscript:`, `blob:` and `file:` are always refused
 whatever case they are typed in; more can be blocked in settings.
 
+**The incoming query string** is dropped unless the link opts in with
+*Append the incoming query string to the destination*. With it on, a
+visitor's parameters are merged into the destination and the destination's
+own win: a link pointing at `https://www.google.com/?a=b` sends
+`?qqqq=dddd` on as `?a=b&qqqq=dddd`, while `?a=c` is discarded because the
+link already says what `a` is. Two names are ours and are never forwarded:
+`slink-go`, the continue flag, and `ptrap`, which is what a link password
+travels under in the fragment — a fragment never reaches us, so `?ptrap=`
+is always a mistyped `#`, and passing it on would put the password in the
+destination's logs.
+
+**A fragment** is never sent to a server at all. The browser keeps it and
+re-attaches it after a redirect, so `ptra.cc/aa#section-3` lands on the
+destination with `#section-3` still on the end, provided the destination
+carries no fragment of its own. An interstitial page in the way — the
+countdown, or the password prompt — ends that: its own navigation starts
+fresh and the fragment stops there. That is also why `#ptrap=` is safe: the
+page consumes it, clears it from the address bar, and nothing of it reaches
+the destination.
+
 Redirect codes are 301, 302 (default), 303, 307 and 308. 301 and 308
 responses are cacheable for five minutes; the rest are `no-store`, so a
 changed destination takes effect at once.

@@ -160,7 +160,7 @@ section('branding and the header domain picker');
      (b.match(/class="brand"[^>]*>[^<]*/) || [''])[0]);
   ok('title reads Shrink Link', b.includes('<title>Overview - Shrink Link</title>'));
   ok('footer carries the notice',
-     b.includes('Shrink Link - &copy; Pontera Solutions Inc. All rights reserved'),
+     b.includes('<div>&copy; Pontera Solutions Inc. All rights reserved</div>'),
      (b.match(/<footer[\s\S]*?<\/footer>/) || [''])[0]);
   ok('no "Slink" anywhere on the page', !b.includes('Slink'));
 

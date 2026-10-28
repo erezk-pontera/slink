@@ -70,7 +70,7 @@ ${turnstile ? turnstileScriptTag() : ''}
   ${navHtml}${whoHtml}
 </div></header>
 <main class="wrap${narrow ? ' narrow' : ''}">${body}</main>
-<footer class="foot">${footer ? `<div>${footer}</div>` : ''}<div>${esc(appName)} - &copy; Pontera Solutions Inc. All rights reserved</div></footer>
+<footer class="foot">${footer ? `<div>${footer}</div>` : ''}<div>&copy; Pontera Solutions Inc. All rights reserved</div></footer>
 <script src="${esc(JS_SRC)}" defer></script>
 </body></html>`;
 }

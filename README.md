@@ -6,10 +6,19 @@ Cloudflare Worker backed by one KV namespace.
 - `ptra.cc/aaa` — public short links, redirecting immediately or after a
   countdown, with a redirect code you choose.
 - `ptra.dev/bbb` — the same, but every link requires a verified sign-in.
-- `ptra.dev/admin` — manage links, directories, domains, users and settings.
+- `ptra.dev/admin` — manage links, directories, domains, users and settings,
+  and the one place a sign-in form is ever shown.
 
-Apex and `www.` are the same host everywhere: `www.ptra.dev/bbb` and
-`ptra.dev/bbb` are one link.
+Apex and `www.` are the same host everywhere. A request to `www.` is
+redirected to the apex before anything else runs, so `www.ptra.dev/bbb` and
+`ptra.dev/bbb` are one link and one session. (Cookies here are `__Host-`
+prefixed, which binds them to an exact hostname; redirecting is what makes
+the two hosts genuinely interchangeable without weakening that.)
+
+A host root, an unknown shortcut, and one that is disabled or expired all
+lead to the same place: the `MISSING` URL, overridable per host. None of them
+shows a sign-in button — administration is reached by going to `/admin` on
+the hub and nowhere else.
 
 ---
 
@@ -111,13 +120,18 @@ Root-level creation on a host is governed by its `rootCreatePolicy`:
 
 ## Sign-in
 
-1. `/login` takes an email address, behind Turnstile.
+The form lives at `/admin` on the hub and nowhere else. `/login`,
+`/login/verify` and `/login/resend` remain as bookmarks that redirect there.
+Both stages post back to `/admin`, distinguished by a hidden `stage` field, so
+there is no second URL where a form appears.
+
+1. `/admin` takes an email address, behind Turnstile.
 2. The address is normalised and checked against the host's allowed sign-in
    domains. Tor exits and unlocatable clients are refused.
 3. A six-digit code is emailed. It is never stored: KV holds an HMAC of the
    code bound to a per-challenge salt and to the login id in the browser's
    cookie, so a code only works in the browser that asked for it.
-4. `/login/verify` takes the code, also behind Turnstile. Attempts are counted
+4. `/admin` then takes the code, also behind Turnstile. Attempts are counted
    on the challenge itself, and the challenge is deleted once spent.
 5. A session is created. Accounts are created on first successful sign-in, so
    the sign-in form reveals nothing about who already has an account.
@@ -125,7 +139,7 @@ Root-level creation on a host is governed by its `rootCreatePolicy`:
 `/logout` asks for confirmation and then signs the user out of **every** host,
 by revoking every session they hold.
 
-**Across hosts.** Only `ptra.dev` serves `/login` and `/admin`. Another host
+**Across hosts.** Only `ptra.dev` serves `/admin`. Another host
 that requires sign-in bounces the visitor through a signed, nonce-bound,
 two-minute handshake on the hub, so one sign-in covers every host. The token
 names the host it was minted for and is useless anywhere else.
@@ -173,6 +187,7 @@ Set in `wrangler.toml` under `[vars]`:
 | `APP_NAME` | Name shown in the UI and in emails |
 | `ADMIN` | Root administrator addresses, comma separated |
 | `DEFAULT_ALLOWED_DOMAINS` | Default email domains for signing in and for creating at a host root |
+| `MISSING` | Where a host root, an unknown shortcut, or a disabled or expired one goes, unless a domain overrides it |
 | `IGNORE_EMAIL_DOT` | `true` strips every `.` from the local part |
 | `IGNORE_EMAIL_PLUS` | `true` drops everything from `+` up to `@` |
 | `turnstile-sitekey` | The existing widget's sitekey (public) |
@@ -225,6 +240,29 @@ On the first request the worker seeds a policy record for each host in
 Check it came up with `curl https://ptra.dev/health` — it reports only whether
 configuration is complete; the names of anything missing go to the log, so use
 `wrangler tail` while setting up.
+
+### Where visitors end up when there is nothing to show
+
+Three cases share one destination:
+
+| Request | Goes to |
+| --- | --- |
+| A host root (`ptra.cc/`, `ptra.dev/`, and their `www.` forms) | the domain's **Where / goes**, else `MISSING` |
+| An unknown shortcut | the domain's **Where unknown … go**, else `MISSING` |
+| A shortcut that is disabled or expired | the same as unknown |
+
+`MISSING` is an environment variable in `wrangler.toml`. Each domain can
+override both cases in `/admin/domains`, and the override wins. If neither is
+set, a small page is rendered instead — carrying no sign-in button, because a
+short-link host should not advertise that an administration area exists.
+
+The root is answered **before** the sign-in gate. That is deliberate: it means
+`ptra.dev/` redirects like any other host rather than demanding a sign-in from
+a passer-by. Everything below the root on an authenticated host still requires
+a session.
+
+`MISSING` runs through the same destination rules as any link, so a value with
+a dangerous scheme is refused at startup and logged rather than served.
 
 ### Wrangler versus the dashboard
 
@@ -318,9 +356,17 @@ refresh. 301 and 308 responses are cacheable for five minutes; the rest are
 - **Transport and headers.** HSTS, a strict CSP, `nosniff`, `no-referrer`,
   `X-Frame-Options: DENY`, COOP, CORP, a closed `Permissions-Policy`, and
   `no-store` on everything except permanent redirects and static assets.
-- **CSRF.** Every state change is a POST whose token is bound to both the
-  session and the specific form, checked in constant time, alongside a strict
-  `Origin`/`Referer` check. A token from another session, or for another form,
+- **CSRF.** Every state change is a POST whose token is an HMAC bound to both
+  the session (or an HttpOnly cookie, before sign-in) and the specific form,
+  compared in constant time. An attacker can neither read the input nor
+  compute the token, and `SameSite=Lax` keeps cookies off a cross-site POST
+  entirely. On top of that, an `Origin` or `Referer` header that is present
+  must match. A header that is *absent* is not treated as an attack: several
+  browsers omit `Origin` on a same-origin form post, and privacy extensions
+  and proxies strip both, so refusing on absence locked real people out of
+  every form. HTML pages send `Referrer-Policy: same-origin` so that fallback
+  is actually available; redirect responses send `no-referrer`, so a
+  destination never learns which shortcut was followed. A token from another session, or for another form,
   is refused.
 - **Cookies.** `__Host-` prefixed, so Secure, `Path=/` and no `Domain`;
   HttpOnly and SameSite=Lax.
@@ -356,7 +402,7 @@ refresh. 301 and 308 responses are cacheable for five minutes; the rest are
 
 ```sh
 npm run check   # syntax-check every module as an ES module
-npm test        # 205 checks across six suites
+npm test        # 240 checks across seven suites
 wrangler dev    # local run; see the note below
 ```
 

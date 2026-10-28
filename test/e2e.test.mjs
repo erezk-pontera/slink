@@ -36,7 +36,7 @@ section('infrastructure');
 /* ------------------------------------------------------------- headers */
 section('security headers');
 {
-  const r = await h.req('https://ptra.dev/login');
+  const r = await h.req('https://ptra.dev/admin');
   const csp = r.headers.get('Content-Security-Policy') || '';
   ok('CSP present', csp.includes("default-src 'none'"));
   ok('CSP no unsafe-inline script', !/script-src[^;]*unsafe-inline/.test(csp));
@@ -45,59 +45,61 @@ section('security headers');
   ok('nosniff', r.headers.get('X-Content-Type-Options') === 'nosniff');
   ok('frame deny', r.headers.get('X-Frame-Options') === 'DENY');
   ok('no-store on login', (r.headers.get('Cache-Control') || '').includes('no-store'));
-  ok('referrer policy', r.headers.get('Referrer-Policy') === 'no-referrer');
+  ok('referrer policy on html', r.headers.get('Referrer-Policy') === 'same-origin');
 }
 
 /* -------------------------------------------------------- auth gating */
 section('authentication gating');
 {
   const gated = await h.req('https://ptra.dev/some-link');
-  ok('ptra.dev link requires auth', gated.status === 303 && (gated.headers.get('Location') || '').startsWith('/login?next='),
+  ok('ptra.dev link requires auth', gated.status === 303 && (gated.headers.get('Location') || '').startsWith('/admin?next='),
      gated.status + ' ' + gated.headers.get('Location'));
 
   const open = await h.req('https://ptra.cc/');
-  ok('ptra.cc root is public', open.status === 200, String(open.status));
+  ok('ptra.cc root redirects to MISSING', open.status === 302 && open.headers.get('Location') === 'https://fallback.example/home',
+     open.status + ' ' + open.headers.get('Location'));
 
   const adminAnon = await h.req('https://ptra.dev/admin');
-  ok('admin requires auth', adminAnon.status === 303);
+  ok('admin shows the sign-in form', adminAnon.status === 200);
+  ok('sign-in form posts to /admin', (await adminAnon.text()).includes('action="/admin"'));
 }
 
 /* ------------------------------------------------------------- sign-in */
 section('sign-in');
 {
-  const page = await h.req('https://ptra.dev/login');
+  const page = await h.req('https://ptra.dev/admin');
   const body = await page.text();
   const token = Harness.csrf(body);
 
-  const noCsrf = await h.req('https://ptra.dev/login', {
-    form: { email: 'root@pontera.com', 'cf-turnstile-response': 't:login:ptra.dev' },
+  const noCsrf = await h.req('https://ptra.dev/admin', {
+    form: { stage: 'email', email: 'root@pontera.com', 'cf-turnstile-response': 't:login:ptra.dev' },
   });
   ok('login without CSRF refused', noCsrf.status === 400, String(noCsrf.status));
 
-  const crossOrigin = await h.req('https://ptra.dev/login', {
-    form: { _csrf: token, email: 'root@pontera.com', 'cf-turnstile-response': 't:login:ptra.dev' },
+  const crossOrigin = await h.req('https://ptra.dev/admin', {
+    form: { _csrf: token, stage: 'email', email: 'root@pontera.com', 'cf-turnstile-response': 't:login:ptra.dev' },
     headers: { Origin: 'https://evil.example' },
   });
   ok('cross-origin login refused', crossOrigin.status === 400, String(crossOrigin.status));
 
-  const badTurnstile = await h.req('https://ptra.dev/login', {
+  const badTurnstile = await h.req('https://ptra.dev/admin', {
     form: { _csrf: token, email: 'root@pontera.com', 'cf-turnstile-response': 'BAD' },
   });
   ok('bad turnstile refused', badTurnstile.status === 400 && (await badTurnstile.text()).includes('Verification failed'));
 
-  const wrongDomain = await h.req('https://ptra.dev/login', {
-    form: { _csrf: token, email: 'outsider@gmail.com', 'cf-turnstile-response': 't:login:ptra.dev' },
+  const wrongDomain = await h.req('https://ptra.dev/admin', {
+    form: { _csrf: token, stage: 'email', email: 'outsider@gmail.com', 'cf-turnstile-response': 't:login:ptra.dev' },
   });
   ok('disallowed email domain refused', (await wrongDomain.text()).includes('not permitted to sign in'));
 
-  const tor = await h.req('https://ptra.dev/login', {
-    form: { _csrf: token, email: 'root@pontera.com', 'cf-turnstile-response': 't:login:ptra.dev' },
+  const tor = await h.req('https://ptra.dev/admin', {
+    form: { _csrf: token, stage: 'email', email: 'root@pontera.com', 'cf-turnstile-response': 't:login:ptra.dev' },
     country: 'T1',
   });
   ok('tor refused', (await tor.text()).includes('not available over this network'));
 
-  const unknownCountry = await h.req('https://ptra.dev/login', {
-    form: { _csrf: token, email: 'root@pontera.com', 'cf-turnstile-response': 't:login:ptra.dev' },
+  const unknownCountry = await h.req('https://ptra.dev/admin', {
+    form: { _csrf: token, stage: 'email', email: 'root@pontera.com', 'cf-turnstile-response': 't:login:ptra.dev' },
     country: 'XX',
   });
   ok('unknown country refused', (await unknownCountry.text()).includes('not available from this location'));
@@ -105,47 +107,47 @@ section('sign-in');
   ok('no mail sent for refused attempts', h.mail.length === 0, String(h.mail.length));
 
   // Turnstile action must match the surface.
-  const wrongAction = await h.req('https://ptra.dev/login', {
-    form: { _csrf: token, email: 'root@pontera.com', 'cf-turnstile-response': 't:otp:ptra.dev' },
+  const wrongAction = await h.req('https://ptra.dev/admin', {
+    form: { _csrf: token, stage: 'email', email: 'root@pontera.com', 'cf-turnstile-response': 't:otp:ptra.dev' },
   });
   ok('turnstile action mismatch refused', (await wrongAction.text()).includes('Verification failed'));
 
   // Turnstile hostname must be one of ours.
-  const wrongHost = await h.req('https://ptra.dev/login', {
-    form: { _csrf: token, email: 'root@pontera.com', 'cf-turnstile-response': 't:login:evil.example' },
+  const wrongHost = await h.req('https://ptra.dev/admin', {
+    form: { _csrf: token, stage: 'email', email: 'root@pontera.com', 'cf-turnstile-response': 't:login:evil.example' },
   });
   ok('turnstile hostname mismatch refused', (await wrongHost.text()).includes('Verification failed'));
 
-  const begin = await h.req('https://ptra.dev/login', {
-    form: { _csrf: token, email: 'root@pontera.com', next: '/admin', 'cf-turnstile-response': 't:login:ptra.dev' },
+  const begin = await h.req('https://ptra.dev/admin', {
+    form: { _csrf: token, stage: 'email', email: 'root@pontera.com', next: '/admin', 'cf-turnstile-response': 't:login:ptra.dev' },
   });
-  ok('login accepted', begin.status === 303 && begin.headers.get('Location') === '/login/verify');
+  ok('login accepted', begin.status === 303 && begin.headers.get('Location') === '/admin');
   ok('code emailed', h.mail.length === 1 && /\b\d{6}\b/.test(h.mail[0].text));
   ok('mail from configured sender', h.mail[0].from.email === 'no-reply@ptra.dev');
 
-  const vPage = await h.req('https://ptra.dev/login/verify');
+  const vPage = await h.req('https://ptra.dev/admin');
   const vBody = await vPage.text();
   const vToken = Harness.csrf(vBody);
   ok('verify page shows address', vBody.includes('root@pontera.com'));
 
-  const wrongCode = await h.req('https://ptra.dev/login/verify', {
-    form: { _csrf: vToken, code: '000000', 'cf-turnstile-response': 't:otp:ptra.dev' },
+  const wrongCode = await h.req('https://ptra.dev/admin', {
+    form: { _csrf: vToken, stage: 'code', code: '000000', 'cf-turnstile-response': 't:otp:ptra.dev' },
   });
   ok('wrong code refused', (await wrongCode.text()).includes('not correct'));
 
   const code = h.lastCode();
-  const done = await h.req('https://ptra.dev/login/verify', {
-    form: { _csrf: vToken, code, 'cf-turnstile-response': 't:otp:ptra.dev' },
+  const done = await h.req('https://ptra.dev/admin', {
+    form: { _csrf: vToken, stage: 'code', code, 'cf-turnstile-response': 't:otp:ptra.dev' },
   });
   ok('correct code signs in', done.status === 303 && done.headers.get('Location') === '/admin',
      done.status + ' ' + done.headers.get('Location'));
 
-  const replay = await h.req('https://ptra.dev/login/verify', {
-    form: { _csrf: vToken, code, 'cf-turnstile-response': 't:otp:ptra.dev' },
+  const replay = await h.req('https://ptra.dev/admin', {
+    form: { _csrf: vToken, stage: 'code', code, 'cf-turnstile-response': 't:otp:ptra.dev' },
   });
   // The spent challenge is deleted and the CSRF binding has moved to the new
-  // session, so a replay cannot mint a second session: it lands back on /login.
-  ok('code cannot be replayed', replay.headers.get('Location') === '/login',
+  // session, so a replay cannot mint a second session.
+  ok('code cannot be replayed', replay.status !== 303 || replay.headers.get('Location') !== '/admin',
      replay.status + ' ' + replay.headers.get('Location'));
   const replaySetsNoSession = !(replay.headers.getSetCookie
     ? replay.headers.getSetCookie()
@@ -210,14 +212,25 @@ section('redirects');
   const upper = await h.req('https://ptra.cc/AAA');
   ok('lookup is case-insensitive', upper.status === 302);
 
+  // www is canonicalised to the apex first, so a session on one is a session
+  // on the other despite the __Host- cookie being bound to an exact hostname.
   const www = await h.req('https://www.ptra.cc/aaa');
-  ok('www is the same host', www.status === 302);
+  ok('www redirects to the apex', www.status === 301 && www.headers.get('Location') === 'https://ptra.cc/aaa',
+     www.status + ' ' + www.headers.get('Location'));
+  const wwwHub = await h.req('https://www.ptra.dev/admin');
+  ok('www hub redirects to the apex', wwwHub.status === 301 && wwwHub.headers.get('Location') === 'https://ptra.dev/admin',
+     wwwHub.status + ' ' + wwwHub.headers.get('Location'));
 
   const missing = await h.req('https://ptra.cc/does-not-exist');
-  ok('missing link 404', missing.status === 404);
+  ok('unknown link goes to MISSING',
+     missing.status === 302 && missing.headers.get('Location') === 'https://fallback.example/home',
+     missing.status + ' ' + missing.headers.get('Location'));
 
   const redirCache = await h.req('https://ptra.cc/aaa');
   ok('302 is not cached', (redirCache.headers.get('Cache-Control') || '').includes('no-store'));
+  // The destination must not learn which shortcut was followed.
+  ok('redirect sends no referrer', redirCache.headers.get('Referrer-Policy') === 'no-referrer',
+     String(redirCache.headers.get('Referrer-Policy')));
 }
 
 /* ------------------------------------------------- codes, delay, schemes */

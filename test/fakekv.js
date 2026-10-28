@@ -84,6 +84,7 @@ export function makeEnv(overrides = {}) {
     HUB_HOST: 'ptra.dev',
     DOMAINS: 'ptra.cc,ptra.dev',
     MAIL_FROM: 'no-reply@ptra.dev',
+    MISSING: 'https://fallback.example/home',
     ...overrides,
   };
 }

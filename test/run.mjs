@@ -8,6 +8,7 @@ const suites = [
   'test/flows.test.mjs',
   'test/security.test.mjs',
   'test/assets.test.mjs',
+  'test/routing.test.mjs',
 ];
 
 let bad = 0;

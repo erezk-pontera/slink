@@ -71,6 +71,12 @@ HUB_HOST = "ptra.dev"
 
 APP_NAME = "Slink"
 
+# Where a visitor goes when there is nothing to show them: a host root, an
+# unknown shortcut, or one that is disabled or expired. An administrator can
+# override it per host in /admin/domains (Where / goes, and Where unknown
+# shortcuts go), which takes precedence over this.
+MISSING = "https://www.pontera.com"
+
 # Root administrators. Comma separated. These accounts cannot be demoted or
 # deleted from the admin UI.
 ADMIN = "erezk@pontera.com"

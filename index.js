@@ -35,7 +35,7 @@ import { clientIp, geoCheck, geoMessage } from './geo.js';
 import { canonicalHost } from './paths.js';
 import { rootCreateAllowed } from './permissions.js';
 import { getChallenge } from './otp.js';
-import { handleRedirect } from './redirect.js';
+import { handleRedirect, handleRoot } from './redirect.js';
 import { clearCookie, harden, parseCookies } from './security.js';
 import { isAdmin } from './users.js';
 import { randomId } from './util.js';
@@ -65,123 +65,107 @@ function textResponse(body, status = 200, type = 'text/plain; charset=utf-8') {
 
 /* ------------------------------------------------------------- sign-in UI */
 
-async function loginGet(ctx) {
-  if (ctx.session) return seeOther(safeNext(ctx.url.searchParams.get('next'), '/admin'));
-  const csrf = await tokenFor(ctx, 'login.begin');
+/**
+ * Sign-in is rendered at /admin and nowhere else. A host root is a public
+ * signpost that redirects, and the short-link hosts never show a form at all,
+ * so /admin on the hub is the single place a visitor can authenticate.
+ *
+ * Which of the two stages appears depends on whether the browser is already
+ * holding a live challenge.
+ */
+async function signInGet(ctx, { error, info } = {}) {
+  const next = safeNext(ctx.url.searchParams.get('next'), '/admin');
+  const cookies = parseCookies(ctx.request);
+  const loginId = cookies[COOKIE.login];
+
+  if (loginId) {
+    const challenge = await getChallenge(ctx.cfg, loginId);
+    if (challenge && !challenge.consumed) {
+      const page = verifyPage({
+        cfg: ctx.cfg,
+        host: ctx.host,
+        csrf: await tokenFor(ctx, 'login.verify'),
+        email: challenge.email,
+        expiresIn: Math.max(0, challenge.expiresAt - Math.floor(Date.now() / 1000)),
+        error,
+        info,
+      });
+      return withCookies(html(page, { turnstile: true, status: error ? 400 : 200 }), [csrfCookie(ctx)]);
+    }
+  }
+
   const page = loginPage({
     cfg: ctx.cfg,
     host: ctx.host,
-    csrf,
-    next: safeNext(ctx.url.searchParams.get('next'), '/admin'),
-    error: ctx.flashError,
-    info: ctx.flashInfo,
-  });
-  return withCookies(html(page, { turnstile: true }), [csrfCookie(ctx)]);
-}
-
-async function loginPost(ctx) {
-  const body = await readForm(ctx.request);
-  if (!body) return loginGet({ ...ctx, flashError: 'Could not read that form. Please try again.' });
-
-  const guard = await checkCsrf(ctx, 'login.begin', body);
-  if (!guard.ok) {
-    return withCookies(
-      html(
-        loginPage({
-          cfg: ctx.cfg,
-          host: ctx.host,
-          csrf: await tokenFor(ctx, 'login.begin'),
-          next: safeNext(body.get('next'), '/admin'),
-          error: 'That request could not be verified. Please try again.',
-        }),
-        { turnstile: true, status: 400 }
-      ),
-      [csrfCookie(ctx)]
-    );
-  }
-
-  const result = await beginLogin(ctx, body);
-  if (!result.ok) {
-    return withCookies(
-      html(
-        loginPage({
-          cfg: ctx.cfg,
-          host: ctx.host,
-          csrf: await tokenFor(ctx, 'login.begin'),
-          next: safeNext(body.get('next'), '/admin'),
-          error: result.error,
-          email: String(body.get('email') || ''),
-        }),
-        { turnstile: true, status: 400 }
-      ),
-      [csrfCookie(ctx)]
-    );
-  }
-  return seeOther('/login/verify', result.cookies);
-}
-
-async function verifyGet(ctx, { error, info } = {}) {
-  const cookies = parseCookies(ctx.request);
-  const loginId = cookies[COOKIE.login];
-  if (!loginId) return seeOther('/login');
-
-  const challenge = await getChallenge(ctx.cfg, loginId);
-  if (!challenge) return seeOther('/login');
-
-  const csrf = await tokenFor(ctx, 'login.verify');
-  const page = verifyPage({
-    cfg: ctx.cfg,
-    host: ctx.host,
-    csrf,
-    email: challenge.email,
-    expiresIn: Math.max(0, challenge.expiresAt - Math.floor(Date.now() / 1000)),
+    csrf: await tokenFor(ctx, 'login.begin'),
+    next,
     error,
     info,
+    email: ctx.prefillEmail || '',
   });
-  return withCookies(html(page, { turnstile: true }), [csrfCookie(ctx)]);
+  return withCookies(html(page, { turnstile: true, status: error ? 400 : 200 }), [csrfCookie(ctx)]);
 }
 
-async function verifyPost(ctx) {
+/** Both stages, the resend and the restart all post here. */
+async function signInPost(ctx) {
   const body = await readForm(ctx.request);
-  if (!body) return verifyGet(ctx, { error: 'Could not read that form. Please try again.' });
+  if (!body) return signInGet(ctx, { error: 'Could not read that form. Please try again.' });
+  const stage = String(body.get('stage') || 'email');
 
-  const guard = await checkCsrf(ctx, 'login.verify', body);
-  if (!guard.ok) return verifyGet(ctx, { error: 'That request could not be verified. Please try again.' });
+  if (stage === 'restart') {
+    const guard = await checkCsrf(ctx, 'login.verify', body);
+    if (!guard.ok) return signInGet(ctx, { error: 'That request could not be verified. Please try again.' });
+    return seeOther('/admin', [clearCookie(COOKIE.login)]);
+  }
 
-  const result = await completeLogin(ctx, body);
-  if (!result.ok) {
-    if (result.restart) {
-      return withCookies(
-        html(
-          loginPage({
-            cfg: ctx.cfg,
-            host: ctx.host,
-            csrf: await tokenFor(ctx, 'login.begin'),
-            next: '/admin',
-            error: result.error,
-          }),
-          { turnstile: true, status: 400 }
-        ),
-        [clearCookie(COOKIE.login), csrfCookie(ctx)]
-      );
+  if (stage === 'resend') {
+    const guard = await checkCsrf(ctx, 'login.verify', body);
+    if (!guard.ok) return signInGet(ctx, { error: 'That request could not be verified. Please try again.' });
+    const result = await resendLogin(ctx);
+    if (!result.ok) {
+      if (result.restart) return seeOther('/admin', [clearCookie(COOKIE.login)]);
+      return signInGet(ctx, { error: result.error });
     }
-    return verifyGet(ctx, { error: result.error });
+    return signInGet(ctx, { info: result.info });
   }
-  return seeOther(result.next, result.cookies);
+
+  if (stage === 'code') {
+    const guard = await checkCsrf(ctx, 'login.verify', body);
+    if (!guard.ok) return signInGet(ctx, { error: 'That request could not be verified. Please try again.' });
+    const result = await completeLogin(ctx, body);
+    if (!result.ok) {
+      if (result.restart) {
+        return withCookies(
+          await signInGet({ ...ctx, request: stripLoginCookie(ctx.request) }, { error: result.error }),
+          [clearCookie(COOKIE.login)]
+        );
+      }
+      return signInGet(ctx, { error: result.error });
+    }
+    return seeOther(result.next, result.cookies);
+  }
+
+  const guard = await checkCsrf(ctx, 'login.begin', body);
+  if (!guard.ok) return signInGet(ctx, { error: 'That request could not be verified. Please try again.' });
+  const result = await beginLogin(ctx, body);
+  if (!result.ok) {
+    ctx.prefillEmail = String(body.get('email') || '');
+    return signInGet(ctx, { error: result.error });
+  }
+  return seeOther('/admin', result.cookies);
 }
 
-async function resendPost(ctx) {
-  const body = await readForm(ctx.request);
-  if (!body) return verifyGet(ctx, { error: 'Could not read that form. Please try again.' });
-  const guard = await checkCsrf(ctx, 'login.verify', body);
-  if (!guard.ok) return verifyGet(ctx, { error: 'That request could not be verified. Please try again.' });
-
-  const result = await resendLogin(ctx);
-  if (!result.ok) {
-    if (result.restart) return seeOther('/login');
-    return verifyGet(ctx, { error: result.error });
-  }
-  return verifyGet(ctx, { info: result.info });
+/** A copy of the request with the login cookie removed, to force stage one. */
+function stripLoginCookie(request) {
+  const headers = new Headers(request.headers);
+  const raw = headers.get('Cookie') || '';
+  const kept = raw
+    .split(';')
+    .filter((part) => !part.trim().startsWith(COOKIE.login + '='))
+    .join(';');
+  if (kept.trim()) headers.set('Cookie', kept);
+  else headers.delete('Cookie');
+  return new Request(request.url, { method: 'GET', headers });
 }
 
 /**
@@ -189,7 +173,7 @@ async function resendPost(ctx) {
  * one-button confirmation.
  */
 async function logoutGet(ctx) {
-  if (!ctx.session) return seeOther('/login');
+  if (!ctx.session) return seeOther('/admin');
   const csrf = await tokenFor(ctx, 'logout');
   const page = messagePage({
     cfg: ctx.cfg,
@@ -217,7 +201,7 @@ async function logoutPost(ctx) {
   const guard = await checkCsrf(ctx, 'logout', body);
   if (!guard.ok) return seeOther('/logout');
   const result = await signOut(ctx, { everywhere: true });
-  return seeOther('/login', result.cookies);
+  return seeOther('/admin', result.cookies);
 }
 
 /* ------------------------------------------------------------------- SSO */
@@ -229,7 +213,7 @@ async function ssoAuthorizeGet(ctx) {
 
   if (!ctx.session) {
     const next = '/sso/authorize' + ctx.url.search;
-    return seeOther('/login?next=' + encodeURIComponent(next));
+    return seeOther('/admin?next=' + encodeURIComponent(next));
   }
   const result = await ssoAuthorize(ctx, { targetHost, returnPath, nonce });
   if (!result.ok) {
@@ -317,6 +301,22 @@ async function route(request, env, exec) {
 
   const host = canonicalHost(url.hostname);
 
+  // Apex and www are one site. Cookies here are `__Host-` prefixed, which
+  // binds them to the exact hostname, so without this a visitor who signed in
+  // on www would be a stranger on the apex. Redirecting settles it in one
+  // place instead of weakening the cookies.
+  if (url.hostname.toLowerCase() !== host) {
+    const canonical = new URL(url.toString());
+    canonical.hostname = host;
+    // 308 for anything with a body, so a stray POST is replayed rather than
+    // silently turned into a GET; 301 for the ordinary navigation case.
+    const code = request.method === 'GET' || request.method === 'HEAD' ? 301 : 308;
+    return harden(
+      new Response(null, { status: code, headers: { Location: canonical.toString() } }),
+      { store: code === 301 }
+    );
+  }
+
   // Seed the configured hosts once, then remember it in settings.
   if (!cfg.settings.bootstrapAt) {
     const created = await ensureBootstrapDomains(cfg);
@@ -376,14 +376,16 @@ async function route(request, env, exec) {
     return seeOther(start.location, [start.cookie]);
   }
 
+  // A host root is a public signpost. It is answered before the sign-in gate
+  // so that ptra.dev and www.ptra.dev redirect like the short-link hosts do,
+  // rather than presenting a way in.
+  if (path === '/') return handleRoot(ctx);
+
   if (isHub) {
-    if (path === '/login') {
-      return request.method === 'POST' ? loginPost(ctx) : loginGet(ctx);
+    // Sign-in moved to /admin. These keep working as bookmarks.
+    if (path === '/login' || path === '/login/verify' || path === '/login/resend') {
+      return seeOther('/admin');
     }
-    if (path === '/login/verify') {
-      return request.method === 'POST' ? verifyPost(ctx) : verifyGet(ctx);
-    }
-    if (path === '/login/resend' && request.method === 'POST') return resendPost(ctx);
     if (path === '/logout') {
       return request.method === 'POST' ? logoutPost(ctx) : logoutGet(ctx);
     }
@@ -391,7 +393,10 @@ async function route(request, env, exec) {
 
     if (path === '/admin' || path.startsWith('/admin/')) {
       if (!ctx.session) {
-        return seeOther('/login?next=' + encodeURIComponent(url.pathname + url.search));
+        if (path === '/admin') {
+          return request.method === 'POST' ? signInPost(ctx) : signInGet(ctx);
+        }
+        return seeOther('/admin?next=' + encodeURIComponent(url.pathname + url.search));
       }
       const gate = geoCheck(cfg, request, 'access');
       if (!gate.allowed) {
@@ -413,7 +418,7 @@ async function route(request, env, exec) {
   // Hosts that require authentication gate every shortcut behind a session.
   if (domain.authRequired && !ctx.session) {
     const want = url.pathname + url.search;
-    if (isHub) return seeOther('/login?next=' + encodeURIComponent(want));
+    if (isHub) return seeOther('/admin?next=' + encodeURIComponent(want));
     const start = ssoStart(ctx, want);
     return seeOther(start.location, [start.cookie]);
   }

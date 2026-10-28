@@ -7,6 +7,7 @@
  */
 
 import { K, Store } from './kv.js';
+import { parseDestination } from './paths.js';
 import { boolEnv, intEnv, listEnv, now } from './util.js';
 
 /** Read an env value under either the hyphenated or the SCREAMING_SNAKE name. */
@@ -97,6 +98,22 @@ export class Config {
     this.emailBinding = env.EMAIL || null;
 
     this.debugMail = boolEnv(envVar(env, 'DEBUG_MAIL'), false);
+
+    // Where a visitor goes when there is nothing to show them: a host root, an
+    // unknown shortcut, or one that is disabled or expired. A domain may
+    // override it per host in /admin/domains. Parsed through the destination
+    // rules so a careless value cannot become a javascript: redirect.
+    this.missingUrl = '';
+    const missing = envVar(env, 'MISSING');
+    if (missing) {
+      try {
+        this.missingUrl = parseDestination(missing, {
+          blockedSchemes: settings.blockedSchemes,
+        }).target;
+      } catch {
+        console.error('MISSING is not a usable destination; ignoring it.');
+      }
+    }
   }
 
   /** Options for normalizeEmail, honouring IGNORE_EMAIL_DOT / IGNORE_EMAIL_PLUS. */

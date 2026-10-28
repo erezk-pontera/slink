@@ -160,21 +160,34 @@ export function csrfNonce(cookies, cookieName) {
 /**
  * Reject cross-origin state changes. Returns null when the request is fine, or
  * a reason string when it must be refused.
+ *
+ * A header that is present must match. A header that is absent is not treated
+ * as an attack: several browsers omit `Origin` on a same-origin form post,
+ * and privacy extensions and corporate proxies strip both headers, so
+ * refusing on absence locks real people out of every form.
+ *
+ * What actually stops cross-site requests here does not depend on these
+ * headers. The CSRF token is an HMAC over a value held in an HttpOnly cookie
+ * (or the session id), so an attacker can neither read the input nor compute
+ * the token, and every cookie is SameSite=Lax, which keeps the browser from
+ * attaching them to a cross-site POST at all. The header check is a third
+ * layer on top of those two, and is applied whenever the evidence exists.
  */
 export function originCheck(request, expectedOrigin) {
   const origin = request.headers.get('Origin');
   if (origin) {
+    // An opaque origin arrives as the literal "null" and never matches.
     return origin === expectedOrigin ? null : 'origin-mismatch';
   }
-  // No Origin header on a same-origin form post is legal for some clients;
-  // fall back to Referer, and refuse when neither is present.
   const referer = request.headers.get('Referer');
-  if (!referer) return 'missing-origin';
-  try {
-    return new URL(referer).origin === expectedOrigin ? null : 'referer-mismatch';
-  } catch {
-    return 'bad-referer';
+  if (referer) {
+    try {
+      return new URL(referer).origin === expectedOrigin ? null : 'referer-mismatch';
+    } catch {
+      return 'bad-referer';
+    }
   }
+  return null;
 }
 
 /* ---------------------------------------------------------------- responses */
@@ -192,10 +205,14 @@ export function originCheck(request, expectedOrigin) {
  * escaped, so there is no path by which a user-supplied value becomes a style
  * attribute; the real injection risk, script execution, stays locked down.
  */
-export function harden(response, { turnstile = false, store = false } = {}) {
+export function harden(response, { turnstile = false, store = false, referrerPolicy = 'same-origin' } = {}) {
   const h = response.headers;
   h.set('X-Content-Type-Options', 'nosniff');
-  h.set('Referrer-Policy', 'no-referrer');
+  // 'same-origin' keeps the referrer off every cross-origin request while
+  // still sending it within the site, which is what lets originCheck fall
+  // back to Referer when a browser omits Origin. Redirect responses pass
+  // 'no-referrer' so a destination never learns which shortcut was followed.
+  h.set('Referrer-Policy', referrerPolicy);
   h.set('X-Frame-Options', 'DENY');
   h.set('Cross-Origin-Opener-Policy', 'same-origin');
   h.set('Cross-Origin-Resource-Policy', 'same-origin');

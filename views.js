@@ -287,7 +287,7 @@ ${alert('error', error)}
 <div class="card">
   <h1>This link is protected</h1>
   <p class="sub">Enter the password for <code>${esc(host)}/${esc(path)}</code>.</p>
-  <form method="post" action="/${esc(path)}" data-no-busy autocomplete="off">
+  <form method="post" action="/${esc(path)}" data-no-busy autocomplete="off" data-slink-unlock>
     ${csrfField(csrf)}${hidden('slink-unlock', '1')}${next ? hidden('next', next) : ''}
     <div class="field">
       <label for="f_linkpw">Password</label>
@@ -306,35 +306,6 @@ ${alert('error', error)}
     body,
     narrow: true,
     turnstile: true,
-    homeHref: '/',
-  });
-}
-
-/**
- * What a signed-in person sees when they ask where a link goes, by putting
- * a `+` after it, rather than following it.
- */
-export function revealPage({ cfg, host, path, target, slot, byCountry, user }) {
-  const body = `
-<div class="card">
-  <h1>${esc(host)}/${esc(path)}</h1>
-  <p class="sub">Where this link sends you, from this device and this country. Someone else may be sent somewhere else.</p>
-  <p class="target-big"><a href="${esc(target)}" rel="noreferrer nofollow">${esc(target)}</a></p>
-  <p class="note">${esc(slot === 'default' ? 'The main destination' : 'The ' + slot + ' destination')}${
-    byCountry ? ', chosen by country rule' : ''
-  }.</p>
-  <div class="actions">
-    <a class="btn" href="/${esc(path)}">Open it</a>
-    <button class="btn secondary" type="button" data-copy="${esc(target)}">Copy</button>
-  </div>
-</div>`;
-  return layout({
-    title: 'Where it goes - ' + cfg.appName,
-    appName: cfg.appName,
-    host,
-    user,
-    body,
-    narrow: true,
     homeHref: '/',
   });
 }

@@ -23,7 +23,13 @@ import { ALL_SLOTS, normalizeFrame, normalizeRouting, SLOT_LABELS } from './targ
 import { resolveDomain } from './domains.js';
 import { capabilityAllowed, describeCapability } from './capabilities.js';
 import { createEverywhere, moveLink } from './linkmove.js';
-import { hasPassword, MAX_PASSWORD, readPassword, setPassword } from './linkpass.js';
+import {
+  hasPassword,
+  MAX_PASSWORD,
+  readPassword,
+  setPassword,
+  shareableUrl,
+} from './linkpass.js';
 import {
   DEFAULT_LOGO_SCALE,
   DEFAULT_SIZE,
@@ -357,6 +363,10 @@ async function newForm(ctx, { error, info, values = {} } = {}) {
     user: ctx.session.user,
     domain: chosenDomain,
   }).allowed;
+  const mayPassword = capabilityAllowed(cfg, 'password', {
+    user: ctx.session.user,
+    domain: chosenDomain,
+  }).allowed;
   const previewBlocked = previewBlockedReason(parentDomain);
 
   const body = `
@@ -420,6 +430,18 @@ ${alert('error', error)}${alert('ok', info)}
 
     <h2>Where different visitors go</h2>
     <p class="hint">All optional. A device slot left blank falls through to the main destination.</p>
+    ${
+      mayPassword
+        ? field({
+            name: 'password',
+            label: 'Password (optional)',
+            value: values.password || '',
+            placeholder: 'leave blank for an open link',
+            attrs: 'autocomplete="off" spellcheck="false" maxlength="' + MAX_PASSWORD + '"',
+            note: 'A visitor types this before the link resolves. You can share it inside the link afterwards; the edit screen shows how.',
+          })
+        : ''
+    }
     ${
       cfg.knownHosts.length > 1
         ? `<fieldset class="grants">
@@ -526,6 +548,7 @@ async function createSubmit(ctx) {
     routing: readRouting(body),
     frame: readFrame(body),
     also: ctx.cfg.knownHosts.filter((h) => body.get('also__' + h) === '1'),
+    password: String(body.get('password') || ''),
     preview: {
       enabled: body.get('previewEnabled') === '1',
       title: body.get('previewTitle'),
@@ -596,6 +619,18 @@ async function createSubmit(ctx) {
       : {},
     preview: previewBlockedReason(domain) ? emptyPreview() : normalizePreview(values.preview),
   };
+
+  // Same reasoning as framing: a submitted password only lands where the
+  // person creating the link may actually use one.
+  if (values.password) {
+    if (!capabilityAllowed(ctx.cfg, 'password', { user: ctx.session.user, domain }).allowed) {
+      return newForm(ctx, { error: 'You cannot put a password on a link here.', values });
+    }
+    const holder = {};
+    const sealed = await setPassword(ctx.cfg, holder, values.password);
+    if (!sealed.ok) return newForm(ctx, { error: sealed.error, values });
+    fields.password = holder.password;
+  }
 
   // One submission can put the same shortcut on several domains. Every one
   // is checked before any is written, so a run that cannot finish writes
@@ -844,6 +879,18 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
       : `<p class="hint">${esc(
           describeCapability(cfg, 'password', { user: ctx.session.user, domain: parentDomain, dir })
         )}${hasPassword(link) ? ' This link already has one, which still applies.' : ''}</p>`
+  }
+  ${
+    hasPassword(link)
+      ? `<h3>Sharing it without the prompt</h3>
+  <p class="hint">Adding the password to the end of the link opens it straight away. The part after <code>#</code> never leaves the browser, so it stays out of our logs and out of the referrer sent to the destination, and this page clears it from the address bar as soon as it has used it. Anyone holding this form of the link has the password, so share it exactly as carefully.</p>
+  <p class="target-big">${esc(shareableUrl(host, link.path, currentPassword))}</p>
+  <div class="actions">
+    <button class="link" type="button" data-copy="${esc(
+      shareableUrl(host, link.path, currentPassword)
+    )}">Copy link with password</button>
+  </div>`
+      : ''
   }
 </div>
 

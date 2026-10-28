@@ -24,6 +24,46 @@ export const UNLOCK_TTL_SECONDS = 3600;
 
 export const MAX_PASSWORD = 128;
 
+/**
+ * The fragment that carries a password in a shared link:
+ * `https://host/shortcut#ptrap=secret`.
+ *
+ * A fragment is never sent to the server — the worker sees `/shortcut` and
+ * nothing more. That is why this is handled in the page rather than here,
+ * and it is also the reason to prefer a fragment over a query string: the
+ * password never reaches a server log, a Referer header or an upstream
+ * proxy. The page reads it, clears it from the address bar before doing
+ * anything else, and submits it the way a person typing it would.
+ */
+export const HASH_PREFIX = 'ptrap=';
+
+/**
+ * Pull the password out of a location fragment, or '' when there is none.
+ * Accepts the fragment with or without its leading `#`, and tolerates it
+ * sitting among other `&`-separated parts.
+ */
+export function passwordFromHash(hash) {
+  const raw = String(hash || '').replace(/^#/, '');
+  if (!raw) return '';
+  for (const part of raw.split('&')) {
+    if (!part.startsWith(HASH_PREFIX)) continue;
+    const value = part.slice(HASH_PREFIX.length);
+    try {
+      return decodeURIComponent(value.replace(/\+/g, ' '));
+    } catch {
+      // A fragment that is not valid percent-encoding is taken literally
+      // rather than thrown away: the password may simply contain a '%'.
+      return value;
+    }
+  }
+  return '';
+}
+
+/** The link to share when the password should travel with it. */
+export function shareableUrl(host, path, password) {
+  return 'https://' + host + '/' + path + '#' + HASH_PREFIX + encodeURIComponent(password);
+}
+
 /** Is a password actually set on this link? */
 export function hasPassword(link) {
   return !!(link && typeof link.password === 'string' && link.password.length > 0);

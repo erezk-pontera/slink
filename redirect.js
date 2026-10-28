@@ -24,7 +24,7 @@ import {
   UNLOCK_TTL_SECONDS,
 } from './linkpass.js';
 import { deviceClass, resolveTarget, shouldFrame } from './targets.js';
-import { checkCsrf, csrfCookie, ssoStart, tokenFor } from './auth.js';
+import { checkCsrf, csrfCookie, tokenFor } from './auth.js';
 import { getUserById } from './users.js';
 import { frameCsp, harden, parseCookies, serializeCookie, withCookies } from './security.js';
 import { capabilityAllowed } from './capabilities.js';
@@ -36,35 +36,9 @@ import {
   landingPage,
   messagePage,
   passwordPage,
-  revealPage,
 } from './views.js';
 
 /** Decode a URL path into the lowercase lookup key, or null when unusable. */
-/**
- * The suffix a signed-in person adds to ask where a link goes instead of
- * going there. A `+` cannot appear in a shortcut, so it is unambiguous.
- */
-export const REVEAL_SUFFIX = '+';
-
-/**
- * Marks a reveal that has already been through the sign-in handshake once,
- * so a visitor who is not signed in anywhere does not bounce forever.
- */
-export const SSO_TRIED = 'slink-sso';
-
-/** Split a trailing `+` off a pathname, if there is one. */
-export function splitReveal(pathname) {
-  const raw = String(pathname || '');
-  // Both the literal and the percent-encoded form, since a browser may send
-  // either and a copied link often carries the encoded one.
-  const trimmed = raw.replace(/\/+$/, '');
-  if (trimmed.endsWith('%2B') || trimmed.endsWith('%2b')) {
-    return { path: trimmed.slice(0, -3), reveal: true };
-  }
-  if (trimmed.endsWith(REVEAL_SUFFIX)) return { path: trimmed.slice(0, -1), reveal: true };
-  return { path: raw, reveal: false };
-}
-
 export function lookupKey(pathname) {
   let raw = String(pathname || '');
   raw = raw.replace(/^\/+/, '').replace(/\/+$/, '');
@@ -169,8 +143,7 @@ export async function handleRoot(ctx) {
 export async function handleRedirect(ctx) {
   const { cfg, domain, host, url } = ctx;
 
-  const asked = splitReveal(url.pathname);
-  const key = lookupKey(asked.path);
+  const key = lookupKey(url.pathname);
   if (key === null) return notFound(ctx);
   if (key === '') return handleRoot(ctx);
 
@@ -226,41 +199,9 @@ export async function handleRedirect(ctx) {
       link,
       parseCookies(ctx.request)[await cookieName(host, key)]
     );
-    if (!unlocked) return askForPassword(ctx, { link, path: asked.path.replace(/^\/+/, '') });
+    if (!unlocked) return askForPassword(ctx, { link, path: url.pathname.replace(/^\/+/, '') });
   }
 
-  // `shortcut+` asks where the link goes rather than going there. Only for
-  // someone signed in: to anyone else the suffix is simply not a link.
-  if (asked.reveal) {
-    if (!ctx.session) {
-      // A session on the hub is not a session here, and a public host never
-      // starts the handshake on its own. Try it once, marked so that coming
-      // back still signed out falls through rather than looping.
-      const tried = url.searchParams.get(SSO_TRIED) === '1';
-      if (!tried && host !== cfg.hubHost) {
-        const start = ssoStart(ctx, url.pathname + '?' + SSO_TRIED + '=1', { quiet: true });
-        return new Response(null, {
-          status: 303,
-          headers: new Headers([
-            ['Location', start.location],
-            ['Set-Cookie', start.cookie],
-          ]),
-        });
-      }
-      return notFound(ctx, await missingDirectory(cfg, host, key));
-    }
-    return html(
-      revealPage({
-        cfg,
-        host,
-        path: link.path,
-        target,
-        slot: picked.slot,
-        byCountry: !!picked.byCountry,
-        user: ctx.session.user,
-      })
-    );
-  }
   const status = link.status || domain.defaultStatus || 302;
   const skip = url.searchParams.get(GO_PARAM) === '1';
 
@@ -327,15 +268,14 @@ export async function handleUnlock(ctx, body) {
   const { cfg, host, url } = ctx;
   if (!body || body.get('slink-unlock') !== '1') return null;
 
-  const asked = splitReveal(url.pathname);
-  const key = lookupKey(asked.path);
+  const key = lookupKey(url.pathname);
   if (key === null || key === '') return notFound(ctx);
 
   const link = await getLink(cfg, host, key, { fresh: false });
   if (!link || !isServable(link) || !hasPassword(link)) {
     return notFound(ctx, await missingDirectory(cfg, host, key));
   }
-  const path = asked.path.replace(/^\/+/, '');
+  const path = url.pathname.replace(/^\/+/, '');
 
   const guard = await checkCsrf(ctx, 'link.unlock', body);
   if (!guard.ok) {

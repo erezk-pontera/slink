@@ -5,6 +5,7 @@
  * entirely. Page-specific values reach the script through `data-` attributes.
  */
 
+import { HASH_PREFIX } from './linkpass.js';
 import { LOGO_SVG } from './logo.js';
 
 export const ASSET_PREFIX = '/__slink';
@@ -161,6 +162,48 @@ export const JS = `
 
   // Lets CSS hide controls that only exist for the no-JavaScript path.
   document.documentElement.classList.add('js');
+
+  // A password carried in the fragment: \`#${HASH_PREFIX}secret\`.
+  //
+  // A fragment never reaches the server, so this is the only place it can
+  // be read. It is cleared from the address bar before anything else
+  // happens, so it does not survive into the next page, get carried to the
+  // destination by the redirect, or sit in the history for the next person
+  // at this machine.
+  var unlock = document.querySelector('[data-slink-unlock]');
+  if (unlock && location.hash) {
+    var carried = '';
+    var parts = location.hash.replace(/^#/, '').split('&');
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].indexOf('${HASH_PREFIX}') !== 0) continue;
+      var raw = parts[i].slice(${HASH_PREFIX.length}).replace(/\\+/g, ' ');
+      try { carried = decodeURIComponent(raw); } catch (e) { carried = raw; }
+      break;
+    }
+    if (carried) {
+      try {
+        history.replaceState(null, '', location.pathname + location.search);
+      } catch (e) {
+        location.hash = '';
+      }
+      var pwField = unlock.querySelector('input[type="password"]');
+      if (pwField) pwField.value = carried;
+
+      // Wait for the challenge to produce a token, then submit exactly as
+      // pressing the button would. If it never arrives, the form is simply
+      // left filled in for the person to submit themselves.
+      var waited = 0;
+      var poll = setInterval(function () {
+        var token = unlock.querySelector('[name="cf-turnstile-response"]');
+        if (token && token.value) {
+          clearInterval(poll);
+          unlock.submit();
+        } else if (++waited > 60) {
+          clearInterval(poll);
+        }
+      }, 250);
+    }
+  }
 
   // The domain picker in the header applies as soon as it changes.
   var picker = document.querySelector('[data-slink-autosubmit] select');

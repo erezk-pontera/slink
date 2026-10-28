@@ -4,7 +4,16 @@
  */
 import { Harness } from './harness.js';
 import { capabilityAllowed } from '../capabilities.js';
-import { hasPassword, passwordMatches, readPassword, setPassword } from '../linkpass.js';
+import {
+  HASH_PREFIX,
+  hasPassword,
+  passwordFromHash,
+  passwordMatches,
+  readPassword,
+  setPassword,
+  shareableUrl,
+} from '../linkpass.js';
+import { JS } from '../assets.js';
 
 let passed = 0;
 let failed = 0;
@@ -26,24 +35,6 @@ function peer(base) {
 const root = new Harness();
 await root.signIn('root@pontera.com');
 const guest = peer(root);
-
-/**
- * Follow same-site redirects the way a browser would. The reveal starts a
- * sign-in handshake across hosts, so a single request does not see the end
- * of it.
- */
-async function follow(h, url, max = 8) {
-  let cur = url;
-  for (let i = 0; i < max; i++) {
-    const r = await h.req(cur);
-    const loc = r.headers.get('Location');
-    if (!loc || r.status < 300 || r.status >= 400) return { r, external: null };
-    const next = new URL(loc, cur);
-    if (!['ptra.cc', 'ptra.dev'].includes(next.host)) return { r, external: next.toString() };
-    cur = next.toString();
-  }
-  return { r: null, external: null, looped: true };
-}
 
 const token = async () => Harness.csrf(await (await root.req('https://ptra.dev/admin/links/new')).text());
 const create = async (form) =>
@@ -214,45 +205,6 @@ section('the capability governs who may set one');
   });
 }
 
-/* ------------------------------------------------------- 7. the + suffix */
-section('asking where a link goes');
-{
-  await create({ path: 'peek', target: 'example.com/peek' });
-
-  // Not signed in anywhere: the handshake is quiet and the visitor simply
-  // gets the MISSING destination, never a sign-in page for a link they may
-  // just have been handed.
-  const anon = await follow(peer(root), 'https://ptra.cc/peek+');
-  ok('an anonymous visitor gets the MISSING destination',
-     (anon.external || '').includes('fallback.example'), anon.external || 'none');
-  ok('and is never shown a sign-in page', !anon.looped);
-
-  // Signed in on the hub is enough: the handshake gets a session on the
-  // other host without asking anything.
-  const seen = await follow(root, 'https://ptra.cc/peek+');
-  ok('a signed-in person reaches the page', seen.r && seen.r.status === 200,
-     seen.r ? String(seen.r.status) : 'looped');
-  const page = seen.r ? await seen.r.text() : '';
-  ok('the destination is shown', page.includes('example.com/peek'));
-  ok('and they are not sent there', !page.includes('http-equiv="refresh"'));
-  ok('the page says which destination it is', page.includes('main destination'));
-  ok('with a way to follow it', page.includes('Open it'));
-
-  const plain = await root.req('https://ptra.cc/peek');
-  ok('without the suffix it still redirects',
-     (plain.headers.get('Location') || '').includes('example.com/peek'));
-
-  const encoded = await follow(root, 'https://ptra.cc/peek%2B');
-  ok('the percent-encoded form works too',
-     encoded.r && encoded.r.status === 200 && (await encoded.r.text()).includes('example.com/peek'));
-
-  // It does not work where a password is in force.
-  await setPw('peek', 'locked-now');
-  const locked = await follow(root, 'https://ptra.cc/peek+');
-  ok('a protected link asks for the password instead',
-     locked.r && (await locked.r.text()).includes('This link is protected'));
-}
-
 /* ------------------------------------------- 8. one user, another's link */
 section('a password does not widen who may touch a link');
 {
@@ -321,6 +273,72 @@ section('a password does not widen who may touch a link');
   ok('and is told why', boEdit.includes('blocked you'));
   const alEdit = await (await al.req(editHref('ptra.cc', 'al-link'))).text();
   ok('everyone else is unaffected', alEdit.includes('action="/admin/links/password"'));
+}
+
+/* ------------------------------- 9. the password carried in the fragment */
+section('a password can travel in the link fragment');
+{
+  // The parsing itself. A fragment never reaches the server, so the page
+  // does this; these are the cases the page has to get right.
+  const p = (h) => passwordFromHash(h);
+  ok('a plain fragment', p('#ptrap=secret') === 'secret');
+  ok('without the hash', p('ptrap=secret') === 'secret');
+  ok('percent-encoded', p('#ptrap=p%40ss%20word') === 'p@ss word');
+  ok('plus means space', p('#ptrap=a+b') === 'a b');
+  ok('among other parts', p('#x=1&ptrap=mine&y=2') === 'mine');
+  ok('an unrelated fragment yields nothing', p('#other=1') === '');
+  ok('empty yields nothing', p('') === '' && p('#') === '' && p(null) === '');
+  ok('a stray percent is taken literally', p('#ptrap=100%') === '100%');
+  ok('the share form round-trips',
+     p('#' + shareableUrl('h', 'x', 'p@ss word').split('#')[1]) === 'p@ss word');
+
+  // The page has to be able to find the form, and the script has to agree
+  // with the module about the prefix.
+  await create({ path: 'frag', target: 'example.com/frag' });
+  await setPw('frag', 'frag-secret');
+  const prompt = await (await guest.req('https://ptra.cc/frag')).text();
+  ok('the prompt marks the form for the script', prompt.includes('data-slink-unlock'));
+  ok('the script knows the same prefix', JS.includes(HASH_PREFIX));
+  ok('the script clears the fragment first', JS.includes('history.replaceState'));
+  ok('the script waits for the challenge', JS.includes('cf-turnstile-response'));
+  ok('the script never puts it in a URL', !JS.includes('?' + HASH_PREFIX));
+
+  // The editor explains how to share it.
+  const edit = await (await root.req(editHref('ptra.cc', 'frag'))).text();
+  ok('the editor shows the shareable link', edit.includes('#ptrap=frag-secret'));
+  ok('with a copy button', edit.includes('Copy link with password'));
+  ok('and says the fragment stays in the browser', edit.includes('never leaves the browser'));
+  ok('and warns what sharing it means', edit.includes('has the password'));
+
+  // The tip only appears once there is a password to share.
+  await create({ path: 'nofrag', target: 'example.com/nofrag' });
+  const open = await (await root.req(editHref('ptra.cc', 'nofrag'))).text();
+  ok('an open link gets no tip', !open.includes('Copy link with password'));
+
+  // The server never sees the fragment, so the same request without a
+  // password still gets the prompt: the fragment is not a server-side key.
+  const direct = await peer(root).req('https://ptra.cc/frag');
+  ok('the server still asks when it is not told',
+     (await direct.text()).includes('This link is protected'));
+}
+
+/* --------------------------------- 10. a password can be set at creation */
+section('a password can be set as the link is made');
+{
+  const form = await (await root.req('https://ptra.dev/admin/links/new')).text();
+  ok('the create form offers it', form.includes('name="password"'));
+
+  const made = await create({ path: 'born-locked', target: 'example.com/bl', password: 'from-the-start' });
+  ok('the link is created', (made.headers.get('Location') || '').includes('link.created'),
+     made.headers.get('Location'));
+  const hit = await peer(root).req('https://ptra.cc/born-locked');
+  ok('and is protected straight away', (await hit.text()).includes('This link is protected'));
+  const edit = await (await root.req(editHref('ptra.cc', 'born-locked'))).text();
+  ok('the editor shows the password', edit.includes('from-the-start'));
+  ok('and the shareable link', edit.includes('#ptrap=from-the-start'));
+
+  const bad = await create({ path: 'born-bad', target: 'example.com/bb', password: '   ' });
+  ok('a whitespace password is refused', (await bad.text()).includes('only whitespace'));
 }
 
 console.log(`\nlink passwords: ${passed} passed, ${failed} failed`);

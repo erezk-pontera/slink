@@ -7,6 +7,7 @@ const suites = [
   'test/e2e.test.mjs',
   'test/flows.test.mjs',
   'test/security.test.mjs',
+  'test/assets.test.mjs',
 ];
 
 let bad = 0;

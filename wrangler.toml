@@ -1,5 +1,25 @@
 # Cloudflare Worker configuration for the slink short-link service.
 #
+# THIS FILE WINS OVER THE DASHBOARD.
+#
+# `wrangler deploy` deletes every plain-text var on the Worker and then sets
+# the ones below, so a var added or edited in the dashboard is lost on the
+# next deploy. The same goes for the routes at the bottom of this file.
+# Secrets are the exception: a deploy never deletes them.
+#
+# Wrangler 4 shows a diff of local-versus-dashboard settings before it
+# overwrites anything, and offers to copy the remote values back into this
+# file. Take that offer rather than dismissing it. `wrangler deploy --strict`
+# refuses the upload outright when the remote has drifted.
+#
+# If you would rather manage vars in the dashboard, uncomment `keep_vars`
+# below. Note what that costs: deleting a var from this file then stops
+# removing it from the Worker, so the two can drift apart silently.
+#
+# Day to day this should rarely matter: everything an administrator changes
+# while running the service lives in KV under /admin/settings, not here. The
+# vars below are deployment-time bootstrap only.
+#
 # Secrets are NOT set here. Put them in place with `wrangler secret put`,
 # which reads the value from standard input so it never appears in a shell
 # history, a process list or this file:
@@ -12,6 +32,7 @@
 
 name = "slink-redir"
 main = "index.js"
+# keep_vars = true   # see the note at the top before enabling
 compatibility_date = "2026-10-15"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = false

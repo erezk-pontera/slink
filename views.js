@@ -12,6 +12,7 @@ import { esc, fmtTime } from './util.js';
 
 const CSS_HREF = `${ASSET_PREFIX}/app.css?v=${ASSET_VERSION}`;
 const JS_SRC = `${ASSET_PREFIX}/app.js?v=${ASSET_VERSION}`;
+const ICON_HREF = `${ASSET_PREFIX}/logo.svg?v=${ASSET_VERSION}`;
 
 /**
  * Where /admin lives as seen from `host`. Only the hub serves the admin area,
@@ -63,7 +64,8 @@ export function layout({
 <meta name="robots" content="noindex,nofollow">
 <title>${esc(title)}</title>
 <link rel="stylesheet" href="${esc(CSS_HREF)}">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='13' font-size='13'%3E%F0%9F%94%97%3C/text%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" href="${esc(ICON_HREF)}">
+<link rel="apple-touch-icon" href="${esc(ICON_HREF)}">
 ${turnstile ? turnstileScriptTag() : ''}
 </head><body>
 <header class="top"><div class="wrap">

@@ -18,6 +18,7 @@ Apex and `www.` are the same host everywhere: `www.ptra.dev/bbb` and
 | File | Responsibility |
 | --- | --- |
 | `index.js` | Worker entry point and top-level router |
+| `logo.js` | The brand mark as a string, mirroring `logo.svg` |
 | `config.js` | Environment variables, admin-editable settings, fail-closed checks |
 | `kv.js` | The KV key space, JSON access, prefix listing, counters |
 | `paths.js` | Shortcut, destination and email validation and normalisation |
@@ -32,7 +33,7 @@ Apex and `www.` are the same host everywhere: `www.ptra.dev/bbb` and
 | `users.js`, `domains.js`, `directories.js`, `links.js` | Records and their indexes |
 | `redirect.js` | Shortcut resolution, redirects, the delay interstitial |
 | `admin.js` + `admin-links.js`, `admin-directories.js`, `admin-domains.js`, `admin-users.js` | The admin area |
-| `views.js`, `assets.js` | HTML, CSS and the one client-side script |
+| `views.js`, `assets.js` | HTML, CSS, the favicon and the one client-side script |
 | `audit.js` | Append-only activity log |
 
 Everything is plain ES modules with no runtime dependencies.
@@ -225,6 +226,39 @@ Check it came up with `curl https://ptra.dev/health` — it reports only whether
 configuration is complete; the names of anything missing go to the log, so use
 `wrangler tail` while setting up.
 
+### Wrangler versus the dashboard
+
+`wrangler.toml` is the source of truth, and `wrangler deploy` enforces that:
+
+| Changed in the dashboard | What a deploy does to it |
+| --- | --- |
+| A var in `[vars]` | Overwritten with the value from `wrangler.toml` |
+| A var **not** in `wrangler.toml` | **Deleted** — a deploy clears all vars, then sets the configured ones |
+| A route | Overwritten with the routes in `wrangler.toml` |
+| A secret (`AUTH_SECRET`, `turnstile-secret`) | **Kept.** Deploys never delete secrets; only `wrangler secret delete` does |
+| A KV binding or `send_email` binding | Overwritten from `wrangler.toml` |
+
+Wrangler 4 prints a diff of local-versus-remote settings before overwriting
+and offers to copy the remote values into your config; accept that rather
+than dismissing it. `wrangler deploy --strict` refuses to upload when the
+remote has drifted. Setting `keep_vars = true` in `wrangler.toml` stops
+deploys clearing vars — at the cost that removing a var from the file no
+longer removes it from the Worker.
+
+This mostly does not bite in practice, because the settings an operator
+changes while running the service live in KV and are edited at
+`/admin/settings`, not in the dashboard. The variables in `wrangler.toml` are
+deployment-time bootstrap: which hosts exist, who the root administrators
+are, the Turnstile sitekey, the mail sender. Change those in the file and
+redeploy; change everything else in the admin UI, where a deploy cannot
+touch it.
+
+One consequence worth stating plainly: editing `ADMIN` in the dashboard looks
+like it works and is silently reverted on the next deploy. Root
+administrators are deliberately env-only — an account promoted through
+`/admin/users` is stored in KV and survives deploys, so use that for everyone
+except the bootstrap administrator.
+
 ### Email
 
 `MAIL_PROVIDER=cloudflare` uses the `send_email` binding. Sending to arbitrary
@@ -307,13 +341,19 @@ refresh. 301 and 308 responses are cacheable for five minutes; the rest are
 
 ```sh
 npm run check   # syntax-check every module as an ES module
-npm test        # 188 checks across five suites
+npm test        # 205 checks across six suites
 wrangler dev    # local run; see the note below
 ```
 
 Tests run on plain Node against an in-memory KV, a stubbed siteverify and a
 capturing mail binding, driving the real `fetch` handler — no account or
 network needed.
+
+`logo.svg` is the artwork; `logo.js` mirrors its bytes so the Worker can
+serve it and Node can run the tests from one module graph. After editing the
+SVG, regenerate `logo.js` — `npm test` fails if the two drift apart. The icon
+is served from `/__slink/logo.svg` with a `sandbox` CSP and `nosniff`,
+because an SVG is active content when a browser navigates straight to it.
 
 Under `wrangler dev` the client country may be absent, which the default
 policy treats as unlocatable and refuses. Either use `wrangler dev --remote`

@@ -5,10 +5,12 @@
  * entirely. Page-specific values reach the script through `data-` attributes.
  */
 
+import { LOGO_SVG } from './logo.js';
+
 export const ASSET_PREFIX = '/__slink';
 
 /** Bumped whenever the asset bodies change; used for immutable caching. */
-export const ASSET_VERSION = '1';
+export const ASSET_VERSION = '2';
 
 export const CSS = `
 :root{
@@ -200,6 +202,18 @@ export function serveAsset(pathname) {
       headers: {
         'Content-Type': 'text/javascript; charset=utf-8',
         'Cache-Control': 'public, max-age=31536000, immutable',
+      },
+    });
+  }
+  if (pathname === ASSET_PREFIX + '/logo.svg') {
+    return new Response(LOGO_SVG, {
+      headers: {
+        'Content-Type': 'image/svg+xml; charset=utf-8',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        // An SVG is active content when a browser navigates straight to it,
+        // so this one is served inert: no script, no network, no framing.
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        'X-Content-Type-Options': 'nosniff',
       },
     });
   }

@@ -22,6 +22,9 @@ const suites = [
   'test/schedule.test.mjs',
   'test/resend.test.mjs',
   'test/render.test.mjs',
+  'test/multidomain.test.mjs',
+  'test/linkpass.test.mjs',
+  'test/frame.test.mjs',
 ];
 
 let bad = 0;

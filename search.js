@@ -13,6 +13,7 @@
  */
 
 import { listDirectories, listUserGrants } from './directories.js';
+import { hasPassword } from './linkpass.js';
 import { hydrate, listLinks, listOwnedLinks } from './links.js';
 import { adminReachesAllDirectories } from './permissions.js';
 import { isAdmin } from './users.js';
@@ -224,7 +225,11 @@ export async function search(cfg, { user, hosts, query, type = 'all', offset = 0
       row.owner = rec.ownerEmail || '';
       row.readonly = !!rec.readonly;
       row.enabled = rec.enabled !== false;
-      row.detail = rec.target || '';
+      // A password protects the destination as much as the link: showing
+      // it in a listing would hand out what the prompt is there to withhold.
+      // Whoever may edit the link already sees it on the edit screen.
+      row.locked = hasPassword(rec);
+      row.detail = row.locked && !(admin || row.mine) ? '' : rec.target || '';
       row.mine = !!(rec.ownerId && rec.ownerId === user.id);
     }
   }

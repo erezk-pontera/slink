@@ -216,6 +216,12 @@ async function ssoAuthorizeGet(ctx) {
   const nonce = ctx.url.searchParams.get('n') || '';
 
   if (!ctx.session) {
+    // A quiet handshake asks nothing of someone who is not signed in: it
+    // sends them back, and the host it came from falls through to whatever
+    // it does for a visitor it does not know.
+    if (ctx.url.searchParams.get('q') === '1' && ctx.cfg.knownHosts.includes(targetHost)) {
+      return seeOther('https://' + targetHost + returnPath);
+    }
     const next = '/sso/authorize' + ctx.url.search;
     return seeOther('/admin?next=' + encodeURIComponent(next));
   }

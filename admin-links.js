@@ -22,6 +22,7 @@ import {
 import { ALL_SLOTS, normalizeFrame, normalizeRouting, SLOT_LABELS } from './targets.js';
 import { resolveDomain } from './domains.js';
 import { capabilityAllowed, describeCapability } from './capabilities.js';
+import { createEverywhere, moveLink } from './linkmove.js';
 import { hasPassword, MAX_PASSWORD, readPassword, setPassword } from './linkpass.js';
 import {
   DEFAULT_LOGO_SCALE,
@@ -233,7 +234,7 @@ function linkEditHref(host, pathLc) {
 }
 
 /** Rows for a list of link records. */
-function linkRows(records, { showOwner = false } = {}) {
+function linkRows(records, { showOwner = false, maySee = () => true } = {}) {
   return records
     .map((link) => {
       const href = 'https://' + link.host + '/' + link.path;
@@ -243,7 +244,11 @@ function linkRows(records, { showOwner = false } = {}) {
         ${statusBadges(link)}
         <button class="link" type="button" data-copy="${esc(href)}">Copy</button>
       </td>
-      <td><span class="target" title="${esc(link.target)}">${esc(link.target)}</span></td>
+      <td>${
+        hasPassword(link) && !maySee(link)
+          ? '<span class="badge ro">password</span>'
+          : `<span class="target" title="${esc(link.target)}">${esc(link.target)}</span>`
+      }</td>
       ${showOwner ? `<td>${esc(link.ownerEmail || '—')}</td>` : ''}
       <td class="num">${esc(link.status)}${link.delay ? ` / ${esc(link.delay)}s` : ''}</td>
       <td><a href="${esc(linkEditHref(link.host, link.pathLc))}">Edit</a></td>
@@ -313,7 +318,13 @@ ${flashFrom(url)}
       ? `<div class="tablewrap"><table><thead><tr>
           <th>Short link</th><th>Destination</th>${scope === 'all' ? '<th>Owner</th>' : ''}
           <th>Code</th><th></th></tr></thead>
-          <tbody>${linkRows(records, { showOwner: scope === 'all' })}</tbody></table></div>`
+          <tbody>${linkRows(records, {
+            showOwner: scope === 'all',
+            // The listing is already scoped to what this person may see at
+            // all; this is only about the destination of a protected link.
+            maySee: (link) =>
+              ctx.isAdmin || (link.ownerId && link.ownerId === ctx.session.user.id),
+          })}</tbody></table></div>`
       : '<div class="empty">No links to show.</div>'
   }
   ${
@@ -360,6 +371,11 @@ ${alert('error', error)}${alert('ok', info)}
       <div class="field">
         <label for="f_host">Domain</label>
         <select id="f_host" name="host">${hostOptions}</select>
+        ${
+          cfg.knownHosts.length > 1
+            ? `<p class="note">Tick more domains below to create the same shortcut on each. If it cannot be made on one of them, none are made.</p>`
+            : ''
+        }
       </div>
       ${field({
         name: 'path',
@@ -404,6 +420,23 @@ ${alert('error', error)}${alert('ok', info)}
 
     <h2>Where different visitors go</h2>
     <p class="hint">All optional. A device slot left blank falls through to the main destination.</p>
+    ${
+      cfg.knownHosts.length > 1
+        ? `<fieldset class="grants">
+      <legend class="note">Also create on</legend>
+      ${cfg.knownHosts
+        .filter((h) => h !== chosenHost)
+        .map((h) =>
+          checkbox({
+            name: 'also__' + h,
+            label: h,
+            checked: (values.also || []).includes(h),
+          })
+        )
+        .join('')}
+    </fieldset>`
+        : ''
+    }
     ${routingFields(values.routing, { frame: values.frame, mayFrame })}
 
     <h2>Preview card</h2>
@@ -492,6 +525,7 @@ async function createSubmit(ctx) {
     readonly: body.get('readonly') === '1',
     routing: readRouting(body),
     frame: readFrame(body),
+    also: ctx.cfg.knownHosts.filter((h) => body.get('also__' + h) === '1'),
     preview: {
       enabled: body.get('previewEnabled') === '1',
       title: body.get('previewTitle'),
@@ -546,7 +580,7 @@ async function createSubmit(ctx) {
   const clash = await getDirectory(ctx.cfg, host, parsed.pathLc);
   if (clash) return newForm(ctx, { error: 'A directory already uses that path.', values });
 
-  const link = newLink(host, parsed, destination.target, ctx.session.user, {
+  const fields = {
     status: clampStatus(values.status, domain.defaultStatus || 302),
     delay: clampDelay(values.delay, domain.defaultDelay || 0),
     note: String(values.note).slice(0, 500),
@@ -561,7 +595,37 @@ async function createSubmit(ctx) {
       ? normalizeFrame(values.frame)
       : {},
     preview: previewBlockedReason(domain) ? emptyPreview() : normalizePreview(values.preview),
-  });
+  };
+
+  // One submission can put the same shortcut on several domains. Every one
+  // is checked before any is written, so a run that cannot finish writes
+  // nothing at all.
+  if (values.also && values.also.length) {
+    const result = await createEverywhere(ctx.cfg, {
+      user: ctx.session.user,
+      hosts: [host, ...values.also],
+      rawPath: values.path,
+      fields: { ...fields, target: destination.target },
+    });
+    if (!result.ok) return newForm(ctx, { error: result.error, values });
+    ctx.waitUntil(
+      Promise.all(
+        result.links.map((made) =>
+          audit(ctx.cfg, {
+            event: EVENTS.linkCreated,
+            actor: ctx.session.user,
+            host: made.host,
+            ip: clientIp(ctx.request),
+            object: made.pathLc,
+            detail: { target: made.target, acrossDomains: result.created },
+          })
+        )
+      )
+    );
+    return back(linkEditHref(host, parsed.pathLc), 'link.createdMany');
+  }
+
+  const link = newLink(host, parsed, destination.target, ctx.session.user, fields);
   await putLink(ctx.cfg, link);
 
   ctx.waitUntil(
@@ -691,6 +755,7 @@ async function editForm(ctx, { error, info } = {}) {
   const previewBlocked = previewBlockedReason(parentDomain);
   const dupToken = await formToken(ctx, 'link.duplicate');
   const passwordToken = await formToken(ctx, 'link.password');
+  const moveHostToken = await formToken(ctx, 'link.move');
   const shortUrl = 'https://' + host + '/' + link.path;
   const mayReadonly = canSetReadonly(cfg, ctx.session.user);
 
@@ -802,6 +867,38 @@ ${qrCard(host, link, url)}
   </form>
 </div>
 
+${
+  cfg.knownHosts.length > 1
+    ? `<div class="card">
+  <h2>Move to another domain</h2>
+  <p class="hint">Keeps everything about the link, including its password and destinations, and stops answering on ${esc(
+    host
+  )}. You need to be allowed to create it on the domain you move it to.</p>
+  <form method="post" action="/admin/links/move" data-confirm="Move ${esc(host)}/${esc(
+    link.path
+  )} to another domain?">
+    ${csrfField(moveHostToken)}${hidden('host', host)}${hidden('path', pathLc)}
+    <div class="row">
+      ${select({
+        name: 'toHost',
+        label: 'Domain',
+        value: cfg.knownHosts.find((h) => h !== host) || '',
+        options: cfg.knownHosts.filter((h) => h !== host).map((h) => ({ value: h, label: h })),
+      })}
+      ${field({
+        name: 'newpath',
+        label: 'Shortcut there',
+        value: link.path,
+        required: true,
+        attrs: 'data-slink-slug spellcheck="false"',
+      })}
+    </div>
+    <div class="actions"><button type="submit" class="secondary">Move</button></div>
+  </form>
+</div>`
+    : ''
+}
+
 <div class="card">
   <h2>Duplicate</h2>
   <p class="hint">Copies everything on this link except the shortcut, and opens a new one for you to name.</p>
@@ -847,6 +944,46 @@ ${flashFrom(ctx.url)}${alert('error', error)}${alert('ok', info)}
 
 <div class="actions"><a class="btn secondary" href="/admin/links">Back</a></div>`;
   return adminPage(ctx, { title: link.path, nav: 'links', body });
+}
+
+/** Move a link to a different domain. */
+async function moveSubmit(ctx) {
+  const body = await readForm(ctx.request);
+  if (!body) return back('/admin/links', 'csrf');
+  const guard = await checkCsrf(ctx, 'link.move', body);
+  if (!guard.ok) return back('/admin/links', 'csrf');
+
+  const host = String(body.get('host') || '');
+  const pathLc = String(body.get('path') || '').toLowerCase();
+  const link = await getLink(ctx.cfg, host, pathLc);
+  if (!link) return back('/admin/links', 'notfound');
+
+  const permit = await canManageLink(ctx.cfg, { user: ctx.session.user, link, host });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  ctx.url.searchParams.set('host', host);
+  ctx.url.searchParams.set('path', pathLc);
+
+  const toHost = String(body.get('toHost') || '').toLowerCase();
+  const result = await moveLink(ctx.cfg, {
+    user: ctx.session.user,
+    link,
+    toHost,
+    rawPath: body.get('newpath') || link.path,
+  });
+  if (!result.ok) return editForm(ctx, { error: result.error });
+
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.linkUpdated,
+      actor: ctx.session.user,
+      host: toHost,
+      ip: clientIp(ctx.request),
+      object: result.link.pathLc,
+      detail: { movedFrom: result.from },
+    })
+  );
+  return back(linkEditHref(toHost, result.link.pathLc), 'link.moved2');
 }
 
 /** Set, change or clear a link's password. */
@@ -1174,5 +1311,6 @@ export async function adminLinks(ctx, path) {
   if (path === '/admin/links/duplicate' && method === 'POST') return duplicateSubmit(ctx);
   if (path === '/admin/links/qr') return qrSvg(ctx);
   if (path === '/admin/links/password' && method === 'POST') return passwordSubmit(ctx);
+  if (path === '/admin/links/move' && method === 'POST') return moveSubmit(ctx);
   return back('/admin/links');
 }

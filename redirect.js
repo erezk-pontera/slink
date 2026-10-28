@@ -24,7 +24,7 @@ import {
   UNLOCK_TTL_SECONDS,
 } from './linkpass.js';
 import { deviceClass, resolveTarget, shouldFrame } from './targets.js';
-import { checkCsrf, csrfCookie, tokenFor } from './auth.js';
+import { checkCsrf, csrfCookie, ssoStart, tokenFor } from './auth.js';
 import { getUserById } from './users.js';
 import { frameCsp, harden, parseCookies, serializeCookie, withCookies } from './security.js';
 import { capabilityAllowed } from './capabilities.js';
@@ -45,6 +45,12 @@ import {
  * going there. A `+` cannot appear in a shortcut, so it is unambiguous.
  */
 export const REVEAL_SUFFIX = '+';
+
+/**
+ * Marks a reveal that has already been through the sign-in handshake once,
+ * so a visitor who is not signed in anywhere does not bounce forever.
+ */
+export const SSO_TRIED = 'slink-sso';
 
 /** Split a trailing `+` off a pathname, if there is one. */
 export function splitReveal(pathname) {
@@ -226,7 +232,23 @@ export async function handleRedirect(ctx) {
   // `shortcut+` asks where the link goes rather than going there. Only for
   // someone signed in: to anyone else the suffix is simply not a link.
   if (asked.reveal) {
-    if (!ctx.session) return notFound(ctx, await missingDirectory(cfg, host, key));
+    if (!ctx.session) {
+      // A session on the hub is not a session here, and a public host never
+      // starts the handshake on its own. Try it once, marked so that coming
+      // back still signed out falls through rather than looping.
+      const tried = url.searchParams.get(SSO_TRIED) === '1';
+      if (!tried && host !== cfg.hubHost) {
+        const start = ssoStart(ctx, url.pathname + '?' + SSO_TRIED + '=1', { quiet: true });
+        return new Response(null, {
+          status: 303,
+          headers: new Headers([
+            ['Location', start.location],
+            ['Set-Cookie', start.cookie],
+          ]),
+        });
+      }
+      return notFound(ctx, await missingDirectory(cfg, host, key));
+    }
     return html(
       revealPage({
         cfg,

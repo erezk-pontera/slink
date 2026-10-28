@@ -1,0 +1,258 @@
+/**
+ * A password in front of a link, the capability that governs it, and the
+ * `+` suffix that asks where a link goes instead of going there.
+ */
+import { Harness } from './harness.js';
+import { capabilityAllowed } from '../capabilities.js';
+import { hasPassword, passwordMatches, readPassword, setPassword } from '../linkpass.js';
+
+let passed = 0;
+let failed = 0;
+function ok(name, cond, extra = '') {
+  if (cond) { passed++; return; }
+  failed++;
+  console.log('  FAIL: ' + name + (extra ? ' -- ' + extra : ''));
+}
+function section(n) { console.log('\n' + n); }
+
+function peer(base) {
+  const p = new Harness();
+  p.env.KV = base.env.KV;
+  p.env.EMAIL = base.env.EMAIL;
+  p.mail = base.mail;
+  return p;
+}
+
+const root = new Harness();
+await root.signIn('root@pontera.com');
+const guest = peer(root);
+
+/**
+ * Follow same-site redirects the way a browser would. The reveal starts a
+ * sign-in handshake across hosts, so a single request does not see the end
+ * of it.
+ */
+async function follow(h, url, max = 8) {
+  let cur = url;
+  for (let i = 0; i < max; i++) {
+    const r = await h.req(cur);
+    const loc = r.headers.get('Location');
+    if (!loc || r.status < 300 || r.status >= 400) return { r, external: null };
+    const next = new URL(loc, cur);
+    if (!['ptra.cc', 'ptra.dev'].includes(next.host)) return { r, external: next.toString() };
+    cur = next.toString();
+  }
+  return { r: null, external: null, looped: true };
+}
+
+const token = async () => Harness.csrf(await (await root.req('https://ptra.dev/admin/links/new')).text());
+const create = async (form) =>
+  root.req('https://ptra.dev/admin/links/new', {
+    form: { _csrf: await token(), host: 'ptra.cc', status: '302', ...form },
+  });
+const editHref = (h, p) => `https://ptra.dev/admin/links/edit?host=${h}&path=${encodeURIComponent(p)}`;
+const setPw = async (path, password) => {
+  const page = await (await root.req(editHref('ptra.cc', path))).text();
+  const tok = Harness.csrfFor(page, '/admin/links/password');
+  return root.req('https://ptra.dev/admin/links/password', {
+    form: { _csrf: tok, host: 'ptra.cc', path, password },
+  });
+};
+
+/* -------------------------------------------------------- 1. storage */
+section('the password is kept so it can be read back, not in the clear');
+{
+  const cfg = { authSecret: root.env.AUTH_SECRET };
+  const link = {};
+  ok('an empty link has none', !hasPassword(link));
+  await setPassword(cfg, link, 'correct horse');
+  ok('it is set', hasPassword(link));
+  ok('the stored form is opaque', !String(link.password).includes('correct horse'));
+  ok('it reads back', (await readPassword(cfg, link)) === 'correct horse');
+  ok('it matches', await passwordMatches(cfg, link, 'correct horse'));
+  ok('a near miss does not', !(await passwordMatches(cfg, link, 'correct hors')));
+  ok('empty does not', !(await passwordMatches(cfg, link, '')));
+
+  const whitespace = await setPassword(cfg, {}, '    ');
+  ok('whitespace alone is refused', !whitespace.ok);
+  const long = await setPassword(cfg, {}, 'x'.repeat(500));
+  ok('an overlong one is refused', !long.ok);
+
+  await setPassword(cfg, link, '');
+  ok('clearing works', !hasPassword(link));
+}
+
+/* --------------------------------------------------------- 2. the gate */
+section('the visitor is asked');
+{
+  await create({ path: 'vault', target: 'example.com/vault' });
+  const open = await guest.req('https://ptra.cc/vault');
+  ok('an open link just resolves', (open.headers.get('Location') || '').includes('example.com/vault'));
+
+  await setPw('vault', 'open-sesame');
+  const asked = await guest.req('https://ptra.cc/vault');
+  const page = await asked.text();
+  ok('a protected link asks', asked.status === 200 && page.includes('This link is protected'));
+  ok('the destination is nowhere on the page', !page.includes('example.com/vault'));
+  ok('autofill is off', page.includes('autocomplete="off"'));
+  ok('password managers are asked to stay out', page.includes('data-1p-ignore'));
+  ok('the field is a password field', /type="password"/.test(page));
+  ok('turnstile guards it', page.includes('data-action="unlock"'));
+
+  const wrong = await guest.req('https://ptra.cc/vault', {
+    form: {
+      _csrf: Harness.csrf(page), 'slink-unlock': '1', password: 'guess',
+      'cf-turnstile-response': 't:unlock:ptra.cc',
+    },
+  });
+  const wt = await wrong.text();
+  ok('a wrong answer is refused', wt.includes('not right'));
+  ok('and still leaks nothing', !wt.includes('example.com/vault'));
+
+  const right = await guest.req('https://ptra.cc/vault', {
+    form: {
+      _csrf: Harness.csrf(wt), 'slink-unlock': '1', password: 'open-sesame',
+      'cf-turnstile-response': 't:unlock:ptra.cc',
+    },
+  });
+  ok('the right answer unlocks', right.status === 303, String(right.status));
+  const after = await guest.req('https://ptra.cc/vault');
+  ok('and the link resolves', (after.headers.get('Location') || '').includes('example.com/vault'));
+
+  const other = peer(root);
+  ok('another browser is still asked',
+     (await (await other.req('https://ptra.cc/vault')).text()).includes('This link is protected'));
+}
+
+/* ----------------------------------------------- 3. unlocks are scoped */
+section('one unlock does not open another link');
+{
+  await create({ path: 'vault2', target: 'example.com/two' });
+  await setPw('vault2', 'different');
+  const still = await guest.req('https://ptra.cc/vault2');
+  ok('a second protected link is asked for separately',
+     (await still.text()).includes('This link is protected'));
+
+  // Changing the password closes everyone who had already answered.
+  await setPw('vault', 'changed-now');
+  const again = await guest.req('https://ptra.cc/vault');
+  ok('changing the password asks again', (await again.text()).includes('This link is protected'));
+}
+
+/* ------------------------------------------------- 4. without turnstile */
+section('the prompt cannot be brute-forced freely');
+{
+  const h = peer(root);
+  const page = await (await h.req('https://ptra.cc/vault')).text();
+  const bare = await h.req('https://ptra.cc/vault', {
+    form: { _csrf: Harness.csrf(page), 'slink-unlock': '1', password: 'changed-now' },
+  });
+  ok('an answer with no token is refused', (await bare.text()).includes('Verification failed'));
+
+  const noCsrf = await h.req('https://ptra.cc/vault', {
+    form: { _csrf: 'forged', 'slink-unlock': '1', password: 'changed-now',
+            'cf-turnstile-response': 't:unlock:ptra.cc' },
+  });
+  ok('an answer with a forged token is refused', (await noCsrf.text()).includes('could not be verified'));
+}
+
+/* ----------------------------------------------- 5. destinations are hidden */
+section('a protected link hides its destination from onlookers');
+{
+  const nina = peer(root);
+  await nina.signIn('nina@pontera.com');
+  // Nina owns one protected link of her own and should see that one.
+  const ntok = Harness.csrf(await (await nina.req('https://ptra.dev/admin/links/new')).text());
+  await nina.req('https://ptra.dev/admin/links/new', {
+    form: { _csrf: ntok, host: 'ptra.cc', path: 'nina-own', target: 'example.com/nina', status: '302' },
+  });
+
+  const mine = await (await nina.req('https://ptra.dev/admin/links')).text();
+  ok('her own link shows its destination', mine.includes('example.com/nina'));
+
+  const search = await (await root.req('https://ptra.dev/admin/search?q=vault')).text();
+  ok('an administrator still sees it', search.includes('example.com/vault'));
+}
+
+/* -------------------------------------------------- 6. the capability */
+section('the capability governs who may set one');
+{
+  const cfg = { rootAdmins: [] };
+  const u = { id: 'u', emailNorm: 'u@x.y' };
+  ok('allowed by default', capabilityAllowed(cfg, 'password', { user: u, domain: { host: 'h' } }).allowed);
+  ok('a domain can withhold it',
+     !capabilityAllowed(cfg, 'password', { user: u, domain: { host: 'h', capabilities: { password: false } } }).allowed);
+
+  // Withhold it on ptra.cc and check the screen says so.
+  const dom = 'https://ptra.dev/admin/domains/edit?host=ptra.cc';
+  const dt = Harness.csrfFor(await (await root.req(dom)).text(), '/admin/domains/edit');
+  await root.req('https://ptra.dev/admin/domains/edit', {
+    form: { _csrf: dt, host: 'ptra.cc', defaultStatus: '302', rootCreatePolicy: 'email_domain',
+            enabled: '1', cap_password: 'deny' },
+  });
+
+  const nina = peer(root);
+  await nina.signIn('nina@pontera.com');
+  const page = await (await nina.req(editHref('ptra.cc', 'nina-own'))).text();
+  ok('the form is withdrawn', !page.includes('action="/admin/links/password"'));
+  ok('and the screen explains', page.includes('does not allow'));
+
+  const forged = await nina.req('https://ptra.dev/admin/links/password', {
+    form: { _csrf: 'x', host: 'ptra.cc', path: 'nina-own', password: 'sneaky' },
+  });
+  ok('a hand-made submission is refused',
+     forged.status === 403 || (forged.headers.get('Location') || '').includes('csrf'),
+     String(forged.status));
+
+  // An administrator may still use it, and may still clear one.
+  const adminPage = await (await root.req(editHref('ptra.cc', 'vault'))).text();
+  ok('an administrator keeps the form', adminPage.includes('action="/admin/links/password"'));
+
+  const dt2 = Harness.csrfFor(await (await root.req(dom)).text(), '/admin/domains/edit');
+  await root.req('https://ptra.dev/admin/domains/edit', {
+    form: { _csrf: dt2, host: 'ptra.cc', defaultStatus: '302', rootCreatePolicy: 'email_domain', enabled: '1' },
+  });
+}
+
+/* ------------------------------------------------------- 7. the + suffix */
+section('asking where a link goes');
+{
+  await create({ path: 'peek', target: 'example.com/peek' });
+
+  // Not signed in anywhere: the handshake is quiet and the visitor simply
+  // gets the MISSING destination, never a sign-in page for a link they may
+  // just have been handed.
+  const anon = await follow(peer(root), 'https://ptra.cc/peek+');
+  ok('an anonymous visitor gets the MISSING destination',
+     (anon.external || '').includes('fallback.example'), anon.external || 'none');
+  ok('and is never shown a sign-in page', !anon.looped);
+
+  // Signed in on the hub is enough: the handshake gets a session on the
+  // other host without asking anything.
+  const seen = await follow(root, 'https://ptra.cc/peek+');
+  ok('a signed-in person reaches the page', seen.r && seen.r.status === 200,
+     seen.r ? String(seen.r.status) : 'looped');
+  const page = seen.r ? await seen.r.text() : '';
+  ok('the destination is shown', page.includes('example.com/peek'));
+  ok('and they are not sent there', !page.includes('http-equiv="refresh"'));
+  ok('the page says which destination it is', page.includes('main destination'));
+  ok('with a way to follow it', page.includes('Open it'));
+
+  const plain = await root.req('https://ptra.cc/peek');
+  ok('without the suffix it still redirects',
+     (plain.headers.get('Location') || '').includes('example.com/peek'));
+
+  const encoded = await follow(root, 'https://ptra.cc/peek%2B');
+  ok('the percent-encoded form works too',
+     encoded.r && encoded.r.status === 200 && (await encoded.r.text()).includes('example.com/peek'));
+
+  // It does not work where a password is in force.
+  await setPw('peek', 'locked-now');
+  const locked = await follow(root, 'https://ptra.cc/peek+');
+  ok('a protected link asks for the password instead',
+     locked.r && (await locked.r.text()).includes('This link is protected'));
+}
+
+console.log(`\nlink passwords: ${passed} passed, ${failed} failed`);
+root.restore();
+export default { passed, failed };

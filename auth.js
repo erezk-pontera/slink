@@ -593,12 +593,17 @@ export async function oauthComplete(ctx, { code, state }) {
 }
 
 /** On a non-hub host: start the handshake and remember a nonce. */
-export function ssoStart(ctx, returnPath) {
+export function ssoStart(ctx, returnPath, { quiet = false } = {}) {
   const nonce = randomId(18);
   const target = new URL('https://' + ctx.cfg.hubHost + '/sso/authorize');
   target.searchParams.set('h', ctx.host);
   target.searchParams.set('r', safeNext(returnPath, '/'));
   target.searchParams.set('n', nonce);
+  // A quiet handshake is one started on the visitor's behalf rather than
+  // because they asked to sign in. If they have no session on the hub, they
+  // are sent back where they came from instead of being shown a sign-in
+  // page for a link they may simply have been handed.
+  if (quiet) target.searchParams.set('q', '1');
   return {
     location: target.toString(),
     cookie: serializeCookie(COOKIE.sso, nonce, { maxAge: SSO_TTL, sameSite: 'Lax' }),

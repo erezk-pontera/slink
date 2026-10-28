@@ -96,7 +96,11 @@ function resultRows(rows, pickable) {
             ? `<button class="link" type="button" data-copy="https://${esc(row.host)}/${esc(row.path)}">Copy</button>`
             : ''
         }</td>
-      <td class="trunc">${esc(row.detail || '')}</td>
+      <td class="trunc">${
+        row.locked && !row.detail
+          ? '<span class="badge ro">password</span>'
+          : esc(row.detail || '')
+      }</td>
       <td>${esc(row.owner || '—')}</td>
     </tr>`;
     })

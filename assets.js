@@ -10,7 +10,7 @@ import { LOGO_SVG } from './logo.js';
 export const ASSET_PREFIX = '/__slink';
 
 /** Bumped whenever the asset bodies change; used for immutable caching. */
-export const ASSET_VERSION = '4';
+export const ASSET_VERSION = '5';
 
 export const CSS = `
 :root{
@@ -103,6 +103,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .count{font-size:38px;font-weight:650;font-variant-numeric:tabular-nums;margin:8px 0}
 .dest{word-break:break-all;font-size:14px;margin:0 0 18px}
 footer.foot{color:var(--muted);font-size:12px;text-align:center;padding:22px 16px}
+footer.foot div+div{margin-top:4px}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:13.5px;margin:0}
 .kv dt{color:var(--muted)}
 .kv dd{margin:0;word-break:break-word}

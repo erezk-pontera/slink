@@ -159,7 +159,9 @@ section('branding and the header domain picker');
   ok('brand reads Shrink Link', /class="brand"[^>]*>Shrink Link</.test(b),
      (b.match(/class="brand"[^>]*>[^<]*/) || [''])[0]);
   ok('title reads Shrink Link', b.includes('<title>Overview - Shrink Link</title>'));
-  ok('footer reads Shrink Link', /<footer class="foot">Shrink Link</.test(b));
+  ok('footer carries the notice',
+     b.includes('Shrink Link - &copy; Pontera Solutions Inc. All rights reserved'),
+     (b.match(/<footer[\s\S]*?<\/footer>/) || [''])[0]);
   ok('no "Slink" anywhere on the page', !b.includes('Slink'));
 
   const anon = new Harness();

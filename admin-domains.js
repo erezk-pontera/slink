@@ -26,6 +26,7 @@ import { clientIp } from './geo.js';
 import { describePolicy, normalizePolicy } from './interstitial.js';
 import { clampStatus } from './links.js';
 import { MISSING_MODES, normalizeMissingPolicy } from './dirmissing.js';
+import { INVITE_MODES, normalizeInvitePolicy } from './invites.js';
 import { canonicalHost, parseDestination, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
 import { esc, listEnv } from './util.js';
@@ -144,6 +145,7 @@ async function editForm(ctx, { error } = {}) {
   const routed = ctx.cfg.knownHosts.includes(host);
   const policy = normalizePolicy(domain.interstitial);
   const missingPolicy = normalizeMissingPolicy(domain.dirMissingPolicy);
+  const invitePolicy = normalizeInvitePolicy(domain.invitePolicy);
 
   const body = `
 ${flashFrom(url)}${alert('error', error)}
@@ -205,6 +207,26 @@ ${routed ? '' : alert('error', 'This host is not in the DOMAINS variable, so the
         ? 'Blank falls back to MISSING: ' + ctx.cfg.missingUrl
         : 'Blank shows a not-found page, because MISSING is not set.',
     })}
+    <h2>Who may be given access</h2>
+    <p class="hint">Applies when a link or directory changes hands, and when someone is granted access to a directory. The baseline is always whoever could sign in to this host anyway.</p>
+    ${select({
+      name: 'inviteMode',
+      label: 'Beyond the sign-in domains',
+      value: invitePolicy.mode,
+      options: [
+        { value: 'off', label: 'Nobody else' },
+        { value: 'optional', label: 'The list below, and a directory may narrow it' },
+        { value: 'locked', label: 'The list below, fixed for every directory' },
+      ],
+    })}
+    ${field({
+      name: 'inviteDomains',
+      label: 'Email domains that may be given access',
+      value: invitePolicy.domains.join(', '),
+      placeholder: 'pontera.com, partner.com',
+      note: 'Comma separated. Ignored when the choice above is "Nobody else".',
+    })}
+
     <h2>Directory MISSING destinations</h2>
     <p class="hint">A directory can answer its own root, and unknown shortcuts under it, with a destination of its own. This decides whether directories may set one.</p>
     ${select({
@@ -288,6 +310,11 @@ async function editSubmit(ctx) {
   domain.interstitial = readPolicy(body, 'it');
   domain.rootRedirect = rootRedirect;
   domain.notFoundUrl = notFoundUrl;
+  const inviteMode = String(body.get('inviteMode') || 'off');
+  domain.invitePolicy = normalizeInvitePolicy({
+    mode: INVITE_MODES.includes(inviteMode) ? inviteMode : 'off',
+    domains: parseDomainList(body.get('inviteDomains')),
+  });
   const dirMissingMode = String(body.get('dirMissingMode') || 'optional');
   domain.dirMissingPolicy = normalizeMissingPolicy({
     mode: MISSING_MODES.includes(dirMissingMode) ? dirMissingMode : 'optional',

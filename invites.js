@@ -34,9 +34,23 @@ export function normalizeInvitePolicy(raw) {
 }
 
 /** Normalise a directory's narrowed list. */
+/**
+ * A directory's narrowed list, from either a stored array or the comma or
+ * whitespace separated text a form submits. An empty list is null, meaning
+ * "no narrowing", which is not the same as "nobody".
+ */
 export function normalizeInviteDomains(raw) {
-  if (!Array.isArray(raw)) return null;
-  const out = raw.map((d) => String(d).trim().toLowerCase()).filter(Boolean);
+  const parts = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(/[\s,;]+/)
+      : null;
+  if (!parts) return null;
+  const out = [];
+  for (const part of parts) {
+    const value = String(part).trim().toLowerCase().replace(/^@/, '');
+    if (value && !out.includes(value)) out.push(value);
+  }
   return out.length ? out : null;
 }
 

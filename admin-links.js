@@ -21,6 +21,7 @@ import {
 } from './preview.js';
 import { ALL_SLOTS, normalizeRouting, SLOT_LABELS } from './targets.js';
 import { resolveDomain } from './domains.js';
+import { inviteAllowed } from './invites.js';
 import { clientIp } from './geo.js';
 import {
   clampDelay,
@@ -814,13 +815,23 @@ async function transferSubmit(ctx) {
   ctx.url.searchParams.set('path', pathLc);
 
   let recipient;
+  let parsedEmail;
   try {
-    const parsed = normalizeEmail(body.get('owner'), ctx.cfg.emailOpts);
-    recipient = await getUserByNorm(ctx.cfg, parsed.emailNorm);
+    parsedEmail = normalizeEmail(body.get('owner'), ctx.cfg.emailOpts);
+    recipient = await getUserByNorm(ctx.cfg, parsedEmail.emailNorm);
   } catch (err) {
     if (err instanceof ValidationError) return editForm(ctx, { error: err.message });
     throw err;
   }
+
+  // Whose addresses may be handed something on this host, narrowed by the
+  // directory that owns the path.
+  const invite = inviteAllowed(ctx.cfg, {
+    domain: await resolveDomain(ctx.cfg, host),
+    dir: await governingDirectory(ctx.cfg, host, pathLc),
+    emailNorm: parsedEmail.emailNorm,
+  });
+  if (!invite.allowed) return editForm(ctx, { error: invite.reason });
   if (!recipient) {
     return editForm(ctx, {
       error: 'No such user. They must sign in once before a link can be transferred to them.',

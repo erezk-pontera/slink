@@ -26,6 +26,10 @@ export function newDirectory(host, path, pathLc, overrides = {}) {
     readonly: false,
     enabled: true,
     note: '',
+    /** Narrows the host's invite domains for this directory. null leaves
+     *  the host's list alone; only meaningful where the host delegates.
+     *  See invites.js. */
+    inviteDomains: null,
     /** Where to send someone who browses this directory's root, or a
      *  shortcut under it that does not exist. Empty uses the domain's
      *  MISSING destination. See dirmissing.js. */

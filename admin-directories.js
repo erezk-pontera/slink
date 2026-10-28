@@ -60,6 +60,12 @@ import {
   requireAdmin,
 } from './permissions.js';
 import { describeMissingPolicy, directoryMaySetMissing, resolveMissing } from './dirmissing.js';
+import {
+  describeInvitePolicy,
+  directoryMayNarrowInvites,
+  inviteAllowed,
+  normalizeInviteDomains,
+} from './invites.js';
 import { getUserByNorm, isAdmin } from './users.js';
 import { esc, fmtTime } from './util.js';
 import { alert, checkbox, csrfField, field, hidden, textarea } from './views.js';
@@ -264,6 +270,7 @@ async function editForm(ctx, { error } = {}) {
   const exempt = normalizeExempt(dir.interstitialExempt);
   const exemptions = EXEMPTIBLE.filter((k) => exempt[k]);
   const maySetMissing = directoryMaySetMissing(parentDomain, dir);
+  const mayNarrowInvites = directoryMayNarrowInvites(parentDomain);
   const effectiveMissing = resolveMissing(parentDomain, dir);
   const mayOverride = directoryMayOverride(domainPolicy, dir);
   const dirPolicy = dir.interstitial
@@ -415,6 +422,19 @@ ${
             effectiveMissing.target || 'the domain default'
           )}. ${esc(describeMissingPolicy(parentDomain))}</p>`
     }
+    ${
+      mayNarrowInvites
+        ? field({
+            name: 'inviteDomains',
+            label: 'Who may be given access here (optional)',
+            value: (normalizeInviteDomains(dir.inviteDomains) || []).join(', '),
+            placeholder: 'pontera.com, partner.com',
+            note:
+              'Comma separated. Leave empty to use the domain list. You may only narrow it: ' +
+              describeInvitePolicy(cfg, parentDomain),
+          })
+        : `<p class="note">Who may be given access here: ${esc(describeInvitePolicy(cfg, parentDomain))}</p>`
+    }
     ${checkbox({ name: 'enabled', label: 'Enabled', checked: dir.enabled !== false })}
     ${checkbox({
       name: 'open',
@@ -483,9 +503,16 @@ async function editSubmit(ctx) {
   ctx.url.searchParams.set('host', host);
   ctx.url.searchParams.set('path', pathLc);
 
+  const parentDomain = await resolveDomain(ctx.cfg, host);
+  // Narrowing is only offered where the host delegates it, and the module
+  // discards anything the host's own list does not already cover.
+  if (directoryMayNarrowInvites(parentDomain)) {
+    dir.inviteDomains = normalizeInviteDomains(String(body.get('inviteDomains') || ''));
+  }
+
   // The field only renders where the domain allows it, so a submission that
   // carries it anyway is ignored rather than trusted.
-  if (directoryMaySetMissing(await resolveDomain(ctx.cfg, host), dir)) {
+  if (directoryMaySetMissing(parentDomain, dir)) {
     const raw = String(body.get('missingUrl') || '').trim();
     if (!raw) {
       dir.missingUrl = '';
@@ -530,9 +557,10 @@ async function grantSubmit(ctx) {
   ctx.url.searchParams.set('path', pathLc);
 
   let target;
+  let parsedEmail;
   try {
-    const parsed = normalizeEmail(body.get('email'), ctx.cfg.emailOpts);
-    target = await getUserByNorm(ctx.cfg, parsed.emailNorm);
+    parsedEmail = normalizeEmail(body.get('email'), ctx.cfg.emailOpts);
+    target = await getUserByNorm(ctx.cfg, parsedEmail.emailNorm);
   } catch (err) {
     if (err instanceof ValidationError) return editForm(ctx, { error: err.message });
     throw err;
@@ -540,6 +568,13 @@ async function grantSubmit(ctx) {
   if (!target) {
     return editForm(ctx, { error: 'No such user. They must sign in once before they can be granted access.' });
   }
+
+  const invite = inviteAllowed(ctx.cfg, {
+    domain: await resolveDomain(ctx.cfg, host),
+    dir,
+    emailNorm: parsedEmail.emailNorm,
+  });
+  if (!invite.allowed) return editForm(ctx, { error: invite.reason });
 
   const canManage = body.get('canManage') === '1';
   const canCreate = body.get('canCreate') === '1' || canManage;
@@ -692,9 +727,10 @@ async function transferSubmit(ctx) {
   ctx.url.searchParams.set('path', pathLc);
 
   let recipient;
+  let parsedOwner;
   try {
-    const parsed = normalizeEmail(body.get('owner'), ctx.cfg.emailOpts);
-    recipient = await getUserByNorm(ctx.cfg, parsed.emailNorm);
+    parsedOwner = normalizeEmail(body.get('owner'), ctx.cfg.emailOpts);
+    recipient = await getUserByNorm(ctx.cfg, parsedOwner.emailNorm);
   } catch (err) {
     if (err instanceof ValidationError) return editForm(ctx, { error: err.message });
     throw err;
@@ -704,6 +740,13 @@ async function transferSubmit(ctx) {
       error: 'No such user. They must sign in once before a directory can be transferred to them.',
     });
   }
+
+  const invite = inviteAllowed(ctx.cfg, {
+    domain: await resolveDomain(ctx.cfg, host),
+    dir,
+    emailNorm: parsedOwner.emailNorm,
+  });
+  if (!invite.allowed) return editForm(ctx, { error: invite.reason });
   if (recipient.disabled) return editForm(ctx, { error: 'That account is disabled.' });
 
   const from = dir.ownerEmail || null;

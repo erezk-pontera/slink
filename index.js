@@ -19,6 +19,8 @@ import {
   completeLogin,
   COOKIE,
   csrfCookie,
+  oauthBegin,
+  oauthComplete,
   readSession,
   resendLogin,
   safeNext,
@@ -33,6 +35,7 @@ import { loadConfig, saveSettings } from './config.js';
 import { ensureBootstrapDomains, resolveDomain } from './domains.js';
 import { clientIp, geoCheck, geoMessage } from './geo.js';
 import { IMP_DENY, openImpersonation, splitImpersonation } from './impersonate.js';
+import { methodsFor, normalizeOauth } from './oauth.js';
 import { canonicalHost } from './paths.js';
 import { rootCreateAllowed } from './permissions.js';
 import { getChallenge } from './otp.js';
@@ -95,6 +98,12 @@ async function signInGet(ctx, { error, info } = {}) {
     }
   }
 
+  // Which routes this host offers. Nobody is signed in here yet, so the
+  // administrator exemption cannot apply: an administrator whose host has
+  // the code switched off reaches it through /admin?otp=1.
+  const methods = methodsFor(ctx.cfg, ctx.domain, {
+    isAdmin: ctx.url.searchParams.get('otp') === '1',
+  });
   const page = loginPage({
     cfg: ctx.cfg,
     host: ctx.host,
@@ -103,6 +112,8 @@ async function signInGet(ctx, { error, info } = {}) {
     error,
     info,
     email: ctx.prefillEmail || '',
+    methods,
+    ssoLabel: normalizeOauth(ctx.domain && ctx.domain.oauth).label,
   });
   return withCookies(html(page, { turnstile: true, status: error ? 400 : 200 }), [csrfCookie(ctx)]);
 }
@@ -372,6 +383,38 @@ async function route(request, env, exec) {
 
   const path = url.pathname.replace(/\/+$/, '') || '/';
   const isHub = host === cfg.hubHost;
+
+  // The identity-provider handshake. Both legs live on every host, because
+  // a host that requires authentication may offer single sign-on of its own.
+  if (path === '/__slink/oauth/start') {
+    if (ctx.session) return seeOther(safeNext(url.searchParams.get('r'), '/admin'));
+    const begin = await oauthBegin(ctx, url.searchParams.get('r') || '/admin');
+    if (!begin.ok) return signInGet(ctx, { error: begin.error });
+    return seeOther(begin.location, [begin.cookie]);
+  }
+  if (path === '/__slink/oauth/callback') {
+    const gate = geoCheck(cfg, request, 'login');
+    if (!gate.allowed) {
+      const page = messagePage({
+        cfg,
+        host,
+        title: 'Unavailable',
+        heading: 'Not available here',
+        message: geoMessage(gate.reason),
+        status: 403,
+      });
+      return html(page.body, { status: 403 });
+    }
+    const done = await oauthComplete(ctx, {
+      code: url.searchParams.get('code'),
+      state: url.searchParams.get('state'),
+    });
+    if (!done.ok) {
+      const refused = await signInGet(ctx, { error: done.error });
+      return withCookies(refused, done.cookies || []);
+    }
+    return seeOther(done.next, done.cookies);
+  }
 
   // The SSO handshake endpoints live on every host.
   if (path === '/__slink/sso/callback') return ssoCallbackGet(ctx);

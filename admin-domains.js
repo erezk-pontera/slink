@@ -27,6 +27,12 @@ import { describePolicy, normalizePolicy } from './interstitial.js';
 import { clampStatus } from './links.js';
 import { MISSING_MODES, normalizeMissingPolicy } from './dirmissing.js';
 import { INVITE_MODES, normalizeInvitePolicy } from './invites.js';
+import {
+  METHODS,
+  normalizeDisabledMethods,
+  normalizeOauth,
+  oauthReady,
+} from './oauth.js';
 import { canonicalHost, parseDestination, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
 import { esc, listEnv } from './util.js';
@@ -146,6 +152,8 @@ async function editForm(ctx, { error } = {}) {
   const policy = normalizePolicy(domain.interstitial);
   const missingPolicy = normalizeMissingPolicy(domain.dirMissingPolicy);
   const invitePolicy = normalizeInvitePolicy(domain.invitePolicy);
+  const oauth = normalizeOauth(domain.oauth);
+  const disabledMethods = normalizeDisabledMethods(domain.disabledMethods);
 
   const body = `
 ${flashFrom(url)}${alert('error', error)}
@@ -207,6 +215,46 @@ ${routed ? '' : alert('error', 'This host is not in the DOMAINS variable, so the
         ? 'Blank falls back to MISSING: ' + ctx.cfg.missingUrl
         : 'Blank shows a not-found page, because MISSING is not set.',
     })}
+    <h2>Single sign-on</h2>
+    <p class="hint">Authorization Code with PKCE. The provider establishes an address and nothing more: the allowed sign-in domains above still decide who may actually sign in, and an address the provider does not mark verified is refused.</p>
+    ${checkbox({ name: 'oauthEnabled', label: 'Offer single sign-on on this domain', checked: !!oauth.enabled })}
+    ${field({ name: 'oauthLabel', label: 'Button label', value: oauth.label, placeholder: 'Okta' })}
+    ${field({ name: 'oauthClientId', label: 'Client ID', value: oauth.clientId })}
+    ${field({ name: 'oauthAuthorizeUrl', label: 'Authorization endpoint', value: oauth.authorizeUrl, placeholder: 'https://idp.example.com/authorize', note: 'HTTPS only. Anything else is discarded.' })}
+    ${field({ name: 'oauthTokenUrl', label: 'Token endpoint', value: oauth.tokenUrl, placeholder: 'https://idp.example.com/oauth/token' })}
+    ${field({ name: 'oauthUserinfoUrl', label: 'Userinfo endpoint', value: oauth.userinfoUrl, placeholder: 'https://idp.example.com/userinfo' })}
+    ${field({ name: 'oauthScope', label: 'Scope', value: oauth.scope })}
+    <div class="row">
+      ${field({ name: 'oauthEmailField', label: 'Email field', value: oauth.emailField })}
+      ${field({ name: 'oauthVerifiedField', label: 'Verified field', value: oauth.verifiedField })}
+    </div>
+    ${checkbox({
+      name: 'oauthAllowUnverified',
+      label: 'Accept an address the provider has not verified',
+      checked: !!oauth.allowUnverified,
+      note: '(not recommended: an unverified address is a claim, not a fact)',
+    })}
+    <p class="note">Redirect URI to register with the provider: <code>https://${esc(
+      domain.host
+    )}/__slink/oauth/callback</code>. The client secret is the <code>oauth-secret</code> environment variable, never stored here.${
+      oauth.enabled && !oauthReady(ctx.cfg, domain)
+        ? ' <strong>Not usable yet: an endpoint, the client ID or the secret is missing.</strong>'
+        : ''
+    }</p>
+
+    <h3>Other sign-in methods</h3>
+    <p class="hint">Only available once single sign-on works. An administrator always keeps every route, so an outage at the provider cannot lock out the people who would fix it.</p>
+    ${checkbox({
+      name: 'disable_otp',
+      label: 'Turn off the emailed code',
+      checked: disabledMethods.includes('otp'),
+    })}
+    ${checkbox({
+      name: 'disable_passkey',
+      label: 'Turn off passkeys',
+      checked: disabledMethods.includes('passkey'),
+    })}
+
     <h2>Who may be given access</h2>
     <p class="hint">Applies when a link or directory changes hands, and when someone is granted access to a directory. The baseline is always whoever could sign in to this host anyway.</p>
     ${select({
@@ -310,6 +358,22 @@ async function editSubmit(ctx) {
   domain.interstitial = readPolicy(body, 'it');
   domain.rootRedirect = rootRedirect;
   domain.notFoundUrl = notFoundUrl;
+  domain.oauth = normalizeOauth({
+    enabled: body.get('oauthEnabled') === '1',
+    label: body.get('oauthLabel'),
+    clientId: body.get('oauthClientId'),
+    authorizeUrl: body.get('oauthAuthorizeUrl'),
+    tokenUrl: body.get('oauthTokenUrl'),
+    userinfoUrl: body.get('oauthUserinfoUrl'),
+    scope: body.get('oauthScope'),
+    emailField: body.get('oauthEmailField'),
+    verifiedField: body.get('oauthVerifiedField'),
+    allowUnverified: body.get('oauthAllowUnverified') === '1',
+  });
+  domain.disabledMethods = normalizeDisabledMethods(
+    METHODS.filter((m) => body.get('disable_' + m) === '1')
+  );
+
   const inviteMode = String(body.get('inviteMode') || 'off');
   domain.invitePolicy = normalizeInvitePolicy({
     mode: INVITE_MODES.includes(inviteMode) ? inviteMode : 'off',

@@ -211,12 +211,28 @@ export function pager(prevHref, nextHref) {
 
 /* ---------------------------------------------------------------- sign-in */
 
-export function loginPage({ cfg, host, error, info, csrf, next, email = '' }) {
-  const body = `
-${alert('error', error)}${alert('info', info)}
-<div class="card">
-  <h1>Sign in</h1>
-  <p class="sub">We will email you a ${cfg.settings.otpLength}-digit code.</p>
+export function loginPage({
+  cfg,
+  host,
+  error,
+  info,
+  csrf,
+  next,
+  email = '',
+  methods = { otp: true, oauth: false },
+  ssoLabel = 'Single sign-on',
+}) {
+  const ssoHref = '/__slink/oauth/start?r=' + encodeURIComponent(next || '/admin');
+  const sso = methods.oauth
+    ? `<div class="sso">
+    <a class="btn" href="${esc(ssoHref)}">Continue with ${esc(ssoLabel)}</a>
+  </div>`
+    : '';
+  // With the code switched off, single sign-on is the only way in and the
+  // page should not present a form that cannot succeed.
+  const divider = methods.oauth && methods.otp ? '<p class="divider"><span>or</span></p>' : '';
+  const byEmail = methods.otp
+    ? `<p class="sub">We will email you a ${cfg.settings.otpLength}-digit code.</p>
   <form method="post" action="/admin" data-no-busy>
     ${csrfField(csrf)}${hidden('stage', 'email')}${hidden('next', next)}
     ${field({
@@ -230,7 +246,19 @@ ${alert('error', error)}${alert('info', info)}
     })}
     ${turnstileWidget(cfg.turnstileSiteKey, 'login')}
     <div class="actions"><button type="submit">Send code</button></div>
-  </form>
+  </form>`
+    : '';
+
+  const body = `
+${alert('error', error)}${alert('info', info)}
+<div class="card">
+  <h1>Sign in</h1>
+  ${sso}${divider}${byEmail}
+  ${
+    !methods.otp && !methods.oauth
+      ? '<p class="sub">No sign-in method is available on this domain. An administrator needs to enable one.</p>'
+      : ''
+  }
 </div>`;
   return layout({
     title: 'Sign in - ' + cfg.appName,

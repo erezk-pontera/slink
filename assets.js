@@ -66,6 +66,15 @@ nav.main a[aria-current=page]{background:var(--bg);color:var(--ink);font-weight:
 .qrwrap{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
 .qrwrap form{flex:1 1 260px;min-width:0}
 img.qr{flex:none;width:220px;height:220px;border:1px solid var(--line);border-radius:8px;background:#fff}
+details.group{border-top:1px solid var(--line);padding:10px 0 2px}
+details.group:first-of-type{border-top:0}
+details.group>summary{cursor:pointer;font-weight:600;padding:4px 0;list-style:revert}
+details.group>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+details.group[open]>summary{margin-bottom:6px}
+.sso{margin:0 0 4px}
+.sso .btn{display:block;text-align:center}
+.divider{display:flex;align-items:center;gap:12px;color:var(--muted);margin:16px 0;font-size:.9em}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:var(--shadow);padding:18px;margin:0 0 16px}
 .card h2{margin:0 0 4px;font-size:16px;font-weight:600}

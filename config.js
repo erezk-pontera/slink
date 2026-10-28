@@ -82,6 +82,7 @@ export class Config {
     this.authSecret = envVar(env, 'AUTH_SECRET', 'auth-secret');
     this.turnstileSiteKey = envVar(env, 'turnstile-sitekey', 'TURNSTILE_SITEKEY', 'TURNSTILE_SITE_KEY');
     this.turnstileSecret = envVar(env, 'turnstile-secret', 'TURNSTILE_SECRET');
+    this.oauthSecret = envVar(env, 'oauth-secret', 'OAUTH_SECRET');
 
     this.hubHost = String(envVar(env, 'HUB_HOST') || 'ptra.dev').toLowerCase().replace(/^www\./, '');
     this.appName = String(envVar(env, 'APP_NAME') || 'Shrink Link');
@@ -139,6 +140,9 @@ export class Config {
     }
     if (!this.turnstileSiteKey) out.push('turnstile-sitekey is not configured.');
     if (!this.turnstileSecret) out.push('turnstile-secret is not configured.');
+    // oauth-secret is only needed where a host actually offers single
+    // sign-on, so its absence is reported by the domain screen rather than
+    // held against the whole installation here.
     if (this.rootAdmins.length === 0) out.push('ADMIN is not configured.');
     return out;
   }

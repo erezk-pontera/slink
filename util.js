@@ -59,6 +59,12 @@ export function randomInt(max) {
   return v % max;
 }
 
+/** SHA-256 as raw bytes, for callers that base64url-encode the digest. */
+export async function sha256Bytes(input) {
+  const data = typeof input === 'string' ? enc.encode(input) : input;
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+}
+
 export async function sha256Hex(input) {
   const data = typeof input === 'string' ? enc.encode(input) : input;
   const digest = await crypto.subtle.digest('SHA-256', data);

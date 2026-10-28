@@ -48,8 +48,37 @@ export class Harness {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
+      // A stand-in identity provider, so the whole authorization-code
+      // exchange can be driven without reaching the network.
+      if (url.startsWith('https://idp.example/')) return this.idp(url, init);
       throw new Error('unexpected outbound fetch to ' + url);
     };
+  }
+
+  /**
+   * The stand-in provider. `idpState` lets a test make the token exchange or
+   * the profile lookup fail, and records what the Worker actually sent.
+   */
+  idp(url, init) {
+    const json = (body, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+    if (url === 'https://idp.example/token') {
+      const sent = new URLSearchParams(init && init.body ? String(init.body) : '');
+      this.idpToken = Object.fromEntries(sent.entries());
+      if (this.idpTokenStatus && this.idpTokenStatus !== 200) return json({ error: 'nope' }, this.idpTokenStatus);
+      if (this.idpNoToken) return json({ token_type: 'Bearer' });
+      return json({ access_token: 'at-' + (sent.get('code') || ''), token_type: 'Bearer' });
+    }
+    if (url === 'https://idp.example/me') {
+      this.idpAuth = init && init.headers ? init.headers.Authorization : null;
+      if (this.idpUserStatus && this.idpUserStatus !== 200) return json({ error: 'nope' }, this.idpUserStatus);
+      return json({
+        email: this.idpEmail === undefined ? 'sso@pontera.com' : this.idpEmail,
+        email_verified: this.idpVerified === undefined ? true : this.idpVerified,
+      });
+    }
+    throw new Error('unexpected provider call to ' + url);
   }
 
   restore() {

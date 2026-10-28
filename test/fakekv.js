@@ -76,6 +76,7 @@ export function makeEnv(overrides = {}) {
     AUTH_SECRET: 'test-secret-value-that-is-long-enough-123456',
     'turnstile-sitekey': '1x00000000000000000000AA',
     'turnstile-secret': '1x0000000000000000000000000000000AA',
+    'oauth-secret': 'test-oauth-client-secret',
     ADMIN: 'root@pontera.com',
     DEFAULT_ALLOWED_DOMAINS: 'pontera.com',
     // Mirrors wrangler.toml: dots and +tags are stripped for identity.

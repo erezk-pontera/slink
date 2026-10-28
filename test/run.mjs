@@ -18,6 +18,7 @@ const suites = [
   'test/dirmissing.test.mjs',
   'test/invites.test.mjs',
   'test/qr.test.mjs',
+  'test/oauth.test.mjs',
 ];
 
 let bad = 0;

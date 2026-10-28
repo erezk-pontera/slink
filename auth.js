@@ -38,6 +38,14 @@ import {
   signToken,
   verifyToken,
 } from './security.js';
+import {
+  authorizeUrl,
+  exchangeCode,
+  fetchEmail,
+  oauthReady,
+  pkcePair,
+  STATE_TTL_SECONDS,
+} from './oauth.js';
 import { turnstileVerifyOrFail } from './turnstile.js';
 import { findOrCreateUser, getUserById, isAdmin, putUser } from './users.js';
 import { now, randomId, sha256Hex } from './util.js';
@@ -47,6 +55,7 @@ export const COOKIE = {
   login: '__Host-slink_login',
   csrf: '__Host-slink_csrf',
   sso: '__Host-slink_sso',
+  oauth: '__Host-slink_oauth',
 };
 
 /** Only same-origin absolute paths may be used as a post-login destination. */
@@ -418,6 +427,115 @@ export async function signOut(ctx, { everywhere = true } = {}) {
 /* ----------------------------------------------------------------- SSO */
 
 const SSO_TTL = 120;
+
+/* ------------------------------------------- external identity provider */
+
+/**
+ * Begin an authorization-code exchange.
+ *
+ * The state and the PKCE verifier travel in a signed cookie rather than in
+ * storage, so an abandoned attempt costs nothing and expires by itself. The
+ * cookie is `__Host-`, SameSite=Lax and short lived, so the callback can only
+ * be completed by the browser that started it.
+ */
+export async function oauthBegin(ctx, returnPath) {
+  const { cfg, domain, origin } = ctx;
+  if (!oauthReady(cfg, domain)) return { ok: false, error: 'Single sign-on is not configured here.' };
+
+  const state = randomId(18);
+  const { verifier, challenge } = await pkcePair();
+  const token = await signToken(cfg.authSecret, 'oauth-state', {
+    s: state,
+    v: verifier,
+    r: safeNext(returnPath, '/admin'),
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + STATE_TTL_SECONDS,
+  });
+
+  return {
+    ok: true,
+    location: authorizeUrl(domain, { origin, state, challenge }),
+    cookie: serializeCookie(COOKIE.oauth, token, {
+      maxAge: STATE_TTL_SECONDS,
+      sameSite: 'Lax',
+    }),
+  };
+}
+
+/**
+ * Complete the exchange and sign the person in.
+ *
+ * The provider establishes an address and nothing more: the host's
+ * allowed-domain list still decides whether that address may sign in, and a
+ * disabled account is still refused.
+ */
+export async function oauthComplete(ctx, { code, state }) {
+  const { cfg, domain, host, request, origin } = ctx;
+  const ip = clientIp(request);
+  const fail = (error) => ({ ok: false, error, cookies: [clearCookie(COOKIE.oauth)] });
+
+  if (!oauthReady(cfg, domain)) return fail('Single sign-on is not configured here.');
+
+  const cookies = parseCookies(request);
+  const payload = await verifyToken(cfg.authSecret, 'oauth-state', cookies[COOKIE.oauth], {
+    maxAgeSeconds: STATE_TTL_SECONDS,
+  });
+  if (!payload) return fail('That sign-in took too long. Please try again.');
+  // Constant-time is unnecessary here: both values are random and single
+  // use, and a mismatch reveals nothing about either.
+  if (!state || state !== payload.s) return fail('That sign-in could not be verified.');
+  if (!code) return fail('The identity provider did not return a code.');
+
+  const token = await exchangeCode(cfg, domain, { code, verifier: payload.v, origin });
+  if (!token.ok) return fail(token.error);
+
+  const profile = await fetchEmail(domain, token.accessToken);
+  if (!profile.ok) return fail(profile.error);
+
+  let parsed;
+  try {
+    parsed = normalizeEmail(profile.email, cfg.emailOpts);
+  } catch {
+    return fail('The identity provider supplied an address we cannot use.');
+  }
+
+  if (!mayAuthenticate(cfg, domain, parsed.emailNorm)) {
+    ctx.waitUntil(
+      audit(cfg, {
+        event: EVENTS.loginBlocked,
+        host,
+        ip,
+        detail: { via: 'oauth', reason: 'domain-not-allowed' },
+        outcome: 'denied',
+      })
+    );
+    return fail('That address may not sign in to this domain.');
+  }
+
+  const { user } = await findOrCreateUser(cfg, parsed.email);
+  if (!user || user.disabled) {
+    ctx.waitUntil(
+      audit(cfg, { event: EVENTS.loginBlocked, actor: user, host, ip, detail: { via: 'oauth' }, outcome: 'denied' })
+    );
+    return fail('That account is disabled.');
+  }
+
+  user.lastLoginAt = now();
+  user.loginCount = (user.loginCount || 0) + 1;
+  await putUser(cfg, user);
+
+  const session = await createSession(cfg, { user, host, request });
+  ctx.waitUntil(
+    audit(cfg, { event: EVENTS.loginSucceeded, actor: user, host, ip, detail: { via: 'oauth' } })
+  );
+
+  return {
+    ok: true,
+    user,
+    next: safeNext(payload.r, '/admin'),
+    cookies: [session.cookie, clearCookie(COOKIE.oauth), clearCookie(COOKIE.csrf)],
+  };
+}
 
 /** On a non-hub host: start the handshake and remember a nonce. */
 export function ssoStart(ctx, returnPath) {

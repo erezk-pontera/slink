@@ -356,34 +356,39 @@ ${flashFrom(url)}${alert('error', error)}
   }
 </div>
 
-${
-  mayOverride
-    ? `<div class="card">
-  <h2>Countdown</h2>
-  <p class="hint">${
-    exemptions.length
-      ? 'An administrator has exempted this directory from: ' + esc(exemptions.join(', ')) +
-        '. Those settings may differ from the domain; the rest may only be made stricter.'
-      : 'You may make this stricter than the domain, not looser. An administrator can grant an exemption if you need otherwise.'
+<div class="card">
+  <h2>Policy</h2>
+  <p class="hint">What this directory inherits from ${esc(host)}, and what it may change. ${
+    mayAdmin ? 'Exemptions at the bottom are administrators only.' : ''
   }</p>
+
+  <details class="group"${mayOverride ? ' open' : ''}>
+    <summary>Countdown</summary>
+    ${
+      mayOverride
+        ? `<p class="hint">${
+            exemptions.length
+              ? 'An administrator has exempted this directory from: ' + esc(exemptions.join(', ')) +
+                '. Those settings may differ from the domain; the rest may only be made stricter.'
+              : 'You may make this stricter than the domain, not looser. An administrator can grant an exemption if you need otherwise.'
+          }</p>
   <form method="post" action="/admin/directories/policy">
     ${csrfField(policyToken)}${hidden('host', host)}${hidden('path', pathLc)}
     ${checkbox({ name: 'enabled', label: 'Use a policy for this directory', checked: !!dir.interstitial })}
     ${policyForm(ctx, dirPolicy, { prefix: 'it', inherited: domainPolicy })}
     <div class="actions"><button type="submit">Save countdown policy</button></div>
-  </form>
-</div>`
-    : `<div class="card">
-  <h2>Countdown</h2>
-  <p class="hint">Set by the domain: ${esc(describePolicy(domainPolicy))} An administrator can let this directory set its own.</p>
-</div>`
-}
+  </form>`
+        : `<p class="hint">Set by the domain: ${esc(
+            describePolicy(domainPolicy)
+          )} An administrator can let this directory set its own.</p>`
+    }
+  </details>
 
 ${
   mayAdmin
-    ? `<div class="card">
-  <h2>Exemptions</h2>
-  <p class="hint">Administrators only. Each exemption lets this directory set that one thing against the domain policy; the others stay narrowing-only.</p>
+    ? `  <details class="group">
+    <summary>Exemptions</summary>
+    <p class="hint">Each exemption lets this directory set that one thing against the domain policy; the others stay narrowing-only.</p>
   <form method="post" action="/admin/directories/exempt">
     ${csrfField(exemptToken)}${hidden('host', host)}${hidden('path', pathLc)}
     ${checkbox({ name: 'allowOverride', label: 'Let directory administrators set a policy here', checked: !!dir.allowInterstitialOverride })}
@@ -398,9 +403,10 @@ ${
     })}
     <div class="actions"><button type="submit">Save exemptions</button></div>
   </form>
-</div>`
+  </details>`
     : ''
 }
+</div>
 
 <div class="card">
   <h2>Settings</h2>

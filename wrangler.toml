@@ -36,9 +36,14 @@
 #
 #   wrangler secret put AUTH_SECRET
 #   wrangler secret put turnstile-secret
+#   wrangler secret put oauth-secret          # only if a host uses single sign-on
 #
 # The Turnstile widget already exists; only its secret needs installing, and
 # its sitekey (not a secret) is set in [vars] below.
+#
+# oauth-secret is the client secret of the identity provider. It is optional:
+# single sign-on is offered on a host only once the secret is present and the
+# host's endpoints are filled in on its domain screen.
 
 name = "slink-redir"
 main = "index.js"

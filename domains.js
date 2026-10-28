@@ -6,6 +6,7 @@
 
 import { K } from './kv.js';
 import { defaultPolicy } from './interstitial.js';
+import { defaultOauth } from './oauth.js';
 import { now } from './util.js';
 
 export const ROOT_CREATE_POLICIES = ['email_domain', 'explicit', 'open', 'admins_only'];
@@ -29,6 +30,11 @@ export function newDomain(host, overrides = {}) {
     rootRedirect: null,
     /** Where an unknown shortcut goes; null renders a 404 page. */
     notFoundUrl: null,
+    /** External identity provider for this host. See oauth.js. */
+    oauth: defaultOauth(),
+    /** Sign-in methods switched off here. Never applies to administrators,
+     *  and single sign-on can never be among them. */
+    disabledMethods: [],
     /** Read-only hosts can only be modified by administrators. */
     readonly: false,
     note: '',

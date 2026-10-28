@@ -23,6 +23,7 @@ export const EVENTS = {
   dirCreated: 'dir.created',
   dirUpdated: 'dir.updated',
   dirDeleted: 'dir.deleted',
+  dirTransferred: 'dir.transferred',
   grantAdded: 'grant.added',
   grantRemoved: 'grant.removed',
   domainCreated: 'domain.created',

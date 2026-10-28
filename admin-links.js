@@ -7,7 +7,7 @@
  * by administrators alone.
  */
 
-import { adminPage, back, denied, flashFrom, formToken, readForm } from './admin.js';
+import { adminPage, back, denied, flashFrom, formToken, hostFilter, hostsFor, readForm } from './admin.js';
 import { audit, EVENTS } from './audit.js';
 import { checkCsrf } from './auth.js';
 import { creatableDirectories, getDirectory } from './directories.js';
@@ -70,36 +70,38 @@ function linkRows(records, { showOwner = false } = {}) {
 async function listPage(ctx) {
   const { cfg, url } = ctx;
   const scope = url.searchParams.get('scope') === 'all' && ctx.isAdmin ? 'all' : 'mine';
-  const host = url.searchParams.get('host') || ctx.host;
-  const cursor = url.searchParams.get('c') || undefined;
-  const dir = url.searchParams.get('dir') || '';
+  const selected = hostFilter(ctx, url);
+  const dir = String(url.searchParams.get('dir') || '').trim().toLowerCase();
 
-  let records;
-  let nextCursor = null;
+  let records = [];
+  let truncated = false;
+
   if (scope === 'all') {
-    const page = await listLinks(cfg, host, { dirPathLc: dir, cursor, limit: 50 });
-    records = await hydrate(cfg, host, page.items);
-    nextCursor = page.cursor;
+    // One listing per domain, because KV lists by key prefix and each host is
+    // its own prefix. With a domain chosen this is a single pass.
+    for (const host of hostsFor(ctx, selected)) {
+      const page = await listLinks(cfg, host, { dirPathLc: dir, limit: 100 });
+      records.push(...(await hydrate(cfg, host, page.items)));
+      if (page.cursor) truncated = true;
+    }
   } else {
-    const page = await listOwnedLinks(cfg, ctx.session.user.id, { cursor, limit: 50 });
-    records = await hydrate(cfg, null, page.items);
-    nextCursor = page.cursor;
+    const page = await listOwnedLinks(cfg, ctx.session.user.id, { limit: 200 });
+    const wanted = page.items.filter((row) => {
+      if (selected && row.host !== selected) return false;
+      if (dir && !row.pathLc.startsWith(dir + '/')) return false;
+      return true;
+    });
+    records = await hydrate(cfg, null, wanted);
+    if (page.cursor) truncated = true;
   }
 
-  const hostOptions = cfg.knownHosts
-    .map((h) => `<option value="${esc(h)}"${h === host ? ' selected' : ''}>${esc(h)}</option>`)
-    .join('');
+  records.sort((a, b) => a.host.localeCompare(b.host) || a.pathLc.localeCompare(b.pathLc));
 
-  const nextHref = nextCursor
-    ? `/admin/links?scope=${scope}&host=${encodeURIComponent(host)}&dir=${encodeURIComponent(
-        dir
-      )}&c=${encodeURIComponent(nextCursor)}`
-    : '';
-
+  const where = selected ? esc(selected) : 'every domain';
   const body = `
 ${flashFrom(url)}
 <h1>Links</h1>
-<p class="sub">${scope === 'all' ? 'Every link on ' + esc(host) : 'Links you created'}.</p>
+<p class="sub">${scope === 'all' ? 'Every link on ' : 'Links you created on '}${where}.</p>
 
 <div class="card">
   <form method="get" action="/admin/links" class="row" data-no-busy>
@@ -107,12 +109,8 @@ ${flashFrom(url)}
       <label for="f_scope">Show</label>
       <select id="f_scope" name="scope">
         <option value="mine"${scope === 'mine' ? ' selected' : ''}>My links</option>
-        ${ctx.isAdmin ? `<option value="all"${scope === 'all' ? ' selected' : ''}>All links on a domain</option>` : ''}
+        ${ctx.isAdmin ? `<option value="all"${scope === 'all' ? ' selected' : ''}>All links</option>` : ''}
       </select>
-    </div>
-    <div class="field">
-      <label for="f_host">Domain</label>
-      <select id="f_host" name="host">${hostOptions}</select>
     </div>
     <div class="field">
       <label for="f_dir">Directory</label>
@@ -131,7 +129,11 @@ ${flashFrom(url)}
           <tbody>${linkRows(records, { showOwner: scope === 'all' })}</tbody></table></div>`
       : '<div class="empty">No links to show.</div>'
   }
-  ${nextHref ? `<div class="pager"><a class="btn secondary" href="${esc(nextHref)}">Next</a></div>` : ''}
+  ${
+    truncated
+      ? '<p class="note">There are more than shown. Pick a single domain, or filter by directory, to narrow the list.</p>'
+      : ''
+  }
   <div class="actions"><a class="btn" href="/admin/links/new">Create a link</a></div>
 </div>`;
 
@@ -143,10 +145,11 @@ ${flashFrom(url)}
 async function newForm(ctx, { error, values = {} } = {}) {
   const { cfg } = ctx;
   const token = await formToken(ctx, 'link.create');
-  const dirs = await creatableDirectories(cfg, values.host || ctx.host, ctx.session.user.id);
+  const chosenHost = values.host || ctx.host;
+  const dirs = ctx.isAdmin ? null : await creatableDirectories(cfg, chosenHost, ctx.session.user.id);
 
   const hostOptions = cfg.knownHosts
-    .map((h) => `<option value="${esc(h)}"${h === (values.host || ctx.host) ? ' selected' : ''}>${esc(h)}</option>`)
+    .map((h) => `<option value="${esc(h)}"${h === chosenHost ? ' selected' : ''}>${esc(h)}</option>`)
     .join('');
 
   const body = `
@@ -167,11 +170,14 @@ ${alert('error', error)}
         label: 'Shortcut',
         value: values.path || '',
         required: true,
-        placeholder: dirs.length ? dirs[0] + '/my-link' : 'my-link',
+        placeholder: dirs && dirs.length ? dirs[0] + '/my-link' : 'my-link',
         attrs: 'data-slink-slug spellcheck="false"',
-        note: dirs.length
-          ? 'You may create at the root or inside: ' + dirs.join(', ')
-          : 'You may create at the root of the selected domain.',
+        note:
+          dirs === null
+            ? 'As an administrator you may create anywhere on any domain.'
+            : dirs.length
+              ? 'You may create at the root or inside: ' + dirs.join(', ')
+              : 'You may create at the root of the selected domain.',
       })}
     </div>
     ${field({

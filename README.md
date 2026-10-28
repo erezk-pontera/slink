@@ -9,6 +9,11 @@ Cloudflare Worker backed by one KV namespace.
 - `ptra.dev/admin` — manage links, directories, domains, users and settings,
   and the one place a sign-in form is ever shown.
 
+The admin area spans every domain by default. A picker beside the name in the
+header switches between **All Domains** and a single host, and carries the
+other filters with it; pages that act on one record do not show it, because
+changing the domain there would point at something else.
+
 Apex and `www.` are the same host everywhere. A request to `www.` is
 redirected to the apex before anything else runs, so `www.ptra.dev/bbb` and
 `ptra.dev/bbb` are one link and one session. (Cookies here are `__Host-`
@@ -93,8 +98,8 @@ usage signal, not analytics. It can be switched off in settings.
 
 | Who | What they can do |
 | --- | --- |
-| Root administrator (`ADMIN` env var) | Everything. Cannot be demoted or deleted from the UI. |
-| Administrator (flag set by an admin) | Everything. |
+| Root administrator (`ADMIN` env var) | Everything, on every domain, unconditionally. Not listed in `/admin/users` and not editable, disablable or deletable from anywhere in the UI — change `ADMIN` and redeploy instead. |
+| Administrator (flag set by an admin) | Everything, on every domain. No grant narrows an administrator, and the UI says so rather than showing an empty grant list. |
 | Directory administrator (`manage` grant) | Everything inside their directory, including other people's links, plus granting and revoking access to it. |
 | Granted user (`create` grant) | Create links inside that directory; edit and delete only their own. |
 | Signed-in user | Create at a host root if the host's policy allows; edit and delete only their own links. |
@@ -110,6 +115,21 @@ Rules that override the table:
   create at that path, unless an administrator performs the transfer.
 - **Renaming is a create.** Moving a link to a new path requires create
   permission at the new path.
+
+**Creating directories** is a separate, per-user and per-domain grant
+(`/admin/users` → *May create directories* for each domain). Administrators
+always have it. A directory administrator may nest directories inside the
+directory they administer, and may pass that on by making someone else a
+directory administrator there. Whoever creates a directory becomes its
+administrator automatically.
+
+**Ownership** can be handed over for both links and directories. A link's
+owner, the administrator of the directory holding it, or any administrator
+may transfer it; the recipient must be able to create at that path unless an
+administrator does the transfer. A directory's owner or any administrator may
+transfer it, and the new owner is made a directory administrator so they can
+run what they now own. Read-only puts either case in administrators' hands
+alone.
 
 Root-level creation on a host is governed by its `rootCreatePolicy`:
 `email_domain` (the default — the host's allow list, falling back to
@@ -184,7 +204,7 @@ Set in `wrangler.toml` under `[vars]`:
 | --- | --- |
 | `DOMAINS` | Hosts the worker serves, comma separated |
 | `HUB_HOST` | The host carrying `/admin`, `/login` and `/logout` |
-| `APP_NAME` | Name shown in the UI and in emails |
+| `APP_NAME` | Name shown in the UI and in emails (default `Shrink Link`) |
 | `ADMIN` | Root administrator addresses, comma separated |
 | `DEFAULT_ALLOWED_DOMAINS` | Default email domains for signing in and for creating at a host root |
 | `MISSING` | Where a host root, an unknown shortcut, or a disabled or expired one goes, unless a domain overrides it |
@@ -402,7 +422,7 @@ refresh. 301 and 308 responses are cacheable for five minutes; the rest are
 
 ```sh
 npm run check   # syntax-check every module as an ES module
-npm test        # 240 checks across seven suites
+npm test        # 284 checks across eight suites
 wrangler dev    # local run; see the note below
 ```
 

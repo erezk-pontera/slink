@@ -10,7 +10,7 @@ import { LOGO_SVG } from './logo.js';
 export const ASSET_PREFIX = '/__slink';
 
 /** Bumped whenever the asset bodies change; used for immutable caching. */
-export const ASSET_VERSION = '2';
+export const ASSET_VERSION = '4';
 
 export const CSS = `
 :root{
@@ -42,6 +42,13 @@ nav.main a{padding:6px 10px;border-radius:7px;text-decoration:none;color:var(--m
 nav.main a:hover{background:var(--bg);color:var(--ink)}
 nav.main a[aria-current=page]{background:var(--bg);color:var(--ink);font-weight:550}
 .who{font-size:13px;color:var(--muted);white-space:nowrap}
+.hostname{font-size:13px;color:var(--muted)}
+.hostpick{display:flex;gap:6px;align-items:center}
+.hostpick select{width:auto;min-width:9.5rem;padding:5px 8px;font-size:13px;border-radius:7px}
+.hostpick .nojs{padding:5px 10px;font-size:13px}
+.js .hostpick .nojs{display:none}
+.visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+  clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .badge{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid var(--line);
   font-size:11.5px;color:var(--muted);vertical-align:middle}
 .badge.ok{color:var(--ok);border-color:currentColor}
@@ -99,6 +106,8 @@ footer.foot{color:var(--muted);font-size:12px;text-align:center;padding:22px 16p
 .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:13.5px;margin:0}
 .kv dt{color:var(--muted)}
 .kv dd{margin:0;word-break:break-word}
+.grants{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:0 0 10px}
+.grants legend{padding:0 6px}
 .tools{display:flex;gap:7px;flex-wrap:wrap}
 .tools form{display:inline}
 @media (max-width:620px){
@@ -112,6 +121,18 @@ footer.foot{color:var(--muted);font-size:12px;text-align:center;padding:22px 16p
 export const JS = `
 (function () {
   'use strict';
+
+  // Lets CSS hide controls that only exist for the no-JavaScript path.
+  document.documentElement.classList.add('js');
+
+  // The domain picker in the header applies as soon as it changes.
+  var picker = document.querySelector('[data-slink-autosubmit] select');
+  if (picker) {
+    picker.addEventListener('change', function () {
+      var form = picker.form;
+      if (form) form.submit();
+    });
+  }
 
   // Delayed-redirect interstitial. The destination is carried in a data
   // attribute; a <meta http-equiv="refresh"> in the page is the no-JS path.

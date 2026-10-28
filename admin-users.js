@@ -18,19 +18,34 @@ import { deleteUser, getUserByNorm, isRootAdmin, listUsers, putUser } from './us
 import { esc, fmtTime, intEnv, listEnv } from './util.js';
 import { alert, checkbox, csrfField, field, hidden, select, textarea } from './views.js';
 
+const ROOT_IMMUTABLE =
+  'That account is a root administrator, set by the ADMIN variable. It always holds every ' +
+  'permission and cannot be changed, disabled or deleted here. Edit ADMIN and redeploy instead.';
+
 /* ----------------------------------------------------------------- users */
+
+/**
+ * Root administrators are configured in the ADMIN environment variable, hold
+ * every permission unconditionally, and are not manageable from here at all:
+ * they are left out of the list and every write that names one is refused.
+ * Their authority comes from the deployment, so the UI must not suggest it
+ * can be edited away.
+ */
+function isRootAccount(cfg, user) {
+  return !!user && isRootAdmin(cfg, user.emailNorm);
+}
 
 async function usersPage(ctx, { error } = {}) {
   const { cfg, url } = ctx;
-  const users = await listUsers(cfg);
-  const token = await formToken(ctx, 'user.update');
+  const all = await listUsers(cfg);
+  const users = all.filter((u) => !isRootAdmin(cfg, u.emailNorm));
+  const hidden = all.length - users.length;
 
   const rows = users
     .map((u) => {
-      const root = isRootAdmin(cfg, u.emailNorm);
       return `<tr>
       <td>${esc(u.email)}
-        ${root ? '<span class="badge ok">root admin</span>' : u.isAdmin ? '<span class="badge ok">admin</span>' : ''}
+        ${u.isAdmin ? '<span class="badge ok">admin</span>' : ''}
         ${u.disabled ? '<span class="badge off">disabled</span>' : ''}
         ${u.emailNorm !== u.email ? `<div class="note">identity: ${esc(u.emailNorm)}</div>` : ''}
       </td>
@@ -44,7 +59,12 @@ async function usersPage(ctx, { error } = {}) {
   const body = `
 ${flashFrom(url)}${alert('error', error)}
 <h1>Users</h1>
-<p class="sub">Accounts are created the first time someone completes a sign-in. Root administrators come from the ADMIN variable and cannot be demoted here.</p>
+<p class="sub">Accounts are created the first time someone completes a sign-in.</p>
+${
+  hidden
+    ? `<p class="sub">${hidden} root administrator${hidden === 1 ? ' is' : 's are'} not listed. They are set by the ADMIN variable, always hold every permission, and cannot be changed, disabled or deleted from here — edit ADMIN and redeploy instead.</p>`
+    : ''
+}
 
 <div class="card">
   ${
@@ -63,20 +83,36 @@ async function userEditForm(ctx, { error } = {}) {
   const emailNorm = String(url.searchParams.get('u') || '').toLowerCase();
   const user = await getUserByNorm(cfg, emailNorm);
   if (!user) return back('/admin/users', 'notfound');
+  if (isRootAccount(cfg, user)) return denied(ctx, ROOT_IMMUTABLE);
 
-  const root = isRootAdmin(cfg, user.emailNorm);
+  const root = false;
   const grants = await listUserGrants(cfg, user.id);
   const token = await formToken(ctx, 'user.update');
   const revokeToken = await formToken(ctx, 'user.revoke');
   const deleteToken = await formToken(ctx, 'user.delete');
 
-  const rootCreateBoxes = cfg.knownHosts
-    .map((h) =>
-      checkbox({
-        name: 'root__' + h,
-        label: 'May create at the root of ' + h,
-        checked: !!(user.rootCreate && user.rootCreate[h]),
-      })
+  // Per-domain grants. An administrator already holds all of these, so the
+  // boxes render ticked and disabled rather than implying a restriction.
+  const isAdminAccount = root || !!user.isAdmin;
+  const perDomainBoxes = cfg.knownHosts
+    .map(
+      (h) => `<fieldset class="grants">
+        <legend class="note">${esc(h)}</legend>
+        ${checkbox({
+          name: 'root__' + h,
+          label: 'May create links at the root',
+          checked: isAdminAccount || !!(user.rootCreate && user.rootCreate[h]),
+          disabled: isAdminAccount,
+          note: isAdminAccount ? '(administrator)' : '',
+        })}
+        ${checkbox({
+          name: 'dir__' + h,
+          label: 'May create directories',
+          checked: isAdminAccount || !!(user.dirCreate && user.dirCreate[h]),
+          disabled: isAdminAccount,
+          note: isAdminAccount ? '(administrator)' : '',
+        })}
+      </fieldset>`
     )
     .join('');
 
@@ -112,7 +148,7 @@ ${flashFrom(url)}${alert('error', error)}
       disabled: root,
       note: root ? '(root administrators cannot be disabled)' : '(blocks sign-in and revokes access)',
     })}
-    ${rootCreateBoxes}
+    ${perDomainBoxes}
     ${textarea({ name: 'note', label: 'Note', value: user.note || '' })}
     <div class="actions">
       <button type="submit">Save</button>
@@ -161,17 +197,26 @@ async function userEditSubmit(ctx) {
   const emailNorm = String(body.get('u') || '').toLowerCase();
   const user = await getUserByNorm(ctx.cfg, emailNorm);
   if (!user) return back('/admin/users', 'notfound');
+  if (isRootAccount(ctx.cfg, user)) return denied(ctx, ROOT_IMMUTABLE);
 
-  const root = isRootAdmin(ctx.cfg, user.emailNorm);
+  const root = false;
   if (!root) {
     user.isAdmin = body.get('isAdmin') === '1';
     user.disabled = body.get('disabled') === '1';
   }
-  const rootCreate = {};
-  for (const host of ctx.cfg.knownHosts) {
-    if (body.get('root__' + host) === '1') rootCreate[host] = true;
+  // An administrator's boxes render disabled, so a browser submits none of
+  // them. Leaving the stored grants untouched keeps them intact if the
+  // account is later demoted, rather than silently clearing them on save.
+  if (!root && !user.isAdmin) {
+    const rootCreate = {};
+    const dirCreate = {};
+    for (const host of ctx.cfg.knownHosts) {
+      if (body.get('root__' + host) === '1') rootCreate[host] = true;
+      if (body.get('dir__' + host) === '1') dirCreate[host] = true;
+    }
+    user.rootCreate = rootCreate;
+    user.dirCreate = dirCreate;
   }
-  user.rootCreate = rootCreate;
   user.note = String(body.get('note') || '').slice(0, 500);
   await putUser(ctx.cfg, user);
 
@@ -185,7 +230,12 @@ async function userEditSubmit(ctx) {
       host: ctx.host,
       ip: clientIp(ctx.request),
       object: user.emailNorm,
-      detail: { isAdmin: user.isAdmin, disabled: user.disabled, rootCreate },
+      detail: {
+        isAdmin: user.isAdmin,
+        disabled: user.disabled,
+        rootCreate: user.rootCreate,
+        dirCreate: user.dirCreate,
+      },
     })
   );
   return back('/admin/users/edit?u=' + encodeURIComponent(user.emailNorm), 'user.updated');
@@ -200,6 +250,7 @@ async function userRevokeSubmit(ctx) {
   const emailNorm = String(body.get('u') || '').toLowerCase();
   const user = await getUserByNorm(ctx.cfg, emailNorm);
   if (!user) return back('/admin/users', 'notfound');
+  if (isRootAccount(ctx.cfg, user)) return denied(ctx, ROOT_IMMUTABLE);
   const count = await destroyAllSessions(ctx.cfg, user.id);
 
   ctx.waitUntil(
@@ -224,9 +275,7 @@ async function userDeleteSubmit(ctx) {
   const emailNorm = String(body.get('u') || '').toLowerCase();
   const user = await getUserByNorm(ctx.cfg, emailNorm);
   if (!user) return back('/admin/users', 'notfound');
-  if (isRootAdmin(ctx.cfg, user.emailNorm)) {
-    return denied(ctx, 'Root administrators cannot be deleted. Remove them from ADMIN first.');
-  }
+  if (isRootAccount(ctx.cfg, user)) return denied(ctx, ROOT_IMMUTABLE);
 
   await destroyAllSessions(ctx.cfg, user.id);
   await deleteUser(ctx.cfg, user);
@@ -341,7 +390,13 @@ ${flashFrom(url)}${alert('error', error)}
 
     <h2>Mail</h2>
     <div class="row">
-      ${field({ name: 'mailFromName', label: 'Sender name', value: s.mail.fromName || '' })}
+      ${field({
+        name: 'mailFromName',
+        label: 'Sender name',
+        value: s.mail.fromName || '',
+        placeholder: cfg.appName,
+        note: 'Blank uses the application name.',
+      })}
       ${field({ name: 'mailReplyTo', label: 'Reply-to (optional)', type: 'email', value: s.mail.replyTo || '' })}
     </div>
     ${field({ name: 'mailSubject', label: 'Subject template', value: s.mail.subject || '', note: 'Placeholders: {{app}}, {{code}}, {{host}}.' })}

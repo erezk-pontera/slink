@@ -25,7 +25,7 @@ export function adminUrl(cfg, host) {
 /** Wrap a body fragment in the page chrome. */
 export function layout({
   title,
-  appName = 'Slink',
+  appName = 'Shrink Link',
   body,
   user = null,
   nav = [],
@@ -34,6 +34,7 @@ export function layout({
   host = '',
   footer = '',
   homeHref = '/admin',
+  headerExtra = '',
 }) {
   const navHtml = nav.length
     ? `<nav class="main">${nav
@@ -64,7 +65,8 @@ export function layout({
 ${turnstile ? turnstileScriptTag() : ''}
 </head><body>
 <header class="top"><div class="wrap">
-  <a class="brand" href="${esc(homeHref)}">${esc(appName)}${host ? ` <span>${esc(host)}</span>` : ''}</a>
+  <a class="brand" href="${esc(homeHref)}">${esc(appName)}</a>
+  ${headerExtra || (host ? `<span class="hostname">${esc(host)}</span>` : '')}
   ${navHtml}${whoHtml}
 </div></header>
 <main class="wrap${narrow ? ' narrow' : ''}">${body}</main>

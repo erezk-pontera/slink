@@ -12,10 +12,30 @@ import { adminLinks } from './admin-links.js';
 import { adminUsers } from './admin-users.js';
 import { tokenFor } from './auth.js';
 import { creatableDirectories } from './directories.js';
+import { resolveDomain } from './domains.js';
 import { listOwnedLinks } from './links.js';
-import { requireAdmin } from './permissions.js';
+import { mayCreateAnyDirectory, requireAdmin, rootCreateAllowed } from './permissions.js';
 import { esc, fmtTime } from './util.js';
 import { alert, html, layout, messagePage } from './views.js';
+
+/** The query value meaning "every domain", which is the default everywhere. */
+export const ALL_HOSTS = 'all';
+
+/**
+ * Read the domain filter from a URL. Returns '' for "every domain", which is
+ * what the listings default to; a named host is kept only when the worker
+ * actually serves it.
+ */
+export function hostFilter(ctx, url) {
+  const raw = String(url.searchParams.get('host') || '').trim().toLowerCase();
+  if (!raw || raw === ALL_HOSTS) return '';
+  return ctx.cfg.knownHosts.includes(raw) ? raw : '';
+}
+
+/** The hosts a listing should cover, given the filter. */
+export function hostsFor(ctx, selected) {
+  return selected ? [selected] : ctx.cfg.knownHosts;
+}
 
 /** Fixed flash messages, referenced by code so a URL cannot inject prose. */
 export const MESSAGES = {
@@ -26,6 +46,7 @@ export const MESSAGES = {
   'dir.created': ['ok', 'Directory created.'],
   'dir.updated': ['ok', 'Directory updated.'],
   'dir.deleted': ['ok', 'Directory deleted.'],
+  'dir.moved': ['ok', 'Directory transferred.'],
   'grant.saved': ['ok', 'Access updated.'],
   'grant.removed': ['ok', 'Access removed.'],
   'domain.created': ['ok', 'Domain added.'],
@@ -74,6 +95,40 @@ export function adminNav(ctx, current) {
   return items.map((i) => ({ ...i, current: i.key === current }));
 }
 
+/** Pages where a domain filter means something, so the picker is shown. */
+const FILTERABLE = ['/admin', '/admin/links', '/admin/directories'];
+
+/**
+ * The domain picker that sits beside the brand. It submits to the current
+ * page, carrying the other filters along, so switching domain keeps the view
+ * you were looking at. Pages that act on one specific record do not get it,
+ * because changing the domain there would point at a different thing.
+ */
+function hostPicker(ctx) {
+  const path = ctx.url.pathname.replace(/\/+$/, '') || '/admin';
+  if (!FILTERABLE.includes(path)) return '';
+  const selected = hostFilter(ctx, ctx.url);
+  const carried = ['scope', 'dir']
+    .map((k) => {
+      const v = ctx.url.searchParams.get(k);
+      return v ? `<input type="hidden" name="${esc(k)}" value="${esc(v)}">` : '';
+    })
+    .join('');
+  const options = [`<option value="${ALL_HOSTS}"${selected ? '' : ' selected'}>All Domains</option>`]
+    .concat(
+      ctx.cfg.knownHosts.map(
+        (h) => `<option value="${esc(h)}"${h === selected ? ' selected' : ''}>${esc(h)}</option>`
+      )
+    )
+    .join('');
+  return `<form class="hostpick" method="get" action="${esc(path)}" data-no-busy data-slink-autosubmit>
+  ${carried}
+  <label class="visually-hidden" for="f_hostpick">Domain</label>
+  <select id="f_hostpick" name="host">${options}</select>
+  <button type="submit" class="secondary nojs">Go</button>
+</form>`;
+}
+
 /** Render an admin page inside the shared chrome. */
 export function adminPage(ctx, { title, nav, body, status = 200 }) {
   return html(
@@ -83,6 +138,7 @@ export function adminPage(ctx, { title, nav, body, status = 200 }) {
       host: ctx.host,
       user: ctx.session.user,
       nav: adminNav(ctx, nav),
+      headerExtra: hostPicker(ctx),
       body,
     }),
     { status }
@@ -123,10 +179,11 @@ export async function readForm(request) {
 
 async function overview(ctx) {
   const { cfg } = ctx;
-  const owned = await listOwnedLinks(cfg, ctx.session.user.id, { limit: 10 });
-  const dirs = await creatableDirectories(cfg, ctx.host, ctx.session.user.id);
-
+  const selected = hostFilter(ctx, ctx.url);
+  const owned = await listOwnedLinks(cfg, ctx.session.user.id, { limit: 200 });
   const rows = owned.items
+    .filter((row) => !selected || row.host === selected)
+    .slice(0, 10)
     .map((row) => {
       const meta = row.meta || {};
       const href = 'https://' + row.host + '/' + (meta.p || row.pathLc);
@@ -141,18 +198,43 @@ async function overview(ctx) {
     })
     .join('');
 
+  // What this person may do, per domain. An administrator is never narrowed
+  // by a grant, so say so rather than listing an empty set.
+  const admin = ctx.isAdmin;
+  const perHost = [];
+  for (const host of hostsFor(ctx, selected)) {
+    const domain = await resolveDomain(cfg, host);
+    const dirs = admin ? null : await creatableDirectories(cfg, host, ctx.session.user.id);
+    perHost.push({
+      host,
+      root: admin || (domain ? rootCreateAllowed(cfg, domain, ctx.session.user) : false),
+      dirs,
+      mayAddDir: await mayCreateAnyDirectory(cfg, { user: ctx.session.user, host }),
+    });
+  }
+
+  const rightsRows = perHost
+    .map(
+      (h) => `<tr>
+      <td>${esc(h.host)}</td>
+      <td>${h.root ? 'Yes' : 'No'}</td>
+      <td>${h.dirs === null ? 'All' : h.dirs.length ? esc(h.dirs.join(', ')) : '\u2014'}</td>
+      <td>${h.mayAddDir ? 'Yes' : 'No'}</td>
+    </tr>`
+    )
+    .join('');
+
   const body = `
 ${flashFrom(ctx.url)}
 <h1>Overview</h1>
 <p class="sub">Signed in as ${esc(ctx.session.user.email)}${
-    ctx.isAdmin ? ' with administrator rights' : ''
+    admin ? ' with administrator rights on every domain' : ''
   }.</p>
 
 <div class="card">
   <h2>Your most recent links</h2>
-  <p class="hint">${owned.items.length ? '' : 'You have not created any links yet.'}</p>
   ${
-    owned.items.length
+    rows
       ? `<div class="tablewrap"><table>
           <thead><tr><th>Short link</th><th>Destination</th><th>Code</th><th></th></tr></thead>
           <tbody>${rows}</tbody></table></div>`
@@ -166,10 +248,16 @@ ${flashFrom(ctx.url)}
 
 <div class="card">
   <h2>Where you can create</h2>
-  <p class="hint">On ${esc(ctx.host)}.</p>
+  <p class="hint">${
+    admin
+      ? 'You are an administrator, so nothing here is restricted.'
+      : 'Ask an administrator if you need more.'
+  }</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Domain</th><th>Links at root</th><th>Directories you may use</th><th>May add directories</th></tr></thead>
+    <tbody>${rightsRows}</tbody>
+  </table></div>
   <dl class="kv">
-    <dt>Root</dt><dd>${ctx.canCreateRoot ? 'Allowed' : 'Not allowed'}</dd>
-    <dt>Directories</dt><dd>${dirs.length ? esc(dirs.join(', ')) : 'None granted'}</dd>
     <dt>Account</dt><dd>${esc(ctx.session.user.emailNorm)}</dd>
     <dt>Last sign-in</dt><dd>${esc(fmtTime(ctx.session.user.lastLoginAt))}</dd>
   </dl>

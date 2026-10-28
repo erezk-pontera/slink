@@ -19,6 +19,7 @@ export function newDirectory(host, path, pathLc, overrides = {}) {
     path,
     pathLc,
     ownerId: null,
+    ownerEmail: null,
     /** Open directories inherit the host's root create policy. */
     open: false,
     /** Read-only directories can only be changed by administrators. */

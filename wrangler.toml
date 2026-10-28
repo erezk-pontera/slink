@@ -69,7 +69,7 @@ DOMAINS = "ptra.cc,ptra.dev"
 # through a signed handshake against this one.
 HUB_HOST = "ptra.dev"
 
-APP_NAME = "Slink"
+APP_NAME = "Shrink Link"
 
 # Where a visitor goes when there is nothing to show them: a host root, an
 # unknown shortcut, or one that is disabled or expired. An administrator can

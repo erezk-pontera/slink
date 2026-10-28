@@ -18,8 +18,10 @@ export function newUser(email, emailNorm, overrides = {}) {
     isAdmin: false,
     disabled: false,
     note: '',
-    /** Per-host explicit permission to create at the root, keyed by host. */
+    /** Per-host explicit permission to create links at the root. */
     rootCreate: {},
+    /** Per-host explicit permission to create directories at the root. */
+    dirCreate: {},
     createdAt: ts,
     updatedAt: ts,
     lastLoginAt: 0,

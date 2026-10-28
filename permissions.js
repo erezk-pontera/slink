@@ -13,7 +13,7 @@
  *     ownership and directory administration alike.
  */
 
-import { getDirectory, getGrant, directoryPathSet } from './directories.js';
+import { getDirectory, getGrant, directoryPathSet, listUserGrants } from './directories.js';
 import { createDomainsFor } from './domains.js';
 import { domainAllowed, parentDirectory } from './paths.js';
 import { isAdmin } from './users.js';
@@ -26,6 +26,7 @@ export const DENY = {
   dirDisabled: 'This directory is disabled.',
   dirReadonly: 'This directory is read-only; only administrators may change it.',
   dirNoGrant: 'You do not have permission to create in this directory.',
+  dirNoCreate: 'You do not have permission to create directories on this domain.',
   rootNoPermission: 'You do not have permission to create at the root of this domain.',
   linkReadonly: 'This link is read-only; only administrators may change it.',
   notOwner: 'Only the link owner, a directory administrator or an administrator may change this.',
@@ -132,18 +133,59 @@ export async function canManageDirectory(cfg, { user, dir }) {
 }
 
 /**
- * May `user` create a directory at `pathLc`? Administrators may create
- * anywhere; a directory administrator may create nested directories inside
- * the directory they administer.
+ * May `user` create a directory at `pathLc`?
+ *
+ *   - An administrator may create one anywhere.
+ *   - A directory administrator may create nested directories inside the
+ *     directory they administer, and may grant that same right to others by
+ *     making them a directory administrator there.
+ *   - Anyone else needs an explicit per-host grant, which permits directories
+ *     at that host's root.
  */
 export async function canCreateDirectory(cfg, { user, domain, host, pathLc, dirSet }) {
   if (!user) return deny(DENY.anonymous);
   if (user.disabled) return deny(DENY.disabled);
   if (isAdmin(cfg, user)) return allow({ asAdmin: true });
   if (domain && domain.readonly) return deny(DENY.domainReadonly);
+
   const { dir, grant } = await resolveGovernor(cfg, host, pathLc, user, { dirSet });
-  if (dir && !dir.readonly && grant && grant.canManage) return allow({ asDirAdmin: true, dir });
-  return deny(DENY.adminOnly);
+  if (dir) {
+    // Inside a directory, only its administrator may nest another.
+    if (dir.readonly) return deny(DENY.dirReadonly);
+    if (grant && grant.canManage) return allow({ asDirAdmin: true, dir });
+    return deny(DENY.notDirAdmin);
+  }
+
+  if (user.dirCreate && user.dirCreate[host]) return allow({ byGrant: true });
+  return deny(DENY.dirNoCreate);
+}
+
+/**
+ * Could `user` create a directory somewhere on `host`? Used to decide whether
+ * to offer the form at all, not to authorise a particular path.
+ */
+export async function mayCreateAnyDirectory(cfg, { user, host }) {
+  if (!user || user.disabled) return false;
+  if (isAdmin(cfg, user)) return true;
+  if (user.dirCreate && user.dirCreate[host]) return true;
+  const grants = await listUserGrants(cfg, user.id);
+  return grants.some((g) => g.host === host && g.canManage);
+}
+
+/**
+ * May `user` hand this directory to a different owner? The owner may, and an
+ * administrator may. A directory administrator who is not the owner may run
+ * everything inside the directory but may not take the directory itself.
+ * Read-only puts it in administrators' hands alone.
+ */
+export function canTransferDirectory(cfg, { user, dir }) {
+  if (!user) return deny(DENY.anonymous);
+  if (user.disabled) return deny(DENY.disabled);
+  if (isAdmin(cfg, user)) return allow({ asAdmin: true });
+  if (!dir) return deny(DENY.notDirAdmin);
+  if (dir.readonly) return deny(DENY.dirReadonly);
+  if (dir.ownerId && dir.ownerId === user.id) return allow({ asOwner: true });
+  return deny('Only the directory owner or an administrator may change its owner.');
 }
 
 /**

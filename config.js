@@ -45,7 +45,9 @@ export const DEFAULTS = {
     otpWindowSeconds: 900,
   },
   mail: {
-    fromName: 'Slink',
+    // Blank falls back to the application name, so renaming the app renames
+    // the sender too unless an administrator sets something else.
+    fromName: '',
     replyTo: '',
     subject: 'Your {{app}} sign-in code: {{code}}',
   },
@@ -82,7 +84,7 @@ export class Config {
     this.turnstileSecret = envVar(env, 'turnstile-secret', 'TURNSTILE_SECRET');
 
     this.hubHost = String(envVar(env, 'HUB_HOST') || 'ptra.dev').toLowerCase().replace(/^www\./, '');
-    this.appName = String(envVar(env, 'APP_NAME') || 'Slink');
+    this.appName = String(envVar(env, 'APP_NAME') || 'Shrink Link');
     this.knownHosts = listEnv(envVar(env, 'DOMAINS'), ['ptra.cc', 'ptra.dev']);
 
     this.rootAdmins = listEnv(envVar(env, 'ADMIN'));

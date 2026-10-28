@@ -170,6 +170,38 @@ export function statusBadges(rec) {
   return out.join(' ');
 }
 
+/**
+ * A bar chart of daily hits as inline SVG. Inline markup, not script, so it
+ * costs nothing in the content security policy and renders with JavaScript
+ * off. Colours come from the theme tokens, so it follows light and dark.
+ */
+export function clickChart(series, { height = 56 } = {}) {
+  if (!series || !series.length) return '';
+  const peak = series.reduce((m, d) => Math.max(m, d.n), 0);
+  if (!peak) {
+    return '<p class="note">No hits recorded in this period.</p>';
+  }
+  const gap = 2;
+  const barWidth = 6;
+  const width = series.length * (barWidth + gap) - gap;
+  const bars = series
+    .map((d, i) => {
+      const h = Math.max(1, Math.round((d.n / peak) * height));
+      const x = i * (barWidth + gap);
+      return `<rect x="${x}" y="${height - h}" width="${barWidth}" height="${h}" rx="1"><title>${esc(
+        d.day
+      )}: ${esc(d.n)}</title></rect>`;
+    })
+    .join('');
+  return `<div class="chart">
+  <svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img"
+       preserveAspectRatio="none" aria-label="Daily hits, peak ${esc(peak)}">${bars}</svg>
+  <p class="note">${esc(series[0].day)} to ${esc(series[series.length - 1].day)} &middot; peak ${esc(
+    peak
+  )} in a day</p>
+</div>`;
+}
+
 export function pager(prevHref, nextHref) {
   const parts = [];
   if (prevHref) parts.push(`<a class="btn secondary" href="${esc(prevHref)}">Back</a>`);

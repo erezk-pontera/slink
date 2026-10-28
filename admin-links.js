@@ -21,6 +21,13 @@ import {
 } from './preview.js';
 import { ALL_SLOTS, normalizeRouting, SLOT_LABELS } from './targets.js';
 import { resolveDomain } from './domains.js';
+import {
+  DEFAULT_LOGO_SCALE,
+  DEFAULT_SIZE,
+  LOGO_SCALES,
+  QR_SIZES,
+  qrSvg,
+} from './admin-qr.js';
 import { inviteAllowed } from './invites.js';
 import { clientIp } from './geo.js';
 import {
@@ -34,7 +41,7 @@ import {
   MAX_DELAY_SECONDS,
   newLink,
   putLink,
-  readClicks,
+  readClickHistory,
 } from './links.js';
 import { parseDestination, parsePath, RESERVED_PATHS, ValidationError } from './paths.js';
 import {
@@ -47,7 +54,17 @@ import {
 import { getUserByNorm, inviteUser } from './users.js';
 import { normalizeEmail } from './paths.js';
 import { esc, fmtTime } from './util.js';
-import { alert, checkbox, csrfField, field, hidden, select, statusBadges, textarea } from './views.js';
+import {
+  alert,
+  checkbox,
+  clickChart,
+  csrfField,
+  field,
+  hidden,
+  select,
+  statusBadges,
+  textarea,
+} from './views.js';
 
 const STATUS_OPTIONS = [
   { value: 302, label: '302 - Found (temporary, default)' },
@@ -528,6 +545,72 @@ function reservedFor(ctx, host) {
   return host === ctx.cfg.hubHost ? RESERVED_PATHS : ['__slink'];
 }
 
+/* ------------------------------------------------------------------- qr */
+
+/** The QR card on the edit screen: a live preview and the download link. */
+function qrCard(host, link, url) {
+  const base =
+    '/admin/links/qr?host=' + encodeURIComponent(host) + '&path=' + encodeURIComponent(link.pathLc);
+  const current = {
+    size: url.searchParams.get('qrsize') || String(DEFAULT_SIZE),
+    ecc: url.searchParams.get('qrecc') || 'M',
+    logo: url.searchParams.get('qrlogo') === '1',
+    scale: url.searchParams.get('qrscale') || String(DEFAULT_LOGO_SCALE),
+  };
+  const src =
+    base +
+    '&size=512&ecc=' +
+    encodeURIComponent(current.ecc) +
+    (current.logo ? '&logo=1&logoscale=' + encodeURIComponent(current.scale) : '');
+  const download =
+    base +
+    '&size=' +
+    encodeURIComponent(current.size) +
+    '&ecc=' +
+    encodeURIComponent(current.ecc) +
+    (current.logo ? '&logo=1&logoscale=' + encodeURIComponent(current.scale) : '');
+
+  return `<div class="card">
+  <h2>QR code</h2>
+  <p class="hint">Encodes the short link itself, so it keeps working if the destination changes. Higher durability survives more damage and is what makes a centre logo safe.</p>
+  <div class="qrwrap">
+    <img class="qr" src="${esc(src)}" width="220" height="220" alt="QR code for ${esc(host)}/${esc(link.path)}">
+    <form method="get" action="/admin/links/edit" data-no-busy>
+      ${hidden('host', host)}${hidden('path', link.pathLc)}
+      ${select({
+        name: 'qrecc',
+        label: 'Durability',
+        value: current.ecc,
+        options: [
+          { value: 'L', label: 'Low (7%)' },
+          { value: 'M', label: 'Medium (15%)' },
+          { value: 'Q', label: 'Quartile (25%)' },
+          { value: 'H', label: 'High (30%)' },
+        ],
+        note: 'Asking for a logo raises this to High on its own.',
+      })}
+      ${select({
+        name: 'qrsize',
+        label: 'Download size',
+        value: current.size,
+        options: QR_SIZES.map((n) => ({ value: String(n), label: n + ' px' })),
+      })}
+      ${checkbox({ name: 'qrlogo', label: 'Logo in the centre', checked: current.logo })}
+      ${select({
+        name: 'qrscale',
+        label: 'Logo size',
+        value: current.scale,
+        options: LOGO_SCALES.map((n) => ({ value: String(n), label: Math.round(n * 100) + '% of the code' })),
+      })}
+      <div class="actions">
+        <button type="submit" class="secondary">Update preview</button>
+        <a class="btn secondary" href="${esc(download)}" download>Download SVG</a>
+      </div>
+    </form>
+  </div>
+</div>`;
+}
+
 /* ----------------------------------------------------------------- edit */
 
 async function editForm(ctx, { error, info } = {}) {
@@ -550,7 +633,8 @@ async function editForm(ctx, { error, info } = {}) {
   const token = await formToken(ctx, 'link.update');
   const delToken = await formToken(ctx, 'link.delete');
   const moveToken = await formToken(ctx, 'link.transfer');
-  const clicks = await readClicks(cfg, host, pathLc);
+  const history = await readClickHistory(cfg, host, pathLc, { days: 30 });
+  const clicks = history.total;
   const dir = await governingDirectory(cfg, host, pathLc);
   const policy = policyFor(await resolveDomain(cfg, host), dir);
   const behaviour = resolveLink(policy, link, userExemption(ctx.session.user, host));
@@ -620,6 +704,16 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}
       <button class="link" type="button" data-copy="${esc(shortUrl)}">Copy short link</button>
     </div>
   </form>
+</div>
+
+${qrCard(host, link, url)}
+
+<div class="card">
+  <h2>Hits</h2>
+  <p class="hint">${
+    history.lastAt ? 'Last hit ' + esc(fmtTime(history.lastAt)) + '.' : 'Never used.'
+  } Counting is approximate and can be turned off in Settings.</p>
+  ${clickChart(history.series)}
 </div>
 
 <div class="card">
@@ -947,5 +1041,6 @@ export async function adminLinks(ctx, path) {
   if (path === '/admin/links/delete' && method === 'POST') return deleteSubmit(ctx);
   if (path === '/admin/links/transfer' && method === 'POST') return transferSubmit(ctx);
   if (path === '/admin/links/duplicate' && method === 'POST') return duplicateSubmit(ctx);
+  if (path === '/admin/links/qr') return qrSvg(ctx);
   return back('/admin/links');
 }

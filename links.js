@@ -163,17 +163,64 @@ export function clampDelay(value, fallback = 0) {
  * not an analytics source of truth. Failures are swallowed on purpose: a
  * counter must never break a redirect.
  */
+/** Days of per-day history kept alongside the running total. */
+export const CLICK_HISTORY_DAYS = 90;
+
+/** The UTC day a timestamp falls in, as YYYY-MM-DD. */
+export function clickDay(at = now()) {
+  return new Date(at * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * Count one arrival.
+ *
+ * History lives in the same record as the total, so a hit still costs one
+ * read and one write; KV tolerates about one write per second per key and
+ * splitting the buckets into their own keys would not change that.
+ */
 export async function bumpClicks(cfg, host, pathLc) {
   try {
     const key = K.clicks(host, pathLc);
     const cur = (await cfg.store.get(key, { fresh: false })) || { n: 0 };
-    await cfg.store.put(key, { n: (cur.n || 0) + 1, at: now() });
+    const at = now();
+    const today = clickDay(at);
+    const days = { ...(cur.days || {}) };
+    days[today] = (days[today] || 0) + 1;
+    await cfg.store.put(key, { n: (cur.n || 0) + 1, at, days: pruneDays(days, today) });
   } catch {
     /* counting is best effort */
   }
 }
 
+/** Keep the window bounded so the record cannot grow without limit. */
+function pruneDays(days, today) {
+  const keys = Object.keys(days).sort();
+  if (keys.length <= CLICK_HISTORY_DAYS) return days;
+  const out = {};
+  for (const k of keys.slice(-CLICK_HISTORY_DAYS)) out[k] = days[k];
+  if (!(today in out)) out[today] = days[today] || 0;
+  return out;
+}
+
 export async function readClicks(cfg, host, pathLc) {
   const rec = await cfg.store.get(K.clicks(host, pathLc), { fresh: false });
   return rec && rec.n ? rec.n : 0;
+}
+
+/**
+ * The running total plus one entry per day for the last `days` days, oldest
+ * first and including the days with no hits, so a chart has a flat baseline
+ * rather than gaps.
+ */
+export async function readClickHistory(cfg, host, pathLc, { days = 30 } = {}) {
+  const rec = (await cfg.store.get(K.clicks(host, pathLc), { fresh: false })) || {};
+  const stored = rec.days || {};
+  const span = Math.max(1, Math.min(days, CLICK_HISTORY_DAYS));
+  const out = [];
+  const startOfToday = Math.floor(now() / 86400) * 86400;
+  for (let i = span - 1; i >= 0; i--) {
+    const day = clickDay(startOfToday - i * 86400);
+    out.push({ day, n: stored[day] || 0 });
+  }
+  return { total: rec.n || 0, lastAt: rec.at || 0, series: out };
 }

@@ -59,6 +59,13 @@ nav.main a[aria-current=page]{background:var(--bg);color:var(--ink);font-weight:
   color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent)}
 .impbar strong{color:inherit}
 .impbar .btn{flex:none}
+.chart{margin:8px 0 0}
+.chart svg{display:block;overflow:visible}
+.chart rect{fill:var(--accent,currentColor);opacity:.75}
+.chart rect:hover{opacity:1}
+.qrwrap{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+.qrwrap form{flex:1 1 260px;min-width:0}
+img.qr{flex:none;width:220px;height:220px;border:1px solid var(--line);border-radius:8px;background:#fff}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:var(--shadow);padding:18px;margin:0 0 16px}
 .card h2{margin:0 0 4px;font-size:16px;font-weight:600}

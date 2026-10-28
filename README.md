@@ -228,36 +228,51 @@ configuration is complete; the names of anything missing go to the log, so use
 
 ### Wrangler versus the dashboard
 
-`wrangler.toml` is the source of truth, and `wrangler deploy` enforces that:
+`keep_vars = true` is set in `wrangler.toml`. This is what each kind of
+change survives a `wrangler deploy`:
 
 | Changed in the dashboard | What a deploy does to it |
 | --- | --- |
-| A var in `[vars]` | Overwritten with the value from `wrangler.toml` |
-| A var **not** in `wrangler.toml` | **Deleted** — a deploy clears all vars, then sets the configured ones |
-| A route | Overwritten with the routes in `wrangler.toml` |
-| A secret (`AUTH_SECRET`, `turnstile-secret`) | **Kept.** Deploys never delete secrets; only `wrangler secret delete` does |
-| A KV binding or `send_email` binding | Overwritten from `wrangler.toml` |
+| A var that exists **only** in the dashboard | **Kept**, because of `keep_vars = true` |
+| A var also declared in `[vars]` | **Overwritten** from `wrangler.toml`, every deploy |
+| A secret (`AUTH_SECRET`, `turnstile-secret`) | **Kept** always, even with `keep_vars` off |
+| A route | **Replaced** from `wrangler.toml` |
+| A KV or `send_email` binding | **Replaced** from `wrangler.toml` |
+
+The mechanism, from Wrangler's own source: `keep_vars = true` makes it send
+`keep_bindings = ["plain_text", "json"]` with the upload, so the API inherits
+those binding types from the previous version instead of dropping them.
+Wrangler separately hard-codes `keepSecrets: true` on every deploy — its own
+comment reads "Never delete secret bindings when deploying. Inherit unchanged
+secrets from the previous Worker Version, including secrets absent from
+config." Nothing else is covered, which is why routes and the KV and
+`send_email` bindings are still replaced wholesale.
+
+**The part that catches people out:** `keep_vars = true` does not hand the
+variables below to the dashboard. Everything listed in `[vars]` is uploaded on
+every deploy and overwrites whatever the dashboard holds. Deleting a key from
+`[vars]` is the only thing that hands it over — after which the dashboard is
+its home and `wrangler.toml` no longer mentions it.
+
+So, concretely: editing `ADMIN` in the dashboard still looks like it works and
+is still reverted on the next deploy, because `ADMIN` is declared below. If
+you want it dashboard-managed, remove it from `wrangler.toml` and set it in
+the dashboard — but note that a deploy to a Worker where it has never been
+set will then serve 503 until it is, by design, since the service fails
+closed without a root administrator.
+
+In practice none of this should come up often. Everything an operator changes
+while running the service lives in the KV `cfg` record and is edited at
+`/admin/settings`, which no deploy touches. The variables in `wrangler.toml`
+are deployment-time bootstrap: which hosts exist, who the root
+administrators are, the Turnstile sitekey, the mail sender. Administrators
+promoted through `/admin/users` are stored in KV and survive deploys, so use
+that for everyone except the bootstrap administrator in `ADMIN`.
 
 Wrangler 4 prints a diff of local-versus-remote settings before overwriting
 and offers to copy the remote values into your config; accept that rather
 than dismissing it. `wrangler deploy --strict` refuses to upload when the
-remote has drifted. Setting `keep_vars = true` in `wrangler.toml` stops
-deploys clearing vars — at the cost that removing a var from the file no
-longer removes it from the Worker.
-
-This mostly does not bite in practice, because the settings an operator
-changes while running the service live in KV and are edited at
-`/admin/settings`, not in the dashboard. The variables in `wrangler.toml` are
-deployment-time bootstrap: which hosts exist, who the root administrators
-are, the Turnstile sitekey, the mail sender. Change those in the file and
-redeploy; change everything else in the admin UI, where a deploy cannot
-touch it.
-
-One consequence worth stating plainly: editing `ADMIN` in the dashboard looks
-like it works and is silently reverted on the next deploy. Root
-administrators are deliberately env-only — an account promoted through
-`/admin/users` is stored in KV and survives deploys, so use that for everyone
-except the bootstrap administrator.
+remote has drifted.
 
 ### Email
 

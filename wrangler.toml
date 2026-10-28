@@ -1,24 +1,34 @@
 # Cloudflare Worker configuration for the slink short-link service.
 #
-# THIS FILE WINS OVER THE DASHBOARD.
+# WHAT A DEPLOY DOES TO DASHBOARD CHANGES
 #
-# `wrangler deploy` deletes every plain-text var on the Worker and then sets
-# the ones below, so a var added or edited in the dashboard is lost on the
-# next deploy. The same goes for the routes at the bottom of this file.
-# Secrets are the exception: a deploy never deletes them.
+# `keep_vars = true` is set below. Wrangler then sends
+# `keep_bindings = ["plain_text", "json"]` with the upload, so a var that
+# exists ONLY in the dashboard survives a deploy instead of being deleted.
+#
+# It does NOT make the vars below dashboard-editable. Anything declared in
+# [vars] is still uploaded on every deploy and overwrites whatever the
+# dashboard holds. To manage one from the dashboard instead, delete it from
+# this file - that is the only thing that hands a var over.
+#
+# Secrets are never touched, with or without this setting: wrangler always
+# sends `keep_bindings = ["secret_text", "secret_key"]`, including for
+# secrets absent from this file.
+#
+# Not covered by keep_vars: the KV and send_email bindings and the routes at
+# the bottom are always replaced from this file, so a binding or a route
+# added in the dashboard is removed on the next deploy.
+#
+# keep_vars is a top-level field. It does not apply inside an [env.*] block.
 #
 # Wrangler 4 shows a diff of local-versus-dashboard settings before it
 # overwrites anything, and offers to copy the remote values back into this
 # file. Take that offer rather than dismissing it. `wrangler deploy --strict`
 # refuses the upload outright when the remote has drifted.
 #
-# If you would rather manage vars in the dashboard, uncomment `keep_vars`
-# below. Note what that costs: deleting a var from this file then stops
-# removing it from the Worker, so the two can drift apart silently.
-#
-# Day to day this should rarely matter: everything an administrator changes
-# while running the service lives in KV under /admin/settings, not here. The
-# vars below are deployment-time bootstrap only.
+# Day to day this rarely matters: everything an administrator changes while
+# running the service lives in KV under /admin/settings, not here. The vars
+# below are deployment-time bootstrap only.
 #
 # Secrets are NOT set here. Put them in place with `wrangler secret put`,
 # which reads the value from standard input so it never appears in a shell
@@ -32,7 +42,10 @@
 
 name = "slink-redir"
 main = "index.js"
-# keep_vars = true   # see the note at the top before enabling
+
+# Keep dashboard-only vars across deploys. See the note at the top for what
+# this does and does not cover.
+keep_vars = true
 compatibility_date = "2026-10-15"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = false

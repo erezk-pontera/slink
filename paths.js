@@ -135,7 +135,26 @@ export function parseDestination(raw, { blockedSchemes = [] } = {}) {
 
 /* -------------------------------------------------------------------- email */
 
-const EMAIL_RE = /^[^\s@,;:<>()[\]\\"]{1,64}@[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/;
+/**
+ * An address we will treat as an identity.
+ *
+ * The local part is the set RFC 5322 allows unquoted, and nothing else.
+ * It was a negated class before, which accepted any character that was not
+ * explicitly listed — including control characters, and including letters
+ * from other scripts. The second of those matters: an address whose local
+ * part is Cyrillic can be pixel-identical to a colleague's while being a
+ * different account, and these addresses are what directory grants, link
+ * ownership and the administrator list are keyed on. Someone reading a
+ * grant list has no way to tell the two apart.
+ *
+ * Internationalised addresses are real, but this is an internal tool gated
+ * on a company domain, and the trade is not close: confusable identities in
+ * an authorization decision are worse than turning away an address nobody
+ * here has. The domain part was already ASCII-only, so only the local part
+ * changes.
+ */
+const EMAIL_RE =
+  /^[A-Za-z0-9!#$%&'*+\-/=?^_`{|}~.]{1,64}@[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/;
 
 /**
  * Normalise an address for identity purposes.
@@ -145,6 +164,12 @@ const EMAIL_RE = /^[^\s@,;:<>()[\]\\"]{1,64}@[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9
  */
 export function normalizeEmail(raw, { ignoreDot = false, ignorePlus = false } = {}) {
   const value = String(raw ?? '').trim().toLowerCase();
+  if (value.length > 254) throw new ValidationError('That email address is too long.', 'email');
+  // Said separately so someone with a perfectly ordinary address in another
+  // script is told why, rather than being left to guess at "invalid".
+  if (/[^\x20-\x7e]/.test(value)) {
+    throw new ValidationError('Email addresses here must use ASCII characters only.', 'email');
+  }
   if (!value || !EMAIL_RE.test(value)) throw new ValidationError('Enter a valid email address.', 'email');
   const at = value.lastIndexOf('@');
   let local = value.slice(0, at);

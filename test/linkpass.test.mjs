@@ -341,6 +341,85 @@ section('a password can be set as the link is made');
   ok('a whitespace password is refused', (await bad.text()).includes('only whitespace'));
 }
 
+/* --------------------------------- 11. how it sits with everything else */
+section('a password sits in front of every other behaviour');
+{
+  await create({
+    path: 'combo', target: 'example.com/desktop', status: '302',
+    frame__default: '1', url__mobileIos: 'example.com/ios', frame__mobileIos: '1',
+    rules__default: 'IL https://example.com/israel', password: 'combo-pw',
+  });
+
+  const asked = await guest.req('https://ptra.cc/combo');
+  ok('it is asked before the frame is served',
+     (await asked.text()).includes('This link is protected'), String(asked.status));
+
+  const tok = Harness.csrf(await (await guest.req('https://ptra.cc/combo')).text());
+  await guest.req('https://ptra.cc/combo', {
+    form: { _csrf: tok, 'slink-unlock': '1', password: 'combo-pw',
+            'cf-turnstile-response': 't:unlock:ptra.cc' },
+  });
+
+  const framed = await guest.req('https://ptra.cc/combo', { country: 'US' });
+  ok('then the frame is served', framed.status === 200 && (await framed.text()).includes('<iframe'));
+  const il = await guest.req('https://ptra.cc/combo', { country: 'IL' });
+  ok('a country rule still applies under it', (await il.text()).includes('example.com/israel'));
+  const ios = await guest.req('https://ptra.cc/combo', {
+    country: 'US', headers: { 'Sec-CH-UA-Mobile': '?1', 'Sec-CH-UA-Platform': '"iOS"' },
+  });
+  ok('and the device slot picks its own destination', (await ios.text()).includes('example.com/ios'));
+
+  // A link that is not servable never reaches the prompt: it has nothing to
+  // protect, and prompting would say that a disabled link exists.
+  const href = editHref('ptra.cc', 'combo');
+  const et = Harness.csrfFor(await (await root.req(href)).text(), '/admin/links/edit');
+  await root.req('https://ptra.dev/admin/links/edit', {
+    form: { _csrf: et, host: 'ptra.cc', path: 'combo', newpath: 'combo',
+            target: 'example.com/desktop', status: '302' },
+  });
+  const off = await peer(root).req('https://ptra.cc/combo');
+  ok('a disabled link goes to MISSING rather than prompting',
+     (off.headers.get('Location') || '').includes('fallback.example'),
+     off.headers.get('Location'));
+}
+
+/* ------------------------------------------- 12. copies carry everything */
+section('a copy of a link is a copy of all of it');
+{
+  await create({
+    path: 'orig', target: 'example.com/o', status: '301', note: 'the note',
+    frame__default: '1', password: 'orig-pw', activeFrom: '2026-06-01',
+    expires: '2027-06-01', url__mobileIos: 'example.com/ios',
+  });
+
+  // Moving takes everything to the other domain.
+  const mt = Harness.csrfFor(await (await root.req(editHref('ptra.cc', 'orig'))).text(),
+                             '/admin/links/move');
+  await root.req('https://ptra.dev/admin/links/move', {
+    form: { _csrf: mt, host: 'ptra.cc', path: 'orig', toHost: 'ptra.dev', newpath: 'moved-orig' },
+  });
+  const moved = await (await root.req(editHref('ptra.dev', 'moved-orig'))).text();
+  ok('a move carries the password', moved.includes('orig-pw'));
+  ok('and the share tip follows to the new domain',
+     moved.includes('https://ptra.dev/moved-orig#ptrap=orig-pw'));
+
+  // Duplicating fills the create form with everything but the shortcut.
+  const dt = Harness.csrfFor(await (await root.req(editHref('ptra.dev', 'moved-orig'))).text(),
+                             '/admin/links/duplicate');
+  const dup = await root.req('https://ptra.dev/admin/links/duplicate', {
+    form: { _csrf: dt, host: 'ptra.dev', path: 'moved-orig' },
+  });
+  const form = await dup.text();
+  ok('duplicate opens the create form', dup.status === 200 && form.includes('Copied from'));
+  ok('with the shortcut cleared', /name="path"[^>]*value=""/.test(form));
+  ok('the destination carried', form.includes('example.com/o'));
+  ok('the device destination carried', form.includes('example.com/ios'));
+  ok('the note carried', form.includes('the note'));
+  ok('the frame flag carried', /name="frame__default"[^>]*checked/.test(form));
+  ok('the schedule carried', form.includes('2026-06-01') && form.includes('2027-06-01'));
+  ok('and the password carried', form.includes('orig-pw'));
+}
+
 console.log(`\nlink passwords: ${passed} passed, ${failed} failed`);
 root.restore();
 export default { passed, failed };

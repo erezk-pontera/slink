@@ -88,5 +88,31 @@ ok('opaque scheme kept', parseDestination('mailto:a@b.com').target === 'mailto:a
 ok('extra blocked scheme honoured',
    (() => { try { parseDestination('ftp://x/y', { blockedSchemes: ['ftp'] }); return false; } catch { return true; } })());
 
+/* ------------------------------------------- an address is an identity */
+// These addresses key directory grants, link ownership and the
+// administrator list, so two that look alike but are not the same account
+// is a correctness problem before it is a cosmetic one.
+ok('an ordinary address is accepted', normalizeEmail('first.last@pontera.com', {}).emailNorm === 'first.last@pontera.com');
+ok('a plus tag is accepted', normalizeEmail('a+tag@pontera.com', {}).emailNorm === 'a+tag@pontera.com');
+ok('an apostrophe is accepted', normalizeEmail("o'brien@pontera.com", {}).emailNorm === "o'brien@pontera.com");
+ok('the RFC specials are accepted',
+   normalizeEmail("user!#$%&*+-/=?^_`{|}~@pontera.com", {}).emailNorm.startsWith('user!'));
+ok('case is folded', normalizeEmail('A.B@Pontera.COM', {}).emailNorm === 'a.b@pontera.com');
+
+const refused = (value) => {
+  try { normalizeEmail(value, {}); return false; } catch { return true; }
+};
+// Cyrillic a, indistinguishable from the Latin one in most typefaces.
+ok('a homoglyph local part is refused', refused('\u0430dmin@pontera.com'));
+ok('a homoglyph domain is refused', refused('admin@ponter\u0430.com'));
+ok('a null byte is refused', refused('a\u0000b@pontera.com'));
+ok('a zero-width joiner is refused', refused('a\u200db@pontera.com'));
+ok('a right-to-left override is refused', refused('a\u202eb@pontera.com'));
+ok('an overlong address is refused', refused('x'.repeat(300) + '@pontera.com'));
+ok('a space is refused', refused('a b@pontera.com'));
+ok('angle brackets are refused', refused('a<b>@pontera.com'));
+ok('a bare domain is refused', refused('a@b'));
+ok('a doubled dot in the domain is refused', refused('a@pontera..com'));
+
 console.log(`\notp/paths: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

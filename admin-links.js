@@ -1341,7 +1341,14 @@ async function duplicateSubmit(ctx) {
       forwardQuery: !!source.forwardQuery,
       readonly: !!source.readonly,
       routing: source.routing,
+      frame: source.frame,
       preview: source.preview,
+      activeFrom: expiryInput(source.activeFrom),
+      expires: expiryInput(source.expiresAt),
+      // A duplicate is a copy of the link, password included. The create
+      // screen shows it, and whoever is duplicating already had to be
+      // allowed to manage the original to get here.
+      password: await readPassword(ctx.cfg, source),
     },
   });
 }

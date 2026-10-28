@@ -344,6 +344,123 @@ section('a forged cookie signs nobody in');
   ok('no forged session cookie is accepted', signedIn === 0, String(signedIn));
 }
 
+section('every state-changing endpoint is guarded, without exception');
+{
+  // Enumerated rather than sampled: a new endpoint that forgets its guard
+  // is exactly the kind of thing a spot check misses.
+  const ENDPOINTS = [
+    ['/admin/links/new', { host: 'ptra.cc', path: 'csrf-x', target: 'evil.example', status: '302' }],
+    ['/admin/links/edit', { host: 'ptra.cc', path: 'csrf-x', newpath: 'csrf-x', target: 'evil.example', status: '302', enabled: '1' }],
+    ['/admin/links/delete', { host: 'ptra.cc', path: 'csrf-x' }],
+    ['/admin/links/transfer', { host: 'ptra.cc', path: 'csrf-x', owner: 'root@pontera.com' }],
+    ['/admin/links/duplicate', { host: 'ptra.cc', path: 'csrf-x' }],
+    ['/admin/links/password', { host: 'ptra.cc', path: 'csrf-x', password: 'x' }],
+    ['/admin/links/move', { host: 'ptra.cc', path: 'csrf-x', toHost: 'ptra.dev', newpath: 'x' }],
+    ['/admin/directories/new', { host: 'ptra.cc', path: 'csrfdir' }],
+    ['/admin/directories/edit', { host: 'ptra.cc', path: 'csrfdir', enabled: '1' }],
+    ['/admin/directories/delete', { host: 'ptra.cc', path: 'csrfdir' }],
+    ['/admin/directories/grant', { host: 'ptra.cc', path: 'csrfdir', email: 'root@pontera.com', canCreate: '1' }],
+    ['/admin/directories/revoke', { host: 'ptra.cc', path: 'csrfdir', userId: 'x' }],
+    ['/admin/directories/transfer', { host: 'ptra.cc', path: 'csrfdir', owner: 'root@pontera.com' }],
+    ['/admin/directories/policy', { host: 'ptra.cc', path: 'csrfdir' }],
+    ['/admin/directories/exempt', { host: 'ptra.cc', path: 'csrfdir' }],
+    ['/admin/directories/capabilities', { host: 'ptra.cc', path: 'csrfdir', cap_frame: 'deny' }],
+    ['/admin/domains/new', { host: 'evil.example' }],
+    ['/admin/domains/edit', { host: 'ptra.cc', defaultStatus: '302', rootCreatePolicy: 'open', enabled: '1' }],
+    ['/admin/domains/delete', { host: 'ptra.cc' }],
+    ['/admin/users/edit', { u: 'root@pontera.com', isAdmin: '1' }],
+    ['/admin/users/revoke', { u: 'root@pontera.com' }],
+    ['/admin/users/delete', { u: 'root@pontera.com' }],
+    ['/admin/users/impersonate', { u: 'root@pontera.com' }],
+    ['/admin/settings', { auditRetentionDays: '1' }],
+    ['/admin/search/batch', { op: 'readonly', sel: 'link:ptra.cc:x' }],
+  ];
+
+  let accepted = 0;
+  for (const [path, form] of ENDPOINTS) {
+    const r = await admin.req('https://ptra.dev' + path, { form: { _csrf: 'forged-token', ...form } });
+    const loc = r.headers.get('Location') || '';
+    if (!(r.status === 403 || r.status === 404 || loc.includes('csrf'))) {
+      console.log('    accepted a forged token: ' + path);
+      accepted++;
+    }
+  }
+  ok(`all ${ENDPOINTS.length} POST endpoints refuse a forged token`, accepted === 0, String(accepted));
+
+  let foreign = 0;
+  for (const [path, form] of ENDPOINTS) {
+    const tok = Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+    const r = await admin.req('https://ptra.dev' + path, {
+      form: { _csrf: tok, ...form },
+      headers: { Origin: 'https://evil.example' },
+    });
+    const loc = r.headers.get('Location') || '';
+    if (!(r.status === 403 || r.status === 404 || loc.includes('csrf'))) {
+      console.log('    accepted a foreign Origin: ' + path);
+      foreign++;
+    }
+  }
+  ok('and all of them refuse a foreign Origin', foreign === 0, String(foreign));
+}
+
+section('a GET changes nothing');
+{
+  const tok = Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+  await admin.req('https://ptra.dev/admin/links/new', {
+    form: { _csrf: tok, host: 'ptra.cc', path: 'getsafe', target: 'example.com/gs', status: '302' },
+  });
+  for (const path of [
+    '/admin/links/delete', '/admin/links/password', '/admin/links/move',
+    '/admin/users/impersonate', '/admin/search/batch', '/admin/directories/delete',
+  ]) {
+    await admin.req(
+      `https://ptra.dev${path}?host=ptra.cc&path=getsafe&u=root@pontera.com` +
+      `&op=readonly&sel=link:ptra.cc:getsafe&password=x&toHost=ptra.dev`
+    );
+  }
+  const still = await guest.req('https://ptra.cc/getsafe');
+  ok('the link survives every state-changing path fetched as a GET',
+     (still.headers.get('Location') || '').includes('example.com/gs'),
+     still.headers.get('Location'));
+}
+
+section('what an identity provider says is not taken on trust');
+{
+  const dom = 'https://ptra.dev/admin/domains/edit?host=ptra.dev';
+  const dt = Harness.csrfFor(await (await admin.req(dom)).text(), '/admin/domains/edit');
+  await admin.req('https://ptra.dev/admin/domains/edit', {
+    form: {
+      _csrf: dt, host: 'ptra.dev', defaultStatus: '302', rootCreatePolicy: 'email_domain',
+      enabled: '1', authRequired: '1', allowedAuthDomains: 'pontera.com',
+      oauthEnabled: '1', oauthClientId: 'c',
+      oauthAuthorizeUrl: 'https://idp.example/authorize',
+      oauthTokenUrl: 'https://idp.example/token',
+      oauthUserinfoUrl: 'https://idp.example/me',
+    },
+  });
+
+  let signedIn = 0;
+  for (const email of [
+    '"><img src=x onerror=alert(1)>@pontera.com',
+    'not-an-email',
+    '',
+    'a'.repeat(400) + '@pontera.com',
+    'a\r\nb@pontera.com',
+    '\u0430dmin@pontera.com',
+    'a\u0000b@pontera.com',
+  ]) {
+    const h = peer(admin);
+    h.idpEmail = email;
+    const s = await h.req('https://ptra.dev/__slink/oauth/start');
+    const st = new URL(s.headers.get('Location')).searchParams.get('state');
+    const r = await h.req('https://ptra.dev/__slink/oauth/callback?code=a&state=' + st);
+    if (r.status === 303) signedIn++;
+    else if ((await r.text()).includes('<img src=x')) signedIn++;
+  }
+  ok('no malformed or confusable address from a provider signs anyone in',
+     signedIn === 0, String(signedIn));
+}
+
 console.log(`\nsecurity: ${passed} passed, ${failed} failed`);
 admin.restore();
 if (failed) process.exit(1);

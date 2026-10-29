@@ -9,6 +9,7 @@
  */
 
 import { K } from './kv.js';
+import { mergeNames } from './pending.js';
 import { REDIRECT_STATUSES } from './domains.js';
 import { emptyPreview } from './preview.js';
 import { emptyRouting } from './targets.js';
@@ -26,6 +27,8 @@ export function newLink(host, parsed, target, owner, overrides = {}) {
     status: 302,
     /** Seconds of countdown. 0 means "use the policy default". */
     delay: 0,
+    /** An uploaded image for the centre of the QR code. See qrlogo.js. */
+    qrLogo: null,
     /** null inherits the policy; true or false overrides it where allowed. */
     countdown: null,
     showTarget: null,
@@ -94,33 +97,59 @@ export async function deleteLink(cfg, link) {
 }
 
 /** One page of links on a host, optionally scoped to a directory prefix. */
-export async function listLinks(cfg, host, { dirPathLc = '', cursor, limit = 50 } = {}) {
+export async function listLinks(cfg, host, { dirPathLc = '', cursor, limit = 50, pending } = {}) {
   const prefix = K.linkPrefix(host, dirPathLc ? dirPathLc + '/' : '');
   const page = await cfg.store.listPage(prefix, { cursor, limit });
   const strip = K.linkPrefix(host, '');
+  // Only the first page is corrected: a later page is a window into an
+  // ordering the correction knows nothing about, and the record someone
+  // just wrote is what they are looking at the first page to find.
+  // The listing carries a summary of each link in the key's metadata, which
+  // saves a read per row. A name the correction adds has none, so those
+  // rows come back without one and whatever needs the detail reads the
+  // record itself.
+  const meta = new Map(page.keys.map((k) => [k.name, k.metadata || null]));
+  const names = cursor ? [...meta.keys()] : mergeNames([...meta.keys()], pending);
+  await fillMeta(cfg, meta, names);
   return {
-    items: page.keys.map((k) => ({
-      pathLc: k.name.slice(strip.length),
-      meta: k.metadata || null,
-      key: k.name,
+    items: names.map((name) => ({
+      pathLc: name.slice(strip.length),
+      meta: meta.get(name) || null,
+      key: name,
     })),
     cursor: page.cursor,
     done: page.done,
   };
 }
 
+/**
+ * Fill in the summary for names a listing correction supplied, which carry
+ * no metadata of their own because they never came from the listing. A
+ * handful of reads at most, and it keeps a just-created link from showing
+ * up in a list with its destination blank.
+ */
+async function fillMeta(cfg, meta, names) {
+  const missing = names.filter((name) => !meta.has(name));
+  if (!missing.length) return;
+  const got = await Promise.all(missing.map((name) => cfg.store.getWithMeta(name)));
+  missing.forEach((name, i) => meta.set(name, (got[i] && got[i].metadata) || null));
+}
+
 /** One page of a user's own links, across every host. */
-export async function listOwnedLinks(cfg, userId, { cursor, limit = 50 } = {}) {
+export async function listOwnedLinks(cfg, userId, { cursor, limit = 50, pending } = {}) {
   const prefix = K.ownerPrefix(userId);
   const page = await cfg.store.listPage(prefix, { cursor, limit });
+  const meta = new Map(page.keys.map((k) => [k.name, k.metadata || null]));
+  const names = cursor ? [...meta.keys()] : mergeNames([...meta.keys()], pending);
+  await fillMeta(cfg, meta, names);
   return {
-    items: page.keys.map((k) => {
-      const rest = k.name.slice(prefix.length);
+    items: names.map((name) => {
+      const rest = name.slice(prefix.length);
       const sep = rest.indexOf(':');
       return {
         host: rest.slice(0, sep),
         pathLc: rest.slice(sep + 1),
-        meta: k.metadata || null,
+        meta: meta.get(name) || null,
       };
     }),
     cursor: page.cursor,

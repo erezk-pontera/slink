@@ -38,7 +38,7 @@ await root.req('https://ptra.dev/admin/directories/new', {
 });
 const lt = Harness.csrf(await (await root.req('https://ptra.dev/admin/links/new')).text());
 await root.req('https://ptra.dev/admin/links/new', {
-  form: { _csrf: lt, host: 'ptra.cc', path: 'rend/one', target: 'example.com/one', status: '302' },
+  form: { _csrf: lt, host: 'ptra.cc', dir: 'ptra.cc/rend', path: 'one', target: 'example.com/one', status: '302' },
 });
 const member = peer(root);
 await member.signIn('rend@pontera.com');

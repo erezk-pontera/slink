@@ -46,7 +46,7 @@ await root.req('https://ptra.dev/admin/directories/new', {
 });
 const linkTok = Harness.csrf(await (await root.req('https://ptra.dev/admin/links/new')).text());
 await root.req('https://ptra.dev/admin/links/new', {
-  form: { _csrf: linkTok, host: 'ptra.cc', path: 'team/plan', target: 'example.com/plan', status: '302' },
+  form: { _csrf: linkTok, host: 'ptra.cc', dir: 'ptra.cc/team', path: 'plan', target: 'example.com/plan', status: '302' },
 });
 const rootLinkTok = Harness.csrf(await (await root.req('https://ptra.dev/admin/links/new')).text());
 await root.req('https://ptra.dev/admin/links/new', {

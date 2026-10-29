@@ -427,12 +427,22 @@ section('a GET changes nothing');
 
 section('what an identity provider says is not taken on trust');
 {
-  const dom = 'https://ptra.dev/admin/domains/edit?host=ptra.dev';
-  const dt = Harness.csrfFor(await (await admin.req(dom)).text(), '/admin/domains/edit');
-  await admin.req('https://ptra.dev/admin/domains/edit', {
+  // The provider is a system setting. Post the whole settings form, as a
+  // browser would, so nothing else on it is cleared.
+  const page = await (await admin.req('https://ptra.dev/admin/settings')).text();
+  const form = { _csrf: Harness.csrfFor(page, '/admin/settings') };
+  for (const m of page.matchAll(/<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/g)) {
+    if (m[1] === '_csrf') continue;
+    if (/type="checkbox"/.test(m[0]) && !/\schecked/.test(m[0])) continue;
+    form[m[1]] = m[2];
+  }
+  for (const m of page.matchAll(/<select[^>]*name="([^"]+)"[\s\S]*?<\/select>/g)) {
+    const sel = m[0].match(/<option value="([^"]*)"[^>]*selected/);
+    if (sel) form[m[1]] = sel[1];
+  }
+  await admin.req('https://ptra.dev/admin/settings', {
     form: {
-      _csrf: dt, host: 'ptra.dev', defaultStatus: '302', rootCreatePolicy: 'email_domain',
-      enabled: '1', authRequired: '1', allowedAuthDomains: 'pontera.com',
+      ...form,
       oauthEnabled: '1', oauthClientId: 'c',
       oauthAuthorizeUrl: 'https://idp.example/authorize',
       oauthTokenUrl: 'https://idp.example/token',
@@ -492,6 +502,48 @@ section('a destination that masks its host says so');
   const warning = (page.match(/<div class="alert err"[^>]*>([^<]*)<\/div>/) || [])[1] || '';
   ok('the warning is escaped like everything else',
      warning.includes('&quot;pontera.example&quot;'), warning.slice(0, 60));
+}
+
+section('a key longer than the store allows is a miss, not an error');
+{
+  const { Store, MAX_KEY_BYTES } = await import('../kv.js');
+  const store = new Store(admin.env.KV);
+
+  // Characters and bytes are not the same thing, and KV counts bytes.
+  const wide = '\u00e9'.repeat(300);
+  for (const key of ['a'.repeat(MAX_KEY_BYTES + 1), 'a'.repeat(20000), wide]) {
+    ok('a read answers nothing', (await store.get(key)) === null, String(key.length));
+    const meta = await store.getWithMeta(key);
+    ok('so does a read with metadata', meta.value === null && meta.metadata === null);
+    ok('a listing under it is empty', (await store.listPage(key)).keys.length === 0);
+    ok('and deleting it does nothing at all', (await store.delete(key)) === undefined);
+    // A write is this code's own doing, so it says so rather than failing
+    // quietly somewhere later.
+    let threw = false;
+    try {
+      await store.put(key, { x: 1 });
+    } catch {
+      threw = true;
+    }
+    ok('while a write of one is refused out loud', threw);
+  }
+  // A key right at the limit is still a real key.
+  const edge = 'k'.repeat(MAX_KEY_BYTES);
+  await store.put(edge, { ok: true });
+  ok('a key at the limit works', (await store.get(edge)).ok === true);
+
+  // And the screens that build a key from a query value stay up.
+  for (const path of [
+    '/admin/links/edit?host=ptra.cc&path=' + 'a'.repeat(900),
+    '/admin/links?dir=' + 'b'.repeat(900),
+    '/admin/directories/edit?host=ptra.cc&path=' + 'c'.repeat(900),
+    '/admin/users/edit?u=' + 'd'.repeat(900) + '%40pontera.com',
+  ]) {
+    const r = await admin.req('https://ptra.dev' + path);
+    ok('no 5xx from ' + path.split('?')[0], r.status < 500, String(r.status));
+  }
+  const long = await admin.req('https://ptra.cc/' + 'e'.repeat(900));
+  ok('nor from a very long shortcut in the URL', long.status < 500, String(long.status));
 }
 
 console.log(`\nsecurity: ${passed} passed, ${failed} failed`);

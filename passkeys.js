@@ -12,6 +12,7 @@
  */
 
 import { K } from './kv.js';
+import { mergeNames } from './pending.js';
 import { methodsFor } from './oauth.js';
 import { signToken, verifyToken } from './security.js';
 import { b64urlEncode, now, randomId, sha256Hex } from './util.js';
@@ -111,10 +112,10 @@ export async function getPasskey(cfg, credentialId) {
   return cfg.store.get(await credentialKey(credentialId));
 }
 
-export async function listPasskeys(cfg, userId) {
+export async function listPasskeys(cfg, userId, { pending } = {}) {
   const prefix = K.userPasskeyPrefix(userId);
   const keys = await cfg.store.listAll(prefix, { max: MAX_PASSKEYS * 2 });
-  const ids = await cfg.store.getMany(keys.map((k) => k.name));
+  const ids = await cfg.store.getMany(mergeNames(keys.map((k) => k.name), pending));
   const wanted = await Promise.all(ids.filter(Boolean).map((id) => credentialKey(id)));
   const records = await cfg.store.getMany(wanted);
   return records.filter(Boolean).sort((a, b) => a.createdAt - b.createdAt);

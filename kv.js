@@ -31,6 +31,27 @@
 
 const SEP = ':';
 
+/**
+ * KV's own limit on a key, in UTF-8 bytes.
+ *
+ * Several keys are built from something a visitor typed - a shortcut in a
+ * URL, a directory in a query string, an address. A read with a key past
+ * this limit is an error from the store rather than a miss, which would
+ * turn a long string in a query parameter into a 500. A key that long
+ * cannot name a record that exists, so a read of one answers "nothing"
+ * and a listing under one answers "none", which is the truth. A write is
+ * different: that is this code's own bug and it says so.
+ */
+export const MAX_KEY_BYTES = 512;
+
+function overLong(key) {
+  // Characters first, because that is free. Only a long one needs the byte
+  // count, and no string of 170 characters can exceed 512 bytes.
+  const text = String(key);
+  if (text.length <= 170) return false;
+  return new TextEncoder().encode(text).length > MAX_KEY_BYTES;
+}
+
 export const K = {
   settings: () => 'cfg',
   domain: (host) => 'dom:' + host,
@@ -77,6 +98,7 @@ export class Store {
 
   /** Read JSON. `fresh` bypasses the edge cache for read-after-write views. */
   async get(key, { fresh = true } = {}) {
+    if (overLong(key)) return null;
     const opts = { type: 'json' };
     if (!fresh) opts.cacheTtl = 60;
     return this.kv.get(key, opts);
@@ -84,6 +106,7 @@ export class Store {
 
   /** Read JSON plus the key's metadata in one round trip. */
   async getWithMeta(key, { fresh = true } = {}) {
+    if (overLong(key)) return { value: null, metadata: null };
     const opts = { type: 'json' };
     if (!fresh) opts.cacheTtl = 60;
     const res = await this.kv.getWithMetadata(key, opts);
@@ -95,6 +118,7 @@ export class Store {
    * so index listings do not need a read per entry (KV caps it at 1024 bytes).
    */
   async put(key, value, { ttl, metadata } = {}) {
+    if (overLong(key)) throw new Error('KV key exceeds ' + MAX_KEY_BYTES + ' bytes');
     const opts = {};
     if (ttl && ttl > 60) opts.expirationTtl = Math.floor(ttl);
     else if (ttl) opts.expirationTtl = 60; // KV minimum
@@ -103,11 +127,13 @@ export class Store {
   }
 
   async delete(key) {
+    if (overLong(key)) return undefined;
     return this.kv.delete(key);
   }
 
   /** One page of keys under a prefix. */
   async listPage(prefix, { cursor, limit = 200 } = {}) {
+    if (overLong(prefix)) return { keys: [], cursor: null, done: true };
     const res = await this.kv.list({ prefix, limit: Math.min(1000, Math.max(1, limit)), cursor });
     return {
       keys: res.keys || [],

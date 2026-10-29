@@ -117,7 +117,7 @@ usage signal, not analytics. It can be switched off in settings.
 | Administrator (flag set by an admin) | Everything, on every domain. No grant narrows an administrator, and the UI says so rather than showing an empty grant list. |
 | Directory administrator (`manage` grant) | Everything inside their directory, including other people's links, plus granting and revoking access to it. |
 | Granted user (`create` grant) | Create links inside that directory; edit and delete only their own. |
-| Signed-in user | Create at a host root if the host's policy allows; edit and delete only their own links. |
+| Signed-in user | Create at a host root if the host's policy allows, and in any directory whose access says so; edit and delete only their own links. |
 
 Rules that override the table:
 
@@ -150,6 +150,26 @@ Root-level creation on a host is governed by its `rootCreatePolicy`:
 `email_domain` (the default — the host's allow list, falling back to
 `DEFAULT_ALLOWED_DOMAINS`, or an explicit per-user grant), `explicit`,
 `open`, or `admins_only`.
+
+**Creation inside a directory** is governed by the directory's own
+`createAccess`, which answers one of three ways:
+
+| Setting | Who may create there |
+| --- | --- |
+| `granted` (the default) | Only people holding a grant on that directory. |
+| `root_policy` | Anyone the host's `rootCreatePolicy` would let create at its root. |
+| `signed_in` | Anyone with an account that can sign in, with no grant and without consulting the root policy. |
+
+`signed_in` is the answer a domain whose root is shut cannot otherwise
+give: it opens one directory to everybody who can get in, while the root
+and every other directory stay as they were. Directory administrators and
+Shrink Link administrators reach a directory whichever is chosen, and a
+disabled or read-only directory, or a read-only domain, still shuts it for
+everyone else.
+
+The setting began life as a boolean named `open`, meaning `root_policy`.
+Records written then are read as they were configured; nothing needs
+migrating.
 
 ---
 
@@ -217,6 +237,29 @@ dependencies: a small CBOR decoder (`cbor.js`), the verification layer
 hub's own pages use WebAuthn while still refusing to delegate it to an
 embedded cross-origin page.
 
+### Single sign-on
+
+OAuth 2.0 Authorization Code with PKCE (S256). **One provider for the whole
+installation**, configured in `/admin/settings` — not per domain. Signing in
+happens on the hub and every other host arrives through the handshake above,
+so a provider enabled on one domain and not another was a distinction
+without a difference. What *is* per domain is whether that host also offers
+the emailed code and passkeys, which stays on the domain screen.
+
+The client secret is the `oauth-secret` environment variable and is sent only
+in a token-exchange request body, never in a URL. Endpoints must be HTTPS and
+are refused if they resolve to a private address, because they are fetched
+with that secret attached. The redirect URI is
+`https://<host>/__slink/oauth/callback`, registered once per host.
+
+**The provider says who, never what.** Letting somebody through its sign-in
+establishes an address and nothing else: they become an ordinary account
+here. No role, group or privilege is read from the provider, and the
+provider's own "verified" flag is not consulted either — whether that
+address may sign in is decided on this side by the host's allowed sign-in
+domains, and what it may do is decided by its own record. Making somebody an
+administrator is done in `/admin/users` and nowhere else.
+
 ---
 
 ## Turnstile
@@ -254,6 +297,7 @@ Set in `wrangler.toml` under `[vars]`:
 | `DOMAINS` | Hosts the worker serves, comma separated |
 | `HUB_HOST` | The host carrying `/admin`, `/login` and `/logout` |
 | `APP_NAME` | Name shown in the UI and in emails (default `Shrink Link`) |
+| `FOOTER_TEXT` | The line at the bottom of every page, such as a copyright notice. Plain text, escaped; unset means no line |
 | `ADMIN` | Root administrator addresses, comma separated |
 | `DEFAULT_ALLOWED_DOMAINS` | Default email domains for signing in and for creating at a host root |
 | `MISSING` | Where a host root, an unknown shortcut, or a disabled or expired one goes, unless a domain overrides it |
@@ -404,9 +448,20 @@ has no route.
 
 ## Shortcuts and destinations
 
-Shortcuts use `A-Za-z0-9`, `_` and `-`, in `/`-separated segments. They are
-case-insensitive: `Deck` and `deck` are the same link. Leading and trailing
-slashes are ignored, so `example.com/aaa/` works.
+Shortcuts use `A-Za-z0-9`, `_` and `-` and are one segment: a `/` is
+refused. A `/` in a stored path is what marks a directory, and a
+directory is chosen from its own control on the create and edit screens,
+which offer exactly the places that person may create in. Shortcuts are
+case-insensitive: `Deck` and `deck` are the same link. Leading and
+trailing slashes are ignored, so `example.com/aaa/` works.
+
+Links created before this rule keep their stored path and go on
+resolving. The editor splits such a path into the directory it sits in
+and the shortcut itself, and offers its own place even where the person
+editing it could not create there, so editing a link never forces it out
+of where somebody else put it. Changing the directory moves the link,
+which needs create permission at the new place, exactly as a rename
+does.
 
 Destinations default to `https://`. An explicit scheme is kept as written,
 whether hierarchical (`slack://channel?id=7`) or opaque (`mailto:x@y.com`).
@@ -445,17 +500,17 @@ changed destination takes effect at once.
 ## Where a visitor ends up
 
 A link always has one mandatory destination, and may carry four more: Android
-phone, iPhone, Android tablet and iPad. Any of those five slots, including
-the default, may also carry country rules.
+phone, iPhone, Android tablet and iPad.
 
 Resolution is deliberately simple:
 
 1. Pick the slot for the visitor's device. A slot left blank is skipped, so
    configuring only "Android phone" is normal and everything else falls
    through.
-2. Inside that slot, the first country rule that matches wins.
-3. Otherwise the slot's own URL.
-4. Otherwise the same two steps against the default slot.
+2. Otherwise the default slot.
+
+Destinations used to be able to branch on the visitor's country as well.
+That is gone. The sign-in geography gate is a separate thing and stays.
 
 Device class comes from `Sec-CH-UA-Mobile` and `Sec-CH-UA-Platform` where the
 browser sends them, which Chromium does by default and which beats reading
@@ -463,10 +518,30 @@ the user-agent; Safari sends neither, so the user-agent is the fallback. One
 honest limitation: an iPad on iPadOS 13 or later presents itself as a Mac, so
 it is seen as a desktop unless the visitor asked for the mobile site.
 
-Country rules are edited one per line, `IL,US https://example.com/local`.
 Every URL in the table goes through the same validation as the main
-destination, so a device or country branch cannot smuggle in a scheme the
-main one forbids.
+destination, so a device branch cannot smuggle in a scheme the main one
+forbids.
+
+**The create screen carries every setting the edit screen does**, bar the
+ones that need the record to exist first — renaming, moving, duplicating
+and deleting. That includes the owner (administrators only, through the
+same invite checks a later transfer would face), whether the link starts
+enabled, the preview card, and the QR centre image.
+
+**The QR code** appears beside the form as soon as there is a shortcut, on
+both screens, and updates as the shortcut or the domain changes. It encodes
+the short link rather than the destination, so it keeps working when the
+destination changes, and it is served for a shortcut that does not exist
+yet — which is what lets it fill in while somebody is still typing.
+
+Its centre can carry an uploaded image: PNG, JPEG, GIF or WebP, up to
+128 KB, sniffed by its leading bytes rather than its name or declared type.
+**An SVG is refused.** The code is itself an SVG and the image is inlined
+into it, so accepting one would mean serving attacker-chosen markup — which
+can carry script and remote references — from this origin. Whatever the
+image covers has to be reconstructed from the error correction, which is
+why choosing one raises durability to High and, on a small symbol, the
+version too.
 
 **Duplicating** a link copies everything except the shortcut and opens the
 create form. It needs the same standing as editing the original, since the
@@ -485,8 +560,10 @@ then comes back here rather than leaving for the destination, and the
 continue flag cannot be used to turn a framed link into a plain redirect.
 The frame is sandboxed, carries no referrer, and the page's
 `frame-src` names the destination's origin and nothing else. A destination
-that refuses to be framed shows the warning and a direct link instead, so
-the feature is best treated as a convenience rather than a guarantee.
+that refuses to be framed simply shows nothing: the visitor's page carries
+no banner, because the warning belongs beside the checkbox that turns
+framing on, where the person who can act on it will see it. Treat the
+feature as a convenience rather than a guarantee, and test each destination.
 
 **A destination cannot carry a password.** `https://user:secret@host/` is
 refused: it would be stored in the clear, shown on the edit screen, written
@@ -610,8 +687,16 @@ The page works without JavaScript via a meta refresh.
 - The same lack of compare-and-set means the twenty-passkey cap per account
   can be passed by registering from two tabs at the same instant. It is a
   sanity bound on how much one account can store, not a security boundary.
-- There is no CI in this repository. `npm test` is the gate and it is run by
-  hand; the only automatic check on a pull request is the Cloudflare build.
+- **A listing can be a minute behind a change.** KV prefix listing is
+  eventually consistent, so a record written a moment ago can be missing
+  from the next listing and one just deleted can still be in it. Reading a
+  single key is not subject to that, so each change a session makes is
+  noted on its session record and the listing is reconciled against a
+  direct read of those few keys. The correction covers the session that
+  made the change and lasts two minutes; another person's screen still
+  shows the listing as KV reports it. It changes what a screen shows and
+  never what it permits: a note only causes a read, and a record that has
+  really gone reads as nothing and disappears from the list anyway.
 
 ### Rotating AUTH_SECRET
 
@@ -637,9 +722,15 @@ it cannot read unless you confirm.
 
 ```sh
 npm run check   # syntax-check every module as an ES module
-npm test        # 1,138 checks across 25 suites
+npm test        # 1,284 checks across 28 suites
 wrangler dev    # local run; see the note below
 ```
+
+Every push and every pull request runs the same three gates in GitHub
+Actions (`.github/workflows/ci.yml`): the syntax check, the suite, and
+`wrangler deploy --dry-run`, which catches a module that parses and
+passes but will not bundle for the Workers runtime. The dry run uploads
+nothing and needs no credentials.
 
 Tests run on plain Node against an in-memory KV, a stubbed siteverify and a
 capturing mail binding, driving the real `fetch` handler — no account or

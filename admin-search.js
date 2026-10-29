@@ -36,7 +36,7 @@ import {
 import { MAX_RESULTS, PAGE_SIZE, search, TYPES } from './search.js';
 import { getUserByNorm, inviteUser, isAdmin } from './users.js';
 import { esc } from './util.js';
-import { alert, csrfField, field, hidden, pager, select, statusBadges } from './views.js';
+import { alert, copyButton, csrfField, field, hidden, pager, select, statusBadges } from './views.js';
 
 /** The selection value for one row, and its inverse. */
 function rowId(row) {
@@ -93,7 +93,7 @@ function resultRows(rows, pickable) {
         ${statusBadges(row) || ''}
         ${
           row.kind === 'link'
-            ? `<button class="link" type="button" data-copy="https://${esc(row.host)}/${esc(row.path)}">Copy</button>`
+            ? copyButton('https://' + row.host + '/' + row.path, { what: row.host + '/' + row.path })
             : ''
         }</td>
       <td class="trunc">${

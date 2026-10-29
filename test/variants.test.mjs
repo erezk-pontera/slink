@@ -1,4 +1,5 @@
 import { Harness } from './harness.js';
+import { normalizeRouting, resolveTarget } from '../targets.js';
 
 let passed = 0;
 let failed = 0;
@@ -56,42 +57,57 @@ section('a link can send each device somewhere different');
   ok('client hints are preferred', where(byHint) === 'https://play.example/app', String(where(byHint)));
 }
 
-/* ----------------------------------------------- country rules */
-section('country rules apply within whichever slot was chosen');
+/* -------------------------------- destinations no longer branch on country */
+section('a destination is chosen by device alone');
 {
   await create({
     host: 'ptra.cc', path: 'geo', target: 'https://global.example/', status: '302',
-    rules__default: 'IL,CY https://il.example/\nDE https://de.example/',
     url__mobileAndroid: 'https://play.example/geo',
-    rules__mobileAndroid: 'IL https://play-il.example/',
   });
   const hit = (ua, country) => h.req('https://ptra.cc/geo', { headers: { 'User-Agent': ua }, country });
 
-  ok('desktop elsewhere gets the default', where(await hit(UA.desktop, 'FR')) === 'https://global.example/');
-  ok('desktop in Israel gets the local one', where(await hit(UA.desktop, 'IL')) === 'https://il.example/');
-  ok('a second country in the same rule works', where(await hit(UA.desktop, 'CY')) === 'https://il.example/');
-  ok('a later rule still matches', where(await hit(UA.desktop, 'DE')) === 'https://de.example/');
-  ok('Android elsewhere gets the slot URL', where(await hit(UA.android, 'FR')) === 'https://play.example/geo');
-  ok('Android in Israel gets the slot country rule',
-     where(await hit(UA.android, 'IL')) === 'https://play-il.example/',
-     String(where(await hit(UA.android, 'IL'))));
-  // The iOS slot is unset, so it falls through to the default and that
-  // slot's own country rules still apply.
-  ok('an unset slot still picks up default country rules',
-     where(await hit(UA.iphone, 'IL')) === 'https://il.example/',
-     String(where(await hit(UA.iphone, 'IL'))));
+  ok('desktop gets the default', where(await hit(UA.desktop, 'FR')) === 'https://global.example/');
+  ok('and gets the same thing from anywhere else',
+     where(await hit(UA.desktop, 'IL')) === 'https://global.example/',
+     String(where(await hit(UA.desktop, 'IL'))));
+  ok('Android gets its slot', where(await hit(UA.android, 'FR')) === 'https://play.example/geo');
+  ok('from anywhere', where(await hit(UA.android, 'IL')) === 'https://play.example/geo');
+  ok('an unset slot falls through to the default',
+     where(await hit(UA.iphone, 'IL')) === 'https://global.example/');
 
-  // Every branch is validated, not just the main destination.
+  // The form no longer offers them, and a submitted rule is ignored rather
+  // than stored.
+  const form = await (await h.req('https://ptra.dev/admin/links/new')).text();
+  ok('the create form offers no country rules', !form.includes('rules__default'));
+  ok('nor any mention of them', !/country rule/i.test(form));
+  await create({
+    host: 'ptra.cc', path: 'nogeo', target: 'https://global.example/', status: '302',
+    rules__default: 'IL https://il.example/',
+  });
+  ok('a hand-made country rule is ignored',
+     where(await h.req('https://ptra.cc/nogeo', { headers: { 'User-Agent': UA.desktop }, country: 'IL' })) ===
+       'https://global.example/');
+
+  // A record stored before they were removed resolves by device alone.
+  const stale = {
+    routing: {
+      default: { url: 'https://global.example/', rules: [{ countries: ['IL'], url: 'https://old.example/' }] },
+      mobileAndroid: { url: 'https://play.example/geo', rules: [] },
+    },
+    target: 'https://global.example/',
+  };
+  ok('an old record ignores the rules it still carries',
+     resolveTarget(stale, { device: 'desktop' }).url === 'https://global.example/');
+  ok('and still honours its device slots',
+     resolveTarget(stale, { device: 'mobileAndroid' }).url === 'https://play.example/geo');
+  ok('normalising drops the stored rules', !('rules' in normalizeRouting(stale.routing).default));
+
+  // Every branch is still validated.
   const bad = await create({
     host: 'ptra.cc', path: 'evilvariant', target: 'https://ok.example/', status: '302',
     url__mobileIos: 'javascript:alert(1)',
   });
   ok('a dangerous scheme in a device slot is refused', (await bad.text()).includes('not allowed'));
-  const badRule = await create({
-    host: 'ptra.cc', path: 'evilrule', target: 'https://ok.example/', status: '302',
-    rules__default: 'IL javascript:alert(1)',
-  });
-  ok('a dangerous scheme in a country rule is refused', (await badRule.text()).includes('not allowed'));
 }
 
 /* --------------------------------------------------- previews */
@@ -157,10 +173,8 @@ section('duplicating a link');
      (form.match(/name="path"[^>]*/) || [''])[0]);
   ok('the destination came across', form.includes('value="https://global.example/"'));
   ok('the device slot came across', form.includes('value="https://play.example/geo"'));
-  ok('the country rules came across', form.includes('IL,CY https://il.example/'));
 
-  // The original is untouched. (The harness sends country IL by default, so
-  // ask from somewhere with no rule to see the plain default.)
+  // The original is untouched.
   const original = await h.req('https://ptra.cc/geo', {
     headers: { 'User-Agent': UA.desktop }, country: 'FR',
   });

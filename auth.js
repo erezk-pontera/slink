@@ -494,8 +494,8 @@ const SSO_TTL = 120;
  * be completed by the browser that started it.
  */
 export async function oauthBegin(ctx, returnPath) {
-  const { cfg, domain, origin } = ctx;
-  if (!oauthReady(cfg, domain)) return { ok: false, error: 'Single sign-on is not configured here.' };
+  const { cfg, origin } = ctx;
+  if (!oauthReady(cfg)) return { ok: false, error: 'Single sign-on is not configured.' };
 
   const state = randomId(18);
   const { verifier, challenge } = await pkcePair();
@@ -509,7 +509,7 @@ export async function oauthBegin(ctx, returnPath) {
 
   return {
     ok: true,
-    location: authorizeUrl(domain, { origin, state, challenge }),
+    location: authorizeUrl(cfg, { origin, state, challenge }),
     cookie: serializeCookie(COOKIE.oauth, token, {
       maxAge: STATE_TTL_SECONDS,
       sameSite: 'Lax',
@@ -529,7 +529,7 @@ export async function oauthComplete(ctx, { code, state }) {
   const ip = clientIp(request);
   const fail = (error) => ({ ok: false, error, cookies: [clearCookie(COOKIE.oauth)] });
 
-  if (!oauthReady(cfg, domain)) return fail('Single sign-on is not configured here.');
+  if (!oauthReady(cfg)) return fail('Single sign-on is not configured.');
 
   const cookies = parseCookies(request);
   const payload = await verifyToken(cfg.authSecret, 'oauth-state', cookies[COOKIE.oauth], {
@@ -541,10 +541,10 @@ export async function oauthComplete(ctx, { code, state }) {
   if (!state || state !== payload.s) return fail('That sign-in could not be verified.');
   if (!code) return fail('The identity provider did not return a code.');
 
-  const token = await exchangeCode(cfg, domain, { code, verifier: payload.v, origin });
+  const token = await exchangeCode(cfg, { code, verifier: payload.v, origin });
   if (!token.ok) return fail(token.error);
 
-  const profile = await fetchEmail(domain, token.accessToken);
+  const profile = await fetchEmail(cfg, token.accessToken);
   if (!profile.ok) return fail(profile.error);
 
   let parsed;

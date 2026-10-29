@@ -13,7 +13,14 @@
  *     ownership and directory administration alike.
  */
 
-import { getDirectory, getGrant, directoryPathSet, listUserGrants } from './directories.js';
+import {
+  createAccess,
+  getDirectory,
+  getGrant,
+  directoryPathSet,
+  listDirectories,
+  listUserGrants,
+} from './directories.js';
 import { createDomainsFor } from './domains.js';
 import { domainAllowed, parentDirectory } from './paths.js';
 import { isAdmin, isRootAdmin } from './users.js';
@@ -65,8 +72,12 @@ export function emailDomainOf(user) {
  * Resolve the directory that governs `pathLc`, if any. Returns
  * { dir, grant } with nulls when the path sits at the host root.
  */
-export async function resolveGovernor(cfg, host, pathLc, user, { dirSet } = {}) {
-  const known = dirSet || (await directoryPathSet(cfg, host));
+export async function resolveGovernor(cfg, host, pathLc, user, { dirSet, pending } = {}) {
+  // `pending` names directories this session has just created or removed.
+  // The set is only used to find which ancestor to look up, and the lookup
+  // itself is a single-key read, so a correction can surface a directory
+  // that exists but has not reached the listing yet - never invent one.
+  const known = dirSet || (await directoryPathSet(cfg, host, { pending }));
   const parentLc = parentDirectory(pathLc, known);
   if (!parentLc) return { dir: null, grant: null, parentLc: null };
   const dir = await getDirectory(cfg, host, parentLc);
@@ -101,17 +112,14 @@ export function rootCreateAllowed(cfg, domain, user) {
 }
 
 /**
- * May `user` create a link at `pathLc` on `host`?
- * Returns { allowed, reason, dir, grant }.
+ * The create decision itself, once the governing directory and the user's
+ * grant on it are in hand. Kept apart from the lookup so a screen listing
+ * every place somebody may create can reach the same answer from records it
+ * has already loaded, instead of restating the rules and drifting from them.
  */
-export async function canCreate(cfg, { user, domain, host, pathLc, dirSet }) {
-  if (!user) return deny(DENY.anonymous);
-  if (user.disabled) return deny(DENY.disabled);
+function decideCreate(cfg, { user, domain, dir, grant }) {
   const admin = isAdmin(cfg, user);
-
   if (domain && domain.enabled === false && !admin) return deny(DENY.domainDisabled);
-
-  const { dir, grant } = await resolveGovernor(cfg, host, pathLc, user, { dirSet });
   if (admin && adminActsHere(cfg, user, dir, grant)) return allow({ dir, grant, asAdmin: true });
 
   if (domain && domain.readonly) return deny(DENY.domainReadonly, { dir, grant });
@@ -120,12 +128,58 @@ export async function canCreate(cfg, { user, domain, host, pathLc, dirSet }) {
     if (dir.enabled === false) return deny(DENY.dirDisabled, { dir, grant });
     if (dir.readonly) return deny(DENY.dirReadonly, { dir, grant });
     if (grant && (grant.canCreate || grant.canManage)) return allow({ dir, grant });
-    if (!dir.open) return deny(DENY.dirNoGrant, { dir, grant });
-    // Open directories fall through to the host's root policy.
+    const access = createAccess(dir);
+    // Holding an account that can sign in is the whole requirement here,
+    // which is the point of the setting: the host's root policy is not
+    // consulted and no grant is needed.
+    if (access === 'signed_in') return allow({ dir, grant });
+    if (access !== 'root_policy') return deny(DENY.dirNoGrant, { dir, grant });
+    // 'root_policy' falls through to the host's root policy below.
   }
 
   if (rootCreateAllowed(cfg, domain, user)) return allow({ dir, grant });
-  return deny(DENY.rootNoPermission, { dir, grant });
+  return deny(dir ? DENY.dirNoGrant : DENY.rootNoPermission, { dir, grant });
+}
+
+/**
+ * May `user` create a link at `pathLc` on `host`?
+ * Returns { allowed, reason, dir, grant }.
+ */
+export async function canCreate(cfg, { user, domain, host, pathLc, dirSet, pending }) {
+  if (!user) return deny(DENY.anonymous);
+  if (user.disabled) return deny(DENY.disabled);
+  const { dir, grant } = await resolveGovernor(cfg, host, pathLc, user, { dirSet, pending });
+  return decideCreate(cfg, { user, domain, dir, grant });
+}
+
+/**
+ * Every place on `host` where this person may create a link: the host root
+ * when the policy allows it, and each directory they may create in. The
+ * create form offers exactly this, so what it shows and what the submit
+ * accepts cannot disagree.
+ *
+ * Two listings rather than a permission check per directory: the grants are
+ * read once from the reverse index and matched up locally.
+ */
+export async function creatableLocations(cfg, { user, domain, host, pending, grantPending }) {
+  if (!user || user.disabled) return [];
+  const [dirs, grants] = await Promise.all([
+    listDirectories(cfg, host, { pending }),
+    listUserGrants(cfg, user.id, { pending: grantPending }),
+  ]);
+  const held = new Map(grants.filter((g) => g.host === host).map((g) => [g.dirPathLc, g]));
+
+  const out = [];
+  if (decideCreate(cfg, { user, domain, dir: null, grant: null }).allowed) {
+    out.push({ pathLc: '', path: '', dir: null });
+  }
+  for (const dir of dirs) {
+    const grant = held.get(dir.pathLc) || null;
+    if (decideCreate(cfg, { user, domain, dir, grant }).allowed) {
+      out.push({ pathLc: dir.pathLc, path: dir.path, dir });
+    }
+  }
+  return out;
 }
 
 /**

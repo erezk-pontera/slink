@@ -463,37 +463,60 @@ section('the account still decides');
 /* ------------------------------------------------------ 7. the policy */
 section('a host may switch them off');
 {
-  const cfg = { hubHost: 'ptra.dev', oauthSecret: 'secret' };
-  const provider = {
-    enabled: true,
-    clientId: 'c',
-    authorizeUrl: 'https://idp.example/a',
-    tokenUrl: 'https://idp.example/t',
-    userinfoUrl: 'https://idp.example/u',
+  // The provider is a system setting; the per-host switch is not.
+  const cfg = {
+    hubHost: 'ptra.dev',
+    oauthSecret: 'secret',
+    settings: {
+      oauth: {
+        enabled: true,
+        clientId: 'c',
+        authorizeUrl: 'https://idp.example/a',
+        tokenUrl: 'https://idp.example/t',
+        userinfoUrl: 'https://idp.example/u',
+      },
+    },
   };
-  ok('on by default', passkeysEnabled(cfg, { oauth: provider }) === true);
-  ok('a host may turn them off', passkeysEnabled(cfg, { oauth: provider, disabledMethods: ['passkey'] }) === false);
+  const noProvider = { hubHost: 'ptra.dev', oauthSecret: 'secret', settings: {} };
+  ok('on by default', passkeysEnabled(cfg, {}) === true);
+  ok('a host may turn them off', passkeysEnabled(cfg, { disabledMethods: ['passkey'] }) === false);
   ok('an administrator keeps them',
-     passkeysEnabled(cfg, { oauth: provider, disabledMethods: ['passkey'] }, { isAdmin: true }) === true);
+     passkeysEnabled(cfg, { disabledMethods: ['passkey'] }, { isAdmin: true }) === true);
   ok('turning them off needs a working provider',
-     passkeysEnabled(cfg, { disabledMethods: ['passkey'] }) === true);
+     passkeysEnabled(noProvider, { disabledMethods: ['passkey'] }) === true);
 
-  // And through the real screens.
+  // And through the real screens: the provider in settings, the switch on
+  // the domain.
+  const setProvider = async (extra) => {
+    const page = await (await root.req(HUB + '/admin/settings')).text();
+    const form = { _csrf: Harness.csrfFor(page, '/admin/settings') };
+    for (const m of page.matchAll(/<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/g)) {
+      if (m[1] === '_csrf') continue;
+      if (/type="checkbox"/.test(m[0]) && !/\schecked/.test(m[0])) continue;
+      form[m[1]] = m[2];
+    }
+    for (const m of page.matchAll(/<select[^>]*name="([^"]+)"[\s\S]*?<\/select>/g)) {
+      const sel = m[0].match(/<option value="([^"]*)"[^>]*selected/);
+      if (sel) form[m[1]] = sel[1];
+    }
+    return root.req(HUB + '/admin/settings', { form: { ...form, ...extra } });
+  };
   const setDomain = async (extra) => {
     const url = HUB + '/admin/domains/edit?host=ptra.dev';
     const tok = Harness.csrfFor(await (await root.req(url)).text(), '/admin/domains/edit');
     return root.req(HUB + '/admin/domains/edit', {
       form: {
         _csrf: tok, host: 'ptra.dev', defaultStatus: '302', rootCreatePolicy: 'email_domain',
-        enabled: '1', authRequired: '1', allowedAuthDomains: 'pontera.com',
-        oauthEnabled: '1', oauthLabel: 'Example SSO', oauthClientId: 'client-123',
-        oauthAuthorizeUrl: 'https://idp.example/authorize',
-        oauthTokenUrl: 'https://idp.example/token',
-        oauthUserinfoUrl: 'https://idp.example/me',
-        ...extra,
+        enabled: '1', authRequired: '1', allowedAuthDomains: 'pontera.com', ...extra,
       },
     });
   };
+  await setProvider({
+    oauthEnabled: '1', oauthLabel: 'Example SSO', oauthClientId: 'client-123',
+    oauthAuthorizeUrl: 'https://idp.example/authorize',
+    oauthTokenUrl: 'https://idp.example/token',
+    oauthUserinfoUrl: 'https://idp.example/me',
+  });
   await setDomain({ disable_passkey: '1' });
 
   const guest = peer(root);
@@ -525,6 +548,7 @@ section('a host may switch them off');
   await setDomain({});
   const back = await (await peer(root).req(HUB + '/admin')).text();
   ok('turning it back on restores the button', back.includes('data-slink-passkey-login'));
+  await setProvider({ oauthEnabled: '' });
 }
 
 section('signing in cannot be aimed somewhere else');

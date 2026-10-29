@@ -13,6 +13,7 @@ import { listUserGrants } from './directories.js';
 import { clientIp } from './geo.js';
 import { ANY_HOST, EXEMPTIBLE, normalizeExempt } from './interstitial.js';
 import { PROVIDERS } from './mailer.js';
+import { normalizeOauth, oauthReady, oauthSettings } from './oauth.js';
 import { HARD_BLOCKED_SCHEMES, normalizeEmail, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
 import { canImpersonate, mintImpersonation } from './impersonate.js';
@@ -54,9 +55,9 @@ function isRootAccount(cfg, user) {
 
 async function usersPage(ctx, { error } = {}) {
   const { cfg, url } = ctx;
-  const all = await listUsers(cfg);
-  const users = all.filter((u) => !isRootAdmin(cfg, u.emailNorm));
-  const hidden = all.length - users.length;
+  // Root administrators come from the ADMIN variable rather than from a
+  // record, so there is nothing on this screen that could act on them.
+  const users = (await listUsers(cfg)).filter((u) => !isRootAdmin(cfg, u.emailNorm));
   const impToken = await formToken(ctx, 'user.impersonate');
 
   const rows = users
@@ -84,12 +85,6 @@ async function usersPage(ctx, { error } = {}) {
 ${flashFrom(url)}${alert('error', error)}
 <h1>Users</h1>
 <p class="sub">Accounts are created the first time someone completes a sign-in.</p>
-${
-  hidden
-    ? `<p class="sub">${hidden} root administrator${hidden === 1 ? ' is' : 's are'} not listed. They are set by the ADMIN variable, always hold every permission, and cannot be changed, disabled or deleted from here — edit ADMIN and redeploy instead.</p>`
-    : ''
-}
-
 <div class="card">
   ${
     users.length
@@ -404,6 +399,7 @@ async function settingsPage(ctx, { error } = {}) {
   const token = await formToken(ctx, 'settings.update');
   const geo = s.geo || {};
   const limits = s.rateLimits || {};
+  const oauth = oauthSettings(cfg);
 
   const body = `
 ${flashFrom(url)}${alert('error', error)}
@@ -500,6 +496,44 @@ ${flashFrom(url)}${alert('error', error)}
       note: 'Shortening this removes entries already past the new limit, because a stored entry keeps the expiry it was written with.',
     })}
 
+    <h2>Single sign-on</h2>
+    <p class="hint">One provider for the whole installation. Signing in happens on the hub and every other host comes through the handshake, so this is not a per-domain thing. Each domain still chooses, on its own screen, whether it also offers the emailed code and passkeys.</p>
+    ${checkbox({ name: 'oauthEnabled', label: 'Offer single sign-on', checked: !!oauth.enabled })}
+    ${
+      // Seven provider fields that mean nothing until somebody is wiring a
+      // provider up. Folded away, and opened on its own once it is on or
+      // half-filled, so nobody has to hunt for where they left off.
+      ''
+    }
+    <details class="group"${oauth.enabled || oauth.clientId || oauth.authorizeUrl ? ' open' : ''}>
+    <summary>Provider details${
+      oauth.enabled && !oauthReady(cfg) ? ' <span class="badge off">incomplete</span>' : ''
+    }</summary>
+    ${field({ name: 'oauthLabel', label: 'Button label', value: oauth.label, placeholder: 'Okta' })}
+    ${field({ name: 'oauthClientId', label: 'Client ID', value: oauth.clientId })}
+    ${field({
+      name: 'oauthAuthorizeUrl',
+      label: 'Authorization endpoint',
+      value: oauth.authorizeUrl,
+      placeholder: 'https://idp.example.com/authorize',
+      note: 'HTTPS only, and never a private address. Anything else is discarded.',
+    })}
+    ${field({ name: 'oauthTokenUrl', label: 'Token endpoint', value: oauth.tokenUrl, placeholder: 'https://idp.example.com/oauth/token' })}
+    ${field({ name: 'oauthUserinfoUrl', label: 'Userinfo endpoint', value: oauth.userinfoUrl, placeholder: 'https://idp.example.com/userinfo' })}
+    <div class="row">
+      ${field({ name: 'oauthScope', label: 'Scope', value: oauth.scope })}
+      ${field({ name: 'oauthEmailField', label: 'Email field', value: oauth.emailField, note: 'Where the address sits in the userinfo response.' })}
+    </div>
+    <p class="note">The provider says who somebody is, and nothing more: letting them through its sign-in makes them an ordinary account here. What they may do is decided on this side, by the host's allowed sign-in domains and by their own record &mdash; no role or privilege is read from the provider.</p>
+    <p class="note">Redirect URI to register with the provider, one per host: ${cfg.knownHosts
+      .map((h) => `<code>https://${esc(h)}/__slink/oauth/callback</code>`)
+      .join(', ')}. The client secret is the <code>oauth-secret</code> environment variable, never stored here.${
+      oauth.enabled && !oauthReady(cfg)
+        ? ' <strong>Not usable yet: an endpoint, the client ID or the secret is missing.</strong>'
+        : ''
+    }</p>
+    </details>
+
     <h2>Mail</h2>
     <div class="row">
       ${field({
@@ -528,6 +562,16 @@ async function settingsSubmit(ctx) {
   if (!guard.ok) return back('/admin/settings', 'csrf');
 
   const num = (name, fallback, min, max) => intEnv(body.get(name), fallback, min, max);
+  const oauth = normalizeOauth({
+    enabled: body.get('oauthEnabled') === '1',
+    label: body.get('oauthLabel'),
+    clientId: body.get('oauthClientId'),
+    authorizeUrl: body.get('oauthAuthorizeUrl'),
+    tokenUrl: body.get('oauthTokenUrl'),
+    userinfoUrl: body.get('oauthUserinfoUrl'),
+    scope: body.get('oauthScope'),
+    emailField: body.get('oauthEmailField'),
+  });
   const s = ctx.cfg.settings;
 
   let replyTo = '';
@@ -556,6 +600,7 @@ async function settingsSubmit(ctx) {
     countClicks: body.get('countClicks') === '1',
     auditRetentionDays: num('auditRetentionDays', s.auditRetentionDays, 1, 3650),
     blockedSchemes: listEnv(body.get('blockedSchemes')),
+    oauth,
     geo: {
       blockTor: body.get('geoBlockTor') === '1',
       blockUnknown: body.get('geoBlockUnknown') === '1',

@@ -127,12 +127,10 @@ ${p.description ? `<p>${esc(p.description)}</p>` : ''}
 export function previewCard(host, link, preview) {
   const p = normalizePreview(preview);
   const image = /^https:\/\//i.test(p.image) ? p.image : '';
+  // No placeholder slab where there is no image: an unfurler shows a card
+  // without one, so a card without one is what this should look like.
   return `<div class="ogcard">
-  ${
-    image
-      ? `<div class="ogimg"><img src="${esc(image)}" alt="" loading="lazy"></div>`
-      : '<div class="ogimg ogimg-none">No image</div>'
-  }
+  ${image ? `<div class="ogimg"><img src="${esc(image)}" alt="" loading="lazy"></div>` : ''}
   <div class="ogbody">
     <div class="oghost">${esc(host)}</div>
     <div class="ogtitle">${esc(p.title || 'Untitled')}</div>

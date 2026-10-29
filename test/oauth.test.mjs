@@ -12,6 +12,7 @@ import {
   normalizeDisabledMethods,
   normalizeOauth,
   oauthReady,
+  oauthSettings,
 } from '../oauth.js';
 
 let passed = 0;
@@ -40,12 +41,12 @@ const PROVIDER = {
   oauthUserinfoUrl: 'https://idp.example/me',
   oauthScope: 'openid email',
   oauthEmailField: 'email',
-  oauthVerifiedField: 'email_verified',
 };
 
 const root = new Harness();
 await root.signIn('root@pontera.com');
 
+/** The per-host switches, which stay on the domain screen. */
 async function setDomain(extra) {
   const url = 'https://ptra.dev/admin/domains/edit?host=ptra.dev';
   const tok = Harness.csrfFor(await (await root.req(url)).text(), '/admin/domains/edit');
@@ -57,6 +58,28 @@ async function setDomain(extra) {
   });
 }
 
+/**
+ * The provider itself, which is one setting for the installation. Posting
+ * the whole settings form, as a browser would, so nothing else is cleared.
+ */
+async function setProvider(extra) {
+  const page = await (await root.req('https://ptra.dev/admin/settings')).text();
+  const form = { _csrf: Harness.csrfFor(page, '/admin/settings') };
+  for (const m of page.matchAll(/<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/g)) {
+    if (m[1] === '_csrf') continue;
+    if (/type="checkbox"/.test(m[0]) && !/\schecked/.test(m[0])) continue;
+    form[m[1]] = m[2];
+  }
+  for (const m of page.matchAll(/<select[^>]*name="([^"]+)"[\s\S]*?<\/select>/g)) {
+    const sel = m[0].match(/<option value="([^"]*)"[^>]*selected/);
+    if (sel) form[m[1]] = sel[1];
+  }
+  return root.req('https://ptra.dev/admin/settings', { form: { ...form, ...extra } });
+}
+
+/** Clear the provider again. */
+const clearProvider = () => setProvider({ oauthEnabled: '' });
+
 /* --------------------------------------------------- 1. configuration */
 section('configuration');
 {
@@ -64,13 +87,25 @@ section('configuration');
   ok('an https endpoint is kept', normalizeOauth({ tokenUrl: 'https://idp.example/t' }).tokenUrl !== '');
   ok('rubbish is discarded', normalizeOauth({ tokenUrl: 'not a url' }).tokenUrl === '');
 
-  const configured = {
-    oauth: { enabled: true, clientId: 'c', authorizeUrl: 'https://idp.example/a',
-             tokenUrl: 'https://idp.example/t', userinfoUrl: 'https://idp.example/u' },
-  };
-  ok('not ready without a secret', !oauthReady({ oauthSecret: '' }, configured));
-  ok('ready with a secret', oauthReady({ oauthSecret: 's' }, configured));
-  ok('not ready when switched off', !oauthReady({ oauthSecret: 's' }, { oauth: { ...configured.oauth, enabled: false } }));
+  // The provider lives in settings, not on a domain.
+  const withProvider = (over = {}) => ({
+    oauthSecret: 's',
+    settings: {
+      oauth: {
+        enabled: true, clientId: 'c', authorizeUrl: 'https://idp.example/a',
+        tokenUrl: 'https://idp.example/t', userinfoUrl: 'https://idp.example/u', ...over,
+      },
+    },
+  });
+  ok('not ready without a secret', !oauthReady({ ...withProvider(), oauthSecret: '' }));
+  ok('ready with a secret', oauthReady(withProvider()));
+  ok('not ready when switched off', !oauthReady(withProvider({ enabled: false })));
+  ok('not ready with an endpoint missing', !oauthReady(withProvider({ tokenUrl: '' })));
+  ok('a provider on a domain record is ignored',
+     !oauthReady({ oauthSecret: 's', settings: {} }));
+  ok('the settings reader fills in the defaults',
+     oauthSettings({ settings: {} }).emailField === 'email');
+  ok('and is safe with nothing at all', oauthSettings({}).enabled === false);
 
   // These endpoints are fetched with the client secret attached, so a
   // wrong one sends that secret somewhere it should not go.
@@ -91,14 +126,17 @@ section('configuration');
   ok('single sign-on cannot be disabled', !normalizeDisabledMethods(['oauth', 'otp']).includes('oauth'));
   ok('an unknown method is dropped', normalizeDisabledMethods(['nonsense']).length === 0);
 
-  const cfg = { oauthSecret: 's' };
-  ok('no provider means every route stays', methodsFor(cfg, {}).otp === true);
+  ok('no provider means every route stays',
+     methodsFor({ oauthSecret: 's', settings: {} }, {}).otp === true);
   ok('a host may turn the code off',
-     methodsFor(cfg, { ...configured, disabledMethods: ['otp'] }).otp === false);
+     methodsFor(withProvider(), { disabledMethods: ['otp'] }).otp === false);
   ok('an administrator keeps the code',
-     methodsFor(cfg, { ...configured, disabledMethods: ['otp'] }, { isAdmin: true }).otp === true);
+     methodsFor(withProvider(), { disabledMethods: ['otp'] }, { isAdmin: true }).otp === true);
   ok('switching the code off needs a working provider',
-     methodsFor(cfg, { disabledMethods: ['otp'] }).otp === true);
+     methodsFor({ oauthSecret: 's', settings: {} }, { disabledMethods: ['otp'] }).otp === true);
+  ok('the switch is still per host',
+     methodsFor(withProvider(), { disabledMethods: [] }).otp === true &&
+     methodsFor(withProvider(), { disabledMethods: ['otp'] }).otp === false);
 }
 
 /* -------------------------------------------------------- 2. the page */
@@ -107,21 +145,21 @@ section('the sign-in page');
   const before = await (await root.req('https://ptra.dev/admin', { cookies: false })).text();
   ok('no button before it is configured', !before.includes('/__slink/oauth/start'));
 
-  await setDomain(PROVIDER);
+  await setProvider(PROVIDER);
   const after = await (await root.req('https://ptra.dev/admin', { cookies: false })).text();
   ok('the button appears', after.includes('/__slink/oauth/start'));
   ok('it carries the label', after.includes('Continue with Example SSO'));
   ok('the code form is still offered', after.includes('name="email"'));
   ok('with a divider between them', after.includes('class="divider"'));
 
-  await setDomain({ ...PROVIDER, disable_otp: '1' });
+  await setDomain({ disable_otp: '1' });
   const only = await (await root.req('https://ptra.dev/admin', { cookies: false })).text();
   ok('turning the code off removes the form', !only.includes('name="email"'));
   ok('the button remains', only.includes('/__slink/oauth/start'));
   ok('an administrator can still reach the code',
      (await (await root.req('https://ptra.dev/admin?otp=1', { cookies: false })).text()).includes('name="email"'));
 
-  await setDomain(PROVIDER);
+  await setDomain({});
 }
 
 /* ------------------------------------------------------ 3. the handshake */
@@ -185,13 +223,24 @@ section('the provider establishes an address, nothing more');
   ok('an address outside the allowed domains is refused',
      (await r1.text()).includes('may not sign in to this domain'), String(r1.status));
 
-  // An unverified address is a claim, not a fact.
+  // The provider's own verification flag is no longer consulted. Letting
+  // somebody through its sign-in is the provider saying who they are;
+  // what they may do here is decided on this side.
   const unverified = peer(root);
   unverified.idpVerified = false;
+  unverified.idpEmail = 'unverified@pontera.com';
   const s2 = await unverified.req('https://ptra.dev/__slink/oauth/start');
   const st2 = new URL(s2.headers.get('Location')).searchParams.get('state');
   const r2 = await unverified.req('https://ptra.dev/__slink/oauth/callback?code=a&state=' + st2);
-  ok('an unverified address is refused', (await r2.text()).includes('not verified'));
+  ok('an address the provider does not mark verified still signs in',
+     r2.status === 303, String(r2.status));
+
+  // What it does *not* get is any standing. The provider says who, never what.
+  const who = await unverified.req('https://ptra.dev/admin');
+  const page = await who.text();
+  ok('and lands as an ordinary account', page.includes('unverified@pontera.com'));
+  ok('with no administrator rights', !page.includes('administrator rights on every domain'));
+  ok('and no administrator tabs', !page.includes('>Users<') && !page.includes('>Settings<'));
 
   // A disabled account stays disabled.
   const edit = 'https://ptra.dev/admin/users/edit?u=sso%40pontera.com';
@@ -256,7 +305,7 @@ section('turning the code off is enforced where the address is known');
     form: { _csrf: ptok, u: 'pat@pontera.com', isAdmin: '1', allDirectories: '1' },
   });
 
-  await setDomain({ ...PROVIDER, disable_otp: '1' });
+  await setDomain({ disable_otp: '1' });
 
   const tryOtp = async (email) => {
     const h = peer(root);

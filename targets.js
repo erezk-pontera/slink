@@ -1,21 +1,19 @@
 /**
  * targets.js - choosing which destination a visitor gets.
  *
- * A link always has one mandatory destination. It may additionally carry a
- * destination per device class, and any of those slots - including the
- * default - may carry country rules.
+ * A link always has one mandatory destination, and may additionally carry
+ * one per device class.
  *
  * Resolution is deliberately simple to reason about:
  *
  *   1. Pick the slot for the visitor's device. A slot that has been left
  *      empty is skipped entirely, so configuring only "mobile Android" is
  *      perfectly normal and everything else falls through.
- *   2. Inside that slot, the first country rule that matches wins.
- *   3. Otherwise the slot's own URL.
- *   4. Otherwise the same two steps against the default slot.
+ *   2. Otherwise the default slot.
  *
- * Country comes from Cloudflare's view of the client, which is also what the
- * sign-in geography checks use.
+ * Destinations used to be able to branch on the visitor's country as well.
+ * That is gone: the sign-in geography gate in geo.js is a different thing
+ * and stays.
  */
 
 export const DEVICE_SLOTS = ['mobileAndroid', 'mobileIos', 'tabletAndroid', 'tabletIos'];
@@ -31,32 +29,24 @@ export const SLOT_LABELS = {
 
 /** An empty routing table: every optional slot unset. */
 export function emptyRouting() {
-  const out = { default: { url: '', rules: [] } };
-  for (const slot of DEVICE_SLOTS) out[slot] = { url: '', rules: [] };
+  const out = { default: { url: '' } };
+  for (const slot of DEVICE_SLOTS) out[slot] = { url: '' };
   return out;
 }
 
-/** Normalise a stored or submitted routing table. */
+/**
+ * Normalise a stored or submitted routing table.
+ *
+ * A record written before country rules were removed still carries a
+ * `rules` array; it is dropped here rather than migrated, so an old link
+ * resolves by device alone from the first request.
+ */
 export function normalizeRouting(raw) {
   const out = emptyRouting();
   const src = raw && typeof raw === 'object' ? raw : {};
   for (const slot of ALL_SLOTS) {
     const entry = src[slot] && typeof src[slot] === 'object' ? src[slot] : {};
-    out[slot] = {
-      url: typeof entry.url === 'string' ? entry.url : '',
-      rules: Array.isArray(entry.rules)
-        ? entry.rules
-            .map((r) => ({
-              countries: Array.isArray(r && r.countries)
-                ? r.countries
-                    .map((c) => String(c).trim().toUpperCase())
-                    .filter((c) => /^[A-Z]{2}$/.test(c))
-                : [],
-              url: typeof (r && r.url) === 'string' ? r.url : '',
-            }))
-            .filter((r) => r.url && r.countries.length)
-        : [],
-    };
+    out[slot] = { url: typeof entry.url === 'string' ? entry.url : '' };
   }
   return out;
 }
@@ -65,8 +55,7 @@ export function normalizeRouting(raw) {
 export function hasRouting(routing) {
   if (!routing) return false;
   const r = normalizeRouting(routing);
-  if (r.default.rules.length) return true;
-  return DEVICE_SLOTS.some((s) => r[s].url || r[s].rules.length);
+  return DEVICE_SLOTS.some((slot) => !!r[slot].url);
 }
 
 /**
@@ -97,19 +86,6 @@ export function deviceClass(request) {
   return 'desktop';
 }
 
-function matchCountry(rules, country) {
-  if (!country) return null;
-  const c = String(country).toUpperCase();
-  for (const rule of rules || []) {
-    if (rule.countries.includes(c)) return rule.url;
-  }
-  return null;
-}
-
-/**
- * The destination for one visitor. Returns { url, slot, byCountry } so the
- * caller can say why, which the admin preview uses.
- */
 /**
  * Should this slot be shown in a frame rather than redirected to? Stored per
  * slot, so a link can frame its mobile destination and redirect for the rest.
@@ -128,22 +104,18 @@ export function normalizeFrame(raw) {
   return out;
 }
 
-export function resolveTarget(link, { device = 'desktop', country = '' } = {}) {
+/**
+ * The destination for one visitor. Returns { url, slot } so the caller can
+ * say which slot answered, which the admin preview uses.
+ */
+export function resolveTarget(link, { device = 'desktop' } = {}) {
   const routing = normalizeRouting(link && link.routing);
   const fallback = (link && link.target) || '';
 
-  if (device !== 'desktop') {
-    const slot = routing[device];
-    if (slot && (slot.url || slot.rules.length)) {
-      const byCountry = matchCountry(slot.rules, country);
-      if (byCountry) return { url: byCountry, slot: device, byCountry: true };
-      if (slot.url) return { url: slot.url, slot: device, byCountry: false };
-    }
+  if (device !== 'desktop' && routing[device] && routing[device].url) {
+    return { url: routing[device].url, slot: device };
   }
-
-  const byCountry = matchCountry(routing.default.rules, country);
-  if (byCountry) return { url: byCountry, slot: 'default', byCountry: true };
-  return { url: routing.default.url || fallback, slot: 'default', byCountry: false };
+  return { url: routing.default.url || fallback, slot: 'default' };
 }
 
 /** Every distinct destination a link can send someone to. */
@@ -151,9 +123,6 @@ export function allDestinations(link) {
   const routing = normalizeRouting(link && link.routing);
   const out = new Set();
   if (link && link.target) out.add(link.target);
-  for (const slot of ALL_SLOTS) {
-    if (routing[slot].url) out.add(routing[slot].url);
-    for (const rule of routing[slot].rules) out.add(rule.url);
-  }
+  for (const slot of ALL_SLOTS) if (routing[slot].url) out.add(routing[slot].url);
   return [...out];
 }

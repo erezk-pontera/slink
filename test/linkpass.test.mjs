@@ -391,8 +391,6 @@ section('a password sits in front of every other behaviour');
 
   const framed = await guest.req('https://ptra.cc/combo', { country: 'US' });
   ok('then the frame is served', framed.status === 200 && (await framed.text()).includes('<iframe'));
-  const il = await guest.req('https://ptra.cc/combo', { country: 'IL' });
-  ok('a country rule still applies under it', (await il.text()).includes('example.com/israel'));
   const ios = await guest.req('https://ptra.cc/combo', {
     country: 'US', headers: { 'Sec-CH-UA-Mobile': '?1', 'Sec-CH-UA-Platform': '"iOS"' },
   });

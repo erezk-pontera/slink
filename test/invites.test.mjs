@@ -91,7 +91,7 @@ await root.req('https://ptra.dev/admin/directories/new', {
 });
 const linkTok = Harness.csrf(await (await root.req('https://ptra.dev/admin/links/new')).text());
 await root.req('https://ptra.dev/admin/links/new', {
-  form: { _csrf: linkTok, host: 'ptra.cc', path: 'crew/doc', target: 'example.com/doc', status: '302' },
+  form: { _csrf: linkTok, host: 'ptra.cc', dir: 'ptra.cc/crew', path: 'doc', target: 'example.com/doc', status: '302' },
 });
 
 /* ------------------------------------------------------ 1. the default */

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { Harness } from './harness.js';
-import { serveAsset, ASSET_VERSION } from '../assets.js';
+import { CSS, JS, serveAsset, ASSET_VERSION } from '../assets.js';
 import { LOGO_SVG } from '../logo.js';
 
 let passed = 0;
@@ -55,6 +55,77 @@ ok('hub pages link the favicon', loginBody.includes('/__slink/logo.svg'));
 // The icon is same-origin, which img-src 'self' already permits.
 const csp = login.headers.get('Content-Security-Policy') || '';
 ok('CSP permits a same-origin icon', /img-src [^;]*'self'/.test(csp), csp);
+
+
+// The floating QR can actually hide itself.
+{
+  // An explicit display beats the browser's own [hidden] rule, so the
+  // stylesheet has to repeat it or the panel is stuck on screen.
+  ok('the panel has a display of its own', /\.qrfloat\{[^}]*display:block/.test(CSS));
+  ok('and a rule that lets it hide', /\.qrfloat\[hidden\][^{]*\{display:none\}/.test(CSS));
+  ok('the image inside can hide too', /\.qrfloat img\[hidden\]|img\[hidden\]\{display:none\}/.test(CSS));
+  ok('the script hides and shows it', JS.includes('qrBox.hidden = true') && JS.includes('qrBox.hidden = false'));
+  ok('and debounces rather than firing per keystroke', JS.includes('window.clearTimeout(timer)'));
+}
+
+// One link, so the listings below have a row to render.
+{
+  const form = await (await h.req('https://ptra.dev/admin/links/new')).text();
+  await h.req('https://ptra.dev/admin/links/new', {
+    form: {
+      _csrf: Harness.csrf(form),
+      host: 'ptra.cc',
+      dir: 'ptra.cc/',
+      path: 'chrome',
+      target: 'example.com/chrome',
+      status: '302',
+    },
+  });
+}
+
+// The chrome: where you can go, and who you are, are two groups.
+{
+  const page = await (await h.req('https://ptra.dev/admin')).text();
+  const navBlock = (page.match(/<nav class="main"[\s\S]*?<\/nav>/) || [''])[0];
+  ok('the sections are a nav', navBlock.includes('href="/admin/links"'), navBlock.slice(0, 80));
+  ok('signing out is not one of them', !navBlock.includes('Sign out'), navBlock);
+  ok('it is with the account instead', /<div class="acct">[\s\S]*?class="signout"/.test(page),
+     (page.match(/<div class="acct">[\s\S]*?<\/div>/) || [''])[0].slice(0, 160));
+  ok('the nav says what it is', navBlock.includes('aria-label="Sections"'));
+
+  // A phone cannot show a link row as a table row, so it is told to stack.
+  ok('link listings can stack on a narrow screen', page.includes('<table class="cards-sm"'));
+  ok('and the stylesheet knows how', CSS.includes('.cards-sm thead{display:none}'));
+
+  // Sections inside one card are separated rather than run together.
+  ok('a second heading in a card draws a rule', /\.card h2~h2[^{]*\{[^}]*border-top/.test(CSS));
+
+  // The floating QR only pins itself where there is room beside the column.
+  ok('the QR floats rather than taking a band', /\.qrfloat\{[^}]*float:right/.test(CSS));
+  ok('and pins only on a wide screen', /@media \(min-width:14\d\dpx\)\{\s*\.qrfloat\{position:fixed/.test(CSS),
+     (CSS.match(/@media \(min-width:\d+px\)\{\s*\.qrfloat[^}]*\}/) || [''])[0]);
+}
+
+// Copy and duplicate must not read as the same glyph.
+{
+  const list = await (await h.req('https://ptra.dev/admin/links')).text();
+  const copyIcon = (list.match(/class="ic ic-idle"[\s\S]*?<\/svg>/) || [''])[0];
+  ok('copy is drawn', copyIcon.length > 0);
+  ok('and is not the duplicate glyph', !copyIcon.includes('M12 9.5v5'), copyIcon.slice(0, 120));
+}
+
+// The countdown digits.
+{
+  // The number the visitor watches is in the card; the element carrying the
+  // destination is an empty hidden one further down the page. A lookup
+  // scoped to the latter finds nothing and the digits sit still, which is
+  // exactly the bug this guards.
+  ok('the script looks for the counter in the document',
+     JS.includes("document.querySelector('[data-slink-count]')"),
+     (JS.match(/querySelector\('\[data-slink-count\]'\)/g) || []).join(' '));
+  ok('and nowhere narrower', !/hold\.querySelector\('\[data-slink-count\]'\)/.test(JS));
+  ok('it decrements', JS.includes('left -= 1'));
+}
 
 console.log(`\nassets: ${passed} passed, ${failed} failed`);
 h.restore();

@@ -38,8 +38,18 @@ async function mkDir(host, path) {
 }
 async function mkLink(h, host, path, target) {
   const tok = Harness.csrf(await (await h.req('https://ptra.dev/admin/links/new')).text());
+  // The form carries a directory picker and a one-segment shortcut, so
+  // send the pair a browser would send rather than the joined path.
+  const at = path.lastIndexOf('/');
   return h.req('https://ptra.dev/admin/links/new', {
-    form: { _csrf: tok, host, path, target, status: '302' },
+    form: {
+      _csrf: tok,
+      host,
+      dir: host + '/' + (at < 0 ? '' : path.slice(0, at)),
+      path: at < 0 ? path : path.slice(at + 1),
+      target,
+      status: '302',
+    },
   });
 }
 async function grant(host, dirPath, email, canManage) {

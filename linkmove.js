@@ -74,6 +74,7 @@ export function carryOver(link) {
     enabled: link.enabled,
     activeFrom: link.activeFrom,
     expiresAt: link.expiresAt,
+    qrLogo: link.qrLogo,
   };
 }
 

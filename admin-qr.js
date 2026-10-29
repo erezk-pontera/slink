@@ -13,8 +13,10 @@
  */
 
 import { back, denied } from './admin.js';
+import { getLink } from './links.js';
 import { LOGO_SVG } from './logo.js';
 import { parsePath } from './paths.js';
+import { hasLogo, logoImageFragment } from './qrlogo.js';
 import { harden } from './security.js';
 import { ECC_LEVELS, toSvg } from './qr.js';
 
@@ -56,10 +58,17 @@ function clampSize(raw) {
   return Math.max(64, Math.min(2048, n));
 }
 
-/** Read the options a request is asking for, each clamped to something sane. */
-export function qrOptions(params) {
+/**
+ * Read the options a request is asking for, each clamped to something sane.
+ *
+ * `link` is only needed for `logo=custom`, which nests the image uploaded
+ * for that link rather than the brand mark.
+ */
+export function qrOptions(params, link = null) {
   const rawLevel = String(params.get('ecc') || '').toUpperCase();
-  const wantLogo = params.get('logo') === '1';
+  const rawLogo = String(params.get('logo') || '');
+  const custom = rawLogo === 'custom' && hasLogo(link);
+  const wantLogo = rawLogo === '1' || custom;
   const rawScale = Number.parseFloat(params.get('logoscale'));
   const logoScale = Number.isFinite(rawScale)
     ? Math.max(0.1, Math.min(0.25, rawScale))
@@ -75,7 +84,7 @@ export function qrOptions(params) {
     size: clampSize(params.get('size')),
     margin: Math.max(0, Math.min(8, Number.parseInt(params.get('margin'), 10) || 4)),
     level,
-    logo: wantLogo ? logoFragment() : null,
+    logo: custom ? logoImageFragment(link) : wantLogo ? logoFragment() : null,
     logoScale,
     minVersion: wantLogo ? minVersionForLogo(logoScale) : 1,
   };
@@ -101,7 +110,11 @@ export async function qrSvg(ctx) {
   }
 
   const target = 'https://' + host + '/' + parsed.path;
-  const opts = qrOptions(params);
+  // The link itself is only read when a custom centre image is asked for.
+  // A code for a shortcut that does not exist yet is still served, which
+  // is what lets the create screen show one as the shortcut is typed.
+  const link = params.get('logo') === 'custom' ? await getLink(ctx.cfg, host, parsed.pathLc) : null;
+  const opts = qrOptions(params, link);
   let svg;
   try {
     svg = toSvg(target, { ...opts, label: target });

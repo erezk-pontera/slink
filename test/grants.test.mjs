@@ -48,7 +48,11 @@ section('administrators hold every permission by default');
   ok('overview lists every domain', over.includes('ptra.cc') && over.includes('ptra.dev'));
   ok('directories column reads All', /<td>All<\/td>/.test(over));
   const newForm = await (await admin.req('https://ptra.dev/admin/links/new')).text();
-  ok('create form states admin reach', newForm.includes('you may create anywhere on any domain'));
+  // The directory picker is the statement now: an administrator is offered
+  // every root and every directory on every domain.
+  ok('create form offers every domain root',
+     newForm.includes('>ptra.cc/<') && newForm.includes('>ptra.dev/<'),
+     (newForm.match(/<option[^>]*data-host[^>]*>[^<]*<\/option>/g) || []).join(' '));
 }
 
 /* --------------------------- 2. per user:domain directory creation */
@@ -159,10 +163,42 @@ section('branding and the header domain picker');
   ok('brand reads Shrink Link', /class="brand"[^>]*>Shrink Link</.test(b),
      (b.match(/class="brand"[^>]*>[^<]*/) || [''])[0]);
   ok('title reads Shrink Link', b.includes('<title>Overview - Shrink Link</title>'));
-  ok('footer carries the notice',
-     b.includes('<div>&copy; Pontera Solutions Inc. All rights reserved</div>'),
+  ok('footer carries the configured line',
+     b.includes('<div>\u00a9 Example Inc. All rights reserved</div>'),
      (b.match(/<footer[\s\S]*?<\/footer>/) || [''])[0]);
   ok('no "Slink" anywhere on the page', !b.includes('Slink'));
+
+  // The line is configuration, not a constant: it changes with the
+  // variable, is escaped like anything else, and goes away when unset.
+  const other = new Harness({ FOOTER_TEXT: 'Acme & Co <Ltd>' });
+  await other.signIn('root@pontera.com');
+  const mine = await (await other.req('https://ptra.dev/admin')).text();
+  ok('another installation gets its own line', mine.includes('<div>Acme &amp; Co &lt;Ltd&gt;</div>'),
+     (mine.match(/<footer[\s\S]*?<\/footer>/) || [''])[0]);
+  ok('and it is escaped, not injected', !mine.includes('<Ltd>'));
+  other.restore();
+
+  const bare = new Harness({ FOOTER_TEXT: '' });
+  await bare.signIn('root@pontera.com');
+  const none = await (await bare.req('https://ptra.dev/admin')).text();
+  ok('with none set there is no line at all', /<footer class="foot"><\/footer>/.test(none),
+     (none.match(/<footer[\s\S]*?<\/footer>/) || [''])[0]);
+  bare.restore();
+
+  // Every page the service serves, not only the admin area.
+  const guest = new Harness({ FOOTER_TEXT: 'Acme & Co <Ltd>' });
+  for (const [name, url] of [
+    ['the sign-in page', 'https://ptra.dev/admin'],
+    ['a short-link host root', 'https://ptra.cc/'],
+  ]) {
+    const r = await guest.req(url);
+    const page = r.status === 200 ? await r.text() : '';
+    if (page) {
+      ok(name + ' carries it too', page.includes('<div>Acme &amp; Co &lt;Ltd&gt;</div>'),
+         (page.match(/<footer[\s\S]*?<\/footer>/) || [''])[0]);
+    }
+  }
+  guest.restore();
 
   const anon = new Harness();
   anon.env.KV = admin.env.KV;

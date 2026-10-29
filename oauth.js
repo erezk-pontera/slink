@@ -30,9 +30,6 @@ export function defaultOauth(overrides = {}) {
     scope: 'openid email profile',
     /** Where in the userinfo response the address lives. */
     emailField: 'email',
-    verifiedField: 'email_verified',
-    /** Accept an address the provider does not mark as verified. */
-    allowUnverified: false,
     ...overrides,
   };
 }
@@ -96,14 +93,23 @@ export function normalizeOauth(raw) {
     userinfoUrl: url(o.userinfoUrl),
     scope: String(o.scope || 'openid email profile').slice(0, 300),
     emailField: String(o.emailField || 'email').slice(0, 60),
-    verifiedField: String(o.verifiedField || 'email_verified').slice(0, 60),
-    allowUnverified: !!o.allowUnverified,
   });
 }
 
 /** Is the provider configured well enough to be offered? */
-export function oauthReady(cfg, domain) {
-  const o = normalizeOauth(domain && domain.oauth);
+/**
+ * The provider, which is one setting for the whole installation.
+ *
+ * Signing in is not a per-domain thing: it happens on the hub and the
+ * other hosts come through the handshake, so a provider configured on one
+ * domain and not another was a distinction without a difference.
+ */
+export function oauthSettings(cfg) {
+  return normalizeOauth(cfg && cfg.settings && cfg.settings.oauth);
+}
+
+export function oauthReady(cfg) {
+  const o = oauthSettings(cfg);
   if (!o.enabled) return false;
   if (!o.clientId || !o.authorizeUrl || !o.tokenUrl || !o.userinfoUrl) return false;
   return !!(cfg.oauthSecret && String(cfg.oauthSecret).length);
@@ -118,7 +124,7 @@ export function oauthReady(cfg, domain) {
  * locks the people who could fix it out of their own hub.
  */
 export function methodsFor(cfg, domain, { isAdmin = false } = {}) {
-  const sso = oauthReady(cfg, domain);
+  const sso = oauthReady(cfg);
   const disabled = new Set(
     sso && !isAdmin && Array.isArray(domain && domain.disabledMethods)
       ? domain.disabledMethods.filter((m) => m !== 'oauth')
@@ -160,8 +166,8 @@ export function redirectUri(origin) {
  * caller in a signed cookie, so nothing about the attempt is stored server
  * side and a stale attempt simply fails to resolve.
  */
-export function authorizeUrl(domain, { origin, state, challenge }) {
-  const o = normalizeOauth(domain.oauth);
+export function authorizeUrl(cfg, { origin, state, challenge }) {
+  const o = oauthSettings(cfg);
   const url = new URL(o.authorizeUrl);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', o.clientId);
@@ -174,8 +180,8 @@ export function authorizeUrl(domain, { origin, state, challenge }) {
 }
 
 /** Exchange the code for an access token. */
-export async function exchangeCode(cfg, domain, { code, verifier, origin }) {
-  const o = normalizeOauth(domain.oauth);
+export async function exchangeCode(cfg, { code, verifier, origin }) {
+  const o = oauthSettings(cfg);
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     code,
@@ -206,8 +212,8 @@ export async function exchangeCode(cfg, domain, { code, verifier, origin }) {
 }
 
 /** Read the address the provider holds for this person. */
-export async function fetchEmail(domain, accessToken) {
-  const o = normalizeOauth(domain.oauth);
+export async function fetchEmail(cfg, accessToken) {
+  const o = oauthSettings(cfg);
   const res = await fetch(o.userinfoUrl, {
     headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' },
   });
@@ -223,11 +229,10 @@ export async function fetchEmail(domain, accessToken) {
   if (!email || typeof email !== 'string') {
     return { ok: false, error: 'The identity provider did not supply an email address.' };
   }
-  const verified = json[o.verifiedField];
-  // An unverified address is someone's claim, not the provider's. Accepting
-  // it would let anyone who can set a profile field take over an account.
-  if (!o.allowUnverified && verified !== true && verified !== 'true') {
-    return { ok: false, error: 'Your email address is not verified with the identity provider.' };
-  }
+  // The provider's own verification flag is not consulted. Letting somebody
+  // through its sign-in is the provider saying who they are; it says
+  // nothing about what they may do here, which this service decides on its
+  // own from the allowed sign-in domains and the account's record. Every
+  // account created this way is an ordinary one.
   return { ok: true, email };
 }

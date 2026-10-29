@@ -81,8 +81,12 @@ section('a framed link shows the page instead of leaving');
   ok('the policy allows just that origin',
      (framed.headers.get('Content-Security-Policy') || '').includes('frame-src https://example.com'));
   ok('it is not cached', (framed.headers.get('Cache-Control') || '').includes('no-store'));
-  ok('a warning is visible', body.includes('does not allow being framed'));
-  ok('with a direct way out', body.includes('Open it directly'));
+  // The visitor's page carries no banner at all. The warning that many
+  // sites refuse to be framed belongs beside the checkbox that turns it
+  // on, where the person who can do something about it will see it.
+  ok('no banner on the visitor\u2019s page', !body.includes('does not allow being framed'));
+  ok('nor an escape link', !body.includes('Open it directly'));
+  ok('the page is the frame and nothing else', !body.includes('framefail'));
 }
 
 /* ------------------------------------------------------ 4. the capability */
@@ -90,7 +94,11 @@ section('the domain decides whether framing may be used');
 {
   const form = await (await root.req('https://ptra.dev/admin/links/new')).text();
   ok('the create form offers it', form.includes('name="frame__default"'));
-  ok('and warns about it', form.includes('refuse to be framed'));
+  // One tooltip per checkbox rather than one paragraph for the whole set.
+  const tips = (form.match(/class="tip"[^>]*title="[^"]*refuse to be framed/g) || []).length;
+  ok('each framing checkbox carries its own tooltip', tips === 5, String(tips));
+  ok('the tooltip reaches a keyboard too', form.includes('class="tip" tabindex="0"'));
+  ok('and a screen reader', /class="tip"[^>]*aria-label="[^"]*refuse to be framed/.test(form));
 
   // The capability is resolved against the link's owner, so the withdrawal
   // has to be tested on a link an ordinary person owns. An administrator

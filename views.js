@@ -35,9 +35,15 @@ export function layout({
   footer = '',
   homeHref = '/admin',
   headerExtra = '',
+  account = '',
+  signOut = '',
+  footerText = '',
 }) {
+  // Two groups, not one list: where you can go, and who you are. Signing
+  // out and switching domain are things done to the account, so putting
+  // them among the sections made them read as places.
   const navHtml = nav.length
-    ? `<nav class="main">${nav
+    ? `<nav class="main" aria-label="Sections">${nav
         .map(
           (item) =>
             `<a href="${esc(item.href)}"${item.current ? ' aria-current="page"' : ''}>${esc(
@@ -52,6 +58,12 @@ export function layout({
         user.isAdminEffective ? ' <span class="badge ok">admin</span>' : ''
       }</span>`
     : '';
+  const acctHtml =
+    account || whoHtml || signOut
+      ? `<div class="acct">${account}${whoHtml}${
+          signOut ? `<a class="signout" href="${esc(signOut)}">Sign out</a>` : ''
+        }</div>`
+      : '';
 
   return `<!doctype html>
 <html lang="en"><head>
@@ -66,11 +78,15 @@ ${turnstile ? turnstileScriptTag() : ''}
 </head><body>
 <header class="top"><div class="wrap">
   <a class="brand" href="${esc(homeHref)}">${esc(appName)}</a>
-  ${headerExtra || (host ? `<span class="hostname">${esc(host)}</span>` : '')}
-  ${navHtml}${whoHtml}
+  ${headerExtra || (!account && host ? `<span class="hostname">${esc(host)}</span>` : '')}
+  ${navHtml}${acctHtml}
 </div></header>
 <main class="wrap${narrow ? ' narrow' : ''}">${body}</main>
-<footer class="foot">${footer ? `<div>${footer}</div>` : ''}<div>&copy; Pontera Solutions Inc. All rights reserved</div></footer>
+<footer class="foot">${footer ? `<div>${footer}</div>` : ''}${
+    // Set by FOOTER_TEXT. Escaped like any other configured string, and
+    // the line is left out altogether when there is nothing to put in it.
+    footerText ? `<div>${esc(footerText)}</div>` : ''
+  }</footer>
 <script src="${esc(JS_SRC)}" defer></script>
 </body></html>`;
 }
@@ -110,9 +126,10 @@ export function field({
   required = false,
   attrs = '',
   autocomplete,
+  tooltip = '',
 }) {
   return `<div class="field">
-  <label for="f_${esc(name)}">${esc(label)}</label>
+  <label for="f_${esc(name)}">${esc(label)}${tooltip ? hint(tooltip) : ''}</label>
   <input id="f_${esc(name)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}"
     ${placeholder ? `placeholder="${esc(placeholder)}"` : ''}
     ${required ? 'required' : ''}
@@ -131,29 +148,80 @@ export function textarea({ name, label, value = '', note = '', placeholder = '' 
 </div>`;
 }
 
-export function select({ name, label, value, options, note = '' }) {
+export function select({ name, label, value, options, note = '', attrs = '', tooltip = '' }) {
   const opts = options
     .map(
       (o) =>
-        `<option value="${esc(o.value)}"${String(o.value) === String(value) ? ' selected' : ''}>${esc(
-          o.label
-        )}</option>`
+        `<option value="${esc(o.value)}"${String(o.value) === String(value) ? ' selected' : ''}${
+          // A data attribute per option, for the few selects whose choices
+          // belong to something else on the page.
+          o.data ? ` data-${esc(o.data.name)}="${esc(o.data.value)}"` : ''
+        }>${esc(o.label)}</option>`
     )
     .join('');
   return `<div class="field">
-  <label for="f_${esc(name)}">${esc(label)}</label>
-  <select id="f_${esc(name)}" name="${esc(name)}">${opts}</select>
+  <label for="f_${esc(name)}">${esc(label)}${tooltip ? hint(tooltip) : ''}</label>
+  <select id="f_${esc(name)}" name="${esc(name)}" ${attrs}>${opts}</select>
   ${note ? `<p class="note">${esc(note)}</p>` : ''}
 </div>`;
 }
 
-export function checkbox({ name, label, checked = false, note = '', disabled = false }) {
+export function checkbox({ name, label, checked = false, note = '', disabled = false, tooltip = '' }) {
   return `<div class="check">
   <input id="f_${esc(name)}" name="${esc(name)}" type="checkbox" value="1"${checked ? ' checked' : ''}${
     disabled ? ' disabled' : ''
   }>
   <label for="f_${esc(name)}">${esc(label)}${note ? ` <span class="note">${esc(note)}</span>` : ''}</label>
+  ${tooltip ? hint(tooltip) : ''}
 </div>`;
+}
+
+/**
+ * A hover-and-focus tooltip marker.
+ *
+ * `title` is what a mouse gets; `aria-label` and `tabindex` are what a
+ * keyboard and a screen reader get, so the text is not mouse-only.
+ */
+export function hint(text) {
+  return `<span class="tip" tabindex="0" role="note" title="${esc(text)}" aria-label="${esc(text)}">?</span>`;
+}
+
+/**
+ * The small inline icons. Inline SVG rather than an icon font or a sprite:
+ * no extra request, no flash of missing glyph, and `currentColor` means
+ * they follow the theme without a second set for dark mode.
+ */
+const ICONS = {
+  // A clipboard, not a second pair of sheets: copy and duplicate sit next
+  // to each other in a row and two stacked-paper glyphs read as one icon.
+  copy: '<path d="M7 4H5.5A1.5 1.5 0 0 0 4 5.5v11A1.5 1.5 0 0 0 5.5 18h9a1.5 1.5 0 0 0 1.5-1.5v-11A1.5 1.5 0 0 0 14.5 4H13"/><rect x="7" y="2.2" width="6" height="3.2" rx="1"/>',
+  check: '<path d="M4 10.5 8 14.5 16 5.5"/>',
+  // Two sheets and a plus, so it cannot be mistaken for copy-to-clipboard
+  // sitting next to it in the same row.
+  duplicate: '<path d="M4 13H3.5A1.5 1.5 0 0 1 2 11.5v-8A1.5 1.5 0 0 1 3.5 2h8A1.5 1.5 0 0 1 13 3.5V4"/><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M12 9.5v5M9.5 12h5"/>',
+  external: '<path d="M8 4H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-3"/><path d="M12 3h5v5"/><path d="M9 11 17 3"/>',
+};
+
+export function icon(name, { cls = '' } = {}) {
+  return `<svg class="ic${cls ? ' ' + esc(cls) : ''}" viewBox="0 0 20 20" width="16" height="16"
+    fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+    stroke-linejoin="round" aria-hidden="true" focusable="false">${ICONS[name] || ''}</svg>`;
+}
+
+/**
+ * Copy-to-clipboard as a button rather than a word.
+ *
+ * It carries both icons and the script swaps which one shows, so the
+ * confirmation does not reflow the row. The accessible name says what is
+ * being copied, since "Copy" on its own tells a screen reader nothing about
+ * which row it belongs to.
+ */
+export function copyButton(value, { what = 'link', label = '' } = {}) {
+  return `<button type="button" class="iconbtn${label ? ' haslabel' : ''}" data-copy="${esc(value)}"
+  data-copied-label="Copied" title="Copy ${esc(what)}" aria-label="Copy ${esc(what)}"
+  >${icon('copy', { cls: 'ic-idle' })}${icon('check', { cls: 'ic-done' })}${
+    label ? `<span>${esc(label)}</span>` : ''
+  }</button>`;
 }
 
 /** Status pill for a link or directory row. */
@@ -281,6 +349,7 @@ ${alert('error', error)}${alert('info', info)}
   return layout({
     title: 'Sign in - ' + cfg.appName,
     appName: cfg.appName,
+    footerText: cfg.footerText,
     host,
     body,
     narrow: true,
@@ -320,6 +389,7 @@ ${alert('error', error)}
   return layout({
     title: 'Protected link - ' + cfg.appName,
     appName: cfg.appName,
+    footerText: cfg.footerText,
     host,
     body,
     narrow: true,
@@ -348,13 +418,6 @@ export function framePage({ cfg, host, link, url: target }) {
 <link rel="stylesheet" href="${ASSET_PREFIX}/app.css?v=${ASSET_VERSION}">
 <link rel="icon" type="image/svg+xml" href="${ASSET_PREFIX}/logo.svg?v=${ASSET_VERSION}">
 </head><body class="framed">
-<noscript><p class="framefail">This page shows another site in a frame. <a href="${esc(
-    target
-  )}" rel="noreferrer">Open it directly</a>.</p></noscript>
-<div class="framefail" id="slink-frame-note">
-  If nothing appears, the destination does not allow being framed.
-  <a href="${esc(target)}" rel="noreferrer">Open it directly</a>.
-</div>
 <iframe class="slink-frame" src="${esc(target)}" title="${esc(title)}"
   referrerpolicy="no-referrer" loading="eager"
   sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"></iframe>
@@ -398,6 +461,7 @@ ${alert('error', error)}${alert('info', info)}
   return layout({
     title: 'Verify - ' + cfg.appName,
     appName: cfg.appName,
+    footerText: cfg.footerText,
     host,
     body,
     narrow: true,
@@ -445,6 +509,7 @@ export function interstitialPage({
   const page = layout({
     title: 'Redirecting - ' + cfg.appName,
     appName: cfg.appName,
+    footerText: cfg.footerText,
     host,
     body,
     narrow: true,
@@ -473,6 +538,7 @@ export function messagePage({ cfg, host, title, heading, message, status = 200, 
     body: layout({
       title: title + ' - ' + cfg.appName,
       appName: cfg.appName,
+      footerText: cfg.footerText,
       host,
       body,
       narrow: true,
@@ -497,6 +563,7 @@ export function landingPage({ cfg, host }) {
   return layout({
     title: cfg.appName,
     appName: cfg.appName,
+    footerText: cfg.footerText,
     host,
     body,
     narrow: true,

@@ -22,6 +22,8 @@ import {
 import { audit, EVENTS } from './audit.js';
 import { checkCsrf } from './auth.js';
 import {
+  CREATE_ACCESS,
+  createAccess,
   deleteDirectory,
   deleteGrant,
   getDirectory,
@@ -34,6 +36,7 @@ import {
   putGrant,
 } from './directories.js';
 import { resolveDomain } from './domains.js';
+import { noteDelete, noteWrite, pendingUnder } from './pending.js';
 import {
   describePolicy,
   directoryMayOverride,
@@ -75,6 +78,7 @@ import {
   normalizeInviteDomains,
 } from './invites.js';
 import { getUserByNorm, inviteUser, isAdmin } from './users.js';
+import { K } from './kv.js';
 import { esc, fmtTime } from './util.js';
 import {
   alert,
@@ -90,6 +94,46 @@ function dirHref(host, pathLc) {
   return `/admin/directories/edit?host=${encodeURIComponent(host)}&path=${encodeURIComponent(pathLc)}`;
 }
 
+/**
+ * Who may create links inside a directory. Three settings rather than the
+ * boolean this started as, because "follow the host's root policy" and
+ * "anybody with an account" are different answers and a domain whose root
+ * policy is restrictive cannot express the second one.
+ */
+const ACCESS_OPTIONS = [
+  { value: 'granted', label: 'Granted people only' },
+  { value: 'root_policy', label: 'Anyone who may create at the root of this domain' },
+  { value: 'signed_in', label: 'Anyone who can sign in' },
+];
+const ACCESS_NOTE =
+  'Directory administrators and Shrink Link administrators always reach it. ' +
+  'Disabled and read-only still apply whichever is chosen.';
+/** The short form, for the column in the list. */
+const ACCESS_SHORT = {
+  granted: 'Granted people',
+  root_policy: "The domain's root policy",
+  signed_in: 'Anyone signed in',
+};
+
+/**
+ * A grant lives under two keys: one per directory, for the list on the
+ * directory's own screen, and one per user, for working out where somebody
+ * may create. Both are noted so neither listing lags behind the change.
+ */
+function noteGrant(ctx, grant, { gone = false } = {}) {
+  const mark = gone ? noteDelete : noteWrite;
+  return mark(ctx, [
+    K.grant(grant.host, grant.dirPathLc, grant.userId),
+    K.userGrant(grant.userId, grant.host, grant.dirPathLc),
+  ]);
+}
+
+/** The access a submitted form asked for, defaulting to the strictest. */
+function readAccess(body) {
+  const asked = String(body.get('createAccess') || '');
+  return CREATE_ACCESS.includes(asked) ? asked : 'granted';
+}
+
 /* ----------------------------------------------------------------- list */
 
 async function listPage(ctx) {
@@ -102,7 +146,7 @@ async function listPage(ctx) {
   const rows = [];
   const creatable = [];
   for (const host of hosts) {
-    const all = await listDirectories(cfg, host);
+    const all = await listDirectories(cfg, host, { pending: pendingUnder(ctx, K.dirPrefix(host, '')) });
     let visible = all;
     if (!ctx.isAdmin) {
       const checked = await Promise.all(
@@ -119,8 +163,8 @@ async function listPage(ctx) {
       ({ host, dir }) => `<tr>
       <td><a href="${esc(dirHref(host, dir.pathLc))}">${esc(host)}/${esc(dir.path)}</a>
         ${dir.readonly ? '<span class="badge ro">read-only</span>' : ''}
-        ${dir.open ? '<span class="badge">open</span>' : ''}
         ${dir.enabled === false ? '<span class="badge off">disabled</span>' : ''}</td>
+      <td>${esc(ACCESS_SHORT[createAccess(dir)])}</td>
       <td>${esc(dir.note || '\u2014')}</td>
       <td class="num">${esc(fmtTime(dir.createdAt))}</td>
     </tr>`
@@ -142,7 +186,7 @@ ${flashFrom(url)}
 <div class="card">
   ${
     rows.length
-      ? `<div class="tablewrap"><table><thead><tr><th>Directory</th><th>Note</th><th>Created</th></tr></thead>
+      ? `<div class="tablewrap"><table><thead><tr><th>Directory</th><th>Who may create</th><th>Note</th><th>Created</th></tr></thead>
          <tbody>${tableRows}</tbody></table></div>`
       : '<div class="empty">No directories here.</div>'
   }
@@ -174,7 +218,13 @@ ${
       })}
     </div>
     ${textarea({ name: 'note', label: 'Note (optional)' })}
-    ${checkbox({ name: 'open', label: 'Open', note: '(anyone who may create at the root may also create here)' })}
+    ${select({
+      name: 'createAccess',
+      label: 'Who may create links here',
+      value: 'granted',
+      options: ACCESS_OPTIONS,
+      note: ACCESS_NOTE,
+    })}
     ${
       ctx.isAdmin
         ? checkbox({ name: 'readonly', label: 'Read-only', note: '(only administrators may change anything inside)' })
@@ -230,22 +280,22 @@ async function createSubmit(ctx) {
     ownerId: ctx.session.user.id,
     ownerEmail: ctx.session.user.emailNorm,
     note: String(body.get('note') || '').slice(0, 500),
-    open: body.get('open') === '1',
+    createAccess: readAccess(body),
     readonly: canSetReadonly(ctx.cfg, ctx.session.user) && body.get('readonly') === '1',
   });
   await putDirectory(ctx.cfg, dir);
+  await noteWrite(ctx, K.dir(host, parsed.pathLc));
 
   // Whoever creates a directory administers it. Administrators already reach
   // every directory, so a grant for them would only be noise in the list.
   if (!isAdmin(ctx.cfg, ctx.session.user)) {
-    await putGrant(
-      ctx.cfg,
-      newGrant(host, parsed.pathLc, ctx.session.user, {
-        canCreate: true,
-        canManage: true,
-        grantedBy: ctx.session.user.emailNorm,
-      })
-    );
+    const own = newGrant(host, parsed.pathLc, ctx.session.user, {
+      canCreate: true,
+      canManage: true,
+      grantedBy: ctx.session.user.emailNorm,
+    });
+    await putGrant(ctx.cfg, own);
+    await noteGrant(ctx, own);
   }
 
   ctx.waitUntil(
@@ -272,7 +322,9 @@ async function editForm(ctx, { error } = {}) {
   const permit = await canManageDirectory(cfg, { user: ctx.session.user, dir });
   if (!permit.allowed) return denied(ctx, permit.reason);
 
-  const grants = await listGrants(cfg, host, pathLc);
+  const grants = await listGrants(cfg, host, pathLc, {
+    pending: pendingUnder(ctx, K.grantPrefix(host, pathLc)),
+  });
   const contents = await listLinks(cfg, host, { dirPathLc: pathLc, limit: 100 });
   const settingsToken = await formToken(ctx, 'dir.update');
   const grantToken = await formToken(ctx, 'grant.save');
@@ -478,11 +530,12 @@ ${
         : `<p class="note">Who may be given access here: ${esc(describeInvitePolicy(cfg, parentDomain))}</p>`
     }
     ${checkbox({ name: 'enabled', label: 'Enabled', checked: dir.enabled !== false })}
-    ${checkbox({
-      name: 'open',
-      label: 'Open',
-      checked: !!dir.open,
-      note: '(anyone who may create at the root may also create here)',
+    ${select({
+      name: 'createAccess',
+      label: 'Who may create links here',
+      value: createAccess(dir),
+      options: ACCESS_OPTIONS,
+      note: ACCESS_NOTE,
     })}
     ${checkbox({
       name: 'readonly',
@@ -537,7 +590,10 @@ async function editSubmit(ctx) {
 
   dir.note = String(body.get('note') || '').slice(0, 500);
   dir.enabled = body.get('enabled') === '1';
-  dir.open = body.get('open') === '1';
+  dir.createAccess = readAccess(body);
+  // The boolean this replaced is dropped as the record is rewritten, so a
+  // stale flag cannot outlive the setting it used to carry.
+  delete dir.open;
   if (canSetReadonly(ctx.cfg, ctx.session.user)) dir.readonly = body.get('readonly') === '1';
 
   // A validation failure re-renders this directory's screen, which reads the
@@ -632,6 +688,7 @@ async function grantSubmit(ctx) {
     ? { ...existing, canCreate, canManage }
     : newGrant(host, pathLc, target, { canCreate, canManage, grantedBy: ctx.session.user.emailNorm });
   await putGrant(ctx.cfg, grant);
+  await noteGrant(ctx, grant);
 
   ctx.waitUntil(
     audit(ctx.cfg, {
@@ -664,6 +721,7 @@ async function revokeSubmit(ctx) {
   const target = await getUserByNorm(ctx.cfg, parsed.emailNorm);
   if (target) {
     await deleteGrant(ctx.cfg, host, pathLc, target.id);
+    await noteGrant(ctx, { host, dirPathLc: pathLc, userId: target.id }, { gone: true });
     ctx.waitUntil(
       audit(ctx.cfg, {
         event: EVENTS.grantRemoved,
@@ -879,6 +937,7 @@ async function deleteSubmit(ctx) {
   if (!dir) return back('/admin/directories', 'notfound');
 
   await deleteDirectory(ctx.cfg, dir);
+  await noteDelete(ctx, K.dir(dir.host, dir.pathLc));
   ctx.waitUntil(
     audit(ctx.cfg, {
       event: EVENTS.dirDeleted,

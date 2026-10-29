@@ -12,7 +12,7 @@ import { harden } from './security.js';
 export const ASSET_PREFIX = '/__slink';
 
 /** Bumped whenever the asset bodies change; used for immutable caching. */
-export const ASSET_VERSION = '8';
+export const ASSET_VERSION = '11';
 
 export const CSS = `
 :root{
@@ -36,19 +36,56 @@ code,kbd,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .wrap{max-width:1040px;margin:0 auto;padding:16px}
 .narrow{max-width:440px}
 header.top{border-bottom:1px solid var(--line);background:var(--panel)}
-header.top .wrap{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding-top:12px;padding-bottom:12px}
-.brand{font-weight:650;letter-spacing:-.01em;text-decoration:none;color:var(--ink)}
+/* Two rows on purpose: who you are on the first, where you can go on the
+   second. Squeezing nine sections, a domain picker, an address and a sign
+   out onto one line either wraps unpredictably or scrolls the last
+   sections out of sight. */
+header.top .wrap{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap;
+  padding-top:10px;padding-bottom:6px}
+.brand{font-weight:650;letter-spacing:-.01em;text-decoration:none;color:var(--ink);
+  white-space:nowrap;flex:none}
 .brand span{color:var(--muted);font-weight:400}
-nav.main{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto;align-items:center}
-nav.main a{padding:6px 10px;border-radius:7px;text-decoration:none;color:var(--muted);font-size:14px}
+nav.main{display:flex;gap:2px;align-items:center;order:3;flex:0 0 100%;margin:0 -10px;
+  padding:0 10px 4px;min-width:0;overflow-x:auto;scrollbar-width:none}
+nav.main::-webkit-scrollbar{display:none}
+nav.main a{padding:5px 10px;border-radius:7px;text-decoration:none;color:var(--muted);font-size:14px;
+  white-space:nowrap}
 nav.main a:hover{background:var(--bg);color:var(--ink)}
 nav.main a[aria-current=page]{background:var(--bg);color:var(--ink);font-weight:550}
-.who{font-size:13px;color:var(--muted);white-space:nowrap}
+/* Who you are and what you can do to the session, kept apart from where
+   you can go so neither reads as the other. */
+.acct{display:flex;gap:10px;align-items:center;margin-left:auto;flex:none}
+.who{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  max-width:22ch}
+.signout{font-size:13px;color:var(--muted);text-decoration:none;white-space:nowrap;
+  padding:6px 10px;border-radius:7px;border:1px solid transparent}
+.signout:hover{color:var(--ink);border-color:var(--line)}
 .hostname{font-size:13px;color:var(--muted)}
 .hostpick{display:flex;gap:6px;align-items:center}
-.hostpick select{width:auto;min-width:9.5rem;padding:5px 8px;font-size:13px;border-radius:7px}
+.hostpick select{width:auto;min-width:7.5rem;padding:5px 8px;font-size:13px;border-radius:7px}
 .hostpick .nojs{padding:5px 10px;font-size:13px}
 .js .hostpick .nojs{display:none}
+/* The QR that follows the shortcut field. Pinned beside the column where
+   the screen is wide enough for it; floated into the corner of the content
+   otherwise, rather than taking a full-width band of its own. */
+.qrfloat{display:block;float:right;width:174px;margin:0 0 14px 18px;padding:12px;
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);
+  box-shadow:var(--shadow);text-align:center}
+/* An explicit display beats the browser's own [hidden] rule, so say it
+   again here or the panel can never hide itself. */
+.qrfloat[hidden],.qrfloat img[hidden]{display:none}
+.qrfloat img{display:block;width:150px;height:150px;margin:0 auto;border-radius:6px}
+.qrfloat .note{margin:8px 0 0;word-break:break-all}
+@media (min-width:1430px){
+  .qrfloat{position:fixed;float:none;top:96px;right:calc(50vw - 520px - 190px);margin:0;z-index:5}
+}
+@media (max-width:620px){
+  .qrfloat{float:none;width:auto;max-width:210px;margin:0 auto 14px}
+}
+.tip{display:inline-flex;align-items:center;justify-content:center;flex:none;
+  width:16px;height:16px;margin-left:6px;border:1px solid var(--line);border-radius:50%;
+  font-size:11px;line-height:1;color:var(--muted);cursor:help;user-select:none}
+.tip:hover,.tip:focus{color:var(--ink);border-color:var(--muted);outline:none}
 .visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
   clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .badge{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid var(--line);
@@ -81,13 +118,16 @@ details.group[open]>summary{margin-bottom:6px}
   font-size:1.05em;margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:8px;
   background:color-mix(in srgb,var(--line) 18%,transparent)}
 body.framed{margin:0;padding:0;height:100vh;overflow:hidden;display:flex;flex-direction:column}
-.framefail{flex:none;margin:0;padding:8px 14px;font-size:.9em;color:var(--muted);
-  background:var(--bg);border-bottom:1px solid var(--line)}
 .slink-frame{flex:1 1 auto;width:100%;border:0;display:block}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:var(--shadow);padding:18px;margin:0 0 16px}
 .card h2{margin:0 0 4px;font-size:16px;font-weight:600}
 .card h2+.hint{margin-top:0}
+/* A long form is several sections in one card. Without a rule between them
+   the headings float in the middle of the previous section's fields. */
+.card h2~h2,.card>h3{margin-top:26px;padding-top:20px;border-top:1px solid var(--line)}
+.card>h3{font-size:14px;font-weight:600}
+.card h2~h2+.hint,.card>h3+.hint{margin-top:4px}
 .hint{color:var(--muted);font-size:13px;margin:0 0 14px}
 h1{font-size:21px;font-weight:650;letter-spacing:-.01em;margin:0 0 4px}
 .sub{color:var(--muted);font-size:13.5px;margin:0 0 18px}
@@ -112,8 +152,30 @@ button.secondary,.btn.secondary{background:transparent;color:var(--ink);border-c
 button.danger,.btn.danger{background:transparent;color:var(--danger);border-color:var(--danger)}
 button.link{background:none;border:none;color:var(--accent);padding:0;font-weight:400;
   text-decoration:underline;width:auto}
+button.small,.btn.small{padding:5px 10px;font-size:13px}
+/* Icon buttons: square, quiet until pointed at, and large enough to hit on
+   a touch screen even though the glyph inside is 16px. */
+.iconbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:32px;height:32px;
+  padding:0;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted)}
+.iconbtn.haslabel{width:auto;padding:0 11px;font-size:13px}
+.iconbtn:hover{color:var(--ink);border-color:var(--muted);filter:none}
+.iconbtn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.iconbtn .ic-done{display:none}
+.iconbtn.copied{color:var(--ok);border-color:var(--ok)}
+.iconbtn.copied .ic-idle{display:none}
+.iconbtn.copied .ic-done{display:inline}
+.iconbtn.copyfail{color:var(--danger);border-color:var(--danger)}
+svg.ic{flex:none;vertical-align:-3px}
+/* The marker on a link that opens in a new tab. */
+.ic-out{opacity:.5;margin-left:4px}
+a:hover .ic-out{opacity:1}
+.rowtools{display:flex;gap:6px;align-items:center;justify-content:flex-end}
+.rowtools form{margin:0;display:inline-flex}
 .actions{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-top:16px}
 .actions.tight{margin-top:0}
+/* The button that applies a row of filters lines up with the controls it
+   applies, rather than hanging below them under a blank label. */
+.filterdo{align-self:flex-end;margin-bottom:14px;flex:0 0 auto}
 .alert{padding:11px 13px;border-radius:8px;margin:0 0 16px;font-size:14px;border:1px solid}
 .alert.err{background:color-mix(in srgb,var(--danger) 9%,transparent);border-color:var(--danger);color:var(--danger)}
 .alert.ok{background:color-mix(in srgb,var(--ok) 10%,transparent);border-color:var(--ok);color:var(--ok)}
@@ -123,7 +185,17 @@ th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);verti
 th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600}
 tr:last-child td{border-bottom:0}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
-.tablewrap{overflow-x:auto;margin:0 -4px}
+/* A table that does not fit says so: the edge fades where there is more
+   to the right, and the tools column stays reachable rather than being
+   the first thing to disappear. */
+.tablewrap{overflow-x:auto;margin:0 -4px;
+  background:linear-gradient(to right,var(--panel) 30%,transparent),
+    linear-gradient(to left,var(--panel) 30%,transparent) 100% 0,
+    linear-gradient(to right,rgba(0,0,0,.08),transparent),
+    linear-gradient(to left,rgba(0,0,0,.08),transparent) 100% 0;
+  background-repeat:no-repeat;background-size:36px 100%,36px 100%,10px 100%,10px 100%;
+  background-attachment:local,local,scroll,scroll}
+.tablewrap table{min-width:100%}
 .target{display:block;max-width:40ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:13px}
 .empty{text-align:center;color:var(--muted);padding:28px 10px;font-size:14px}
 .pager{display:flex;gap:9px;justify-content:flex-end;margin-top:14px}
@@ -150,11 +222,26 @@ footer.foot div+div{margin-top:4px}
 .tools{display:flex;gap:7px;flex-wrap:wrap}
 .tools form{display:inline-flex;gap:6px;align-items:center}
 .tools input[type=text]{width:auto;min-width:9rem;padding:5px 8px;font-size:13px}
+/* A tall viewport with a short card: put it where the eye already is. */
+.wrap.narrow{padding-top:max(16px,min(12vh,96px))}
 @media (max-width:620px){
   .wrap{padding:12px}
-  header.top .wrap{gap:8px}
-  nav.main{width:100%;margin-left:0}
-  .target{max-width:22ch}
+  header.top .wrap{gap:6px 8px}
+  .acct{margin-left:auto}
+  .acct .who{max-width:46vw;overflow:hidden;text-overflow:ellipsis}
+  .hostpick select{min-width:7rem}
+  .target{max-width:none;white-space:normal;word-break:break-all}
+  /* A row of a link listing is wider than a phone, and the columns that
+     fall off the right are the ones with the controls on them. Below this
+     width each row becomes a stacked block instead. */
+  .cards-sm thead{display:none}
+  .cards-sm,.cards-sm tbody,.cards-sm tr,.cards-sm td{display:block}
+  .cards-sm tr{padding:10px 0;border-bottom:1px solid var(--line)}
+  .cards-sm tr:last-child{border-bottom:0}
+  .cards-sm td{border:0;padding:2px 10px}
+  .cards-sm td.num{text-align:left;font-size:13px;color:var(--muted)}
+  .cards-sm .rowtools{justify-content:flex-start;margin-top:8px}
+  .tablewrap{background:none}
 }
 `.trim();
 
@@ -216,6 +303,34 @@ export const JS = `
     });
   }
 
+  // Domain and Directory describe one choice between them, so the second
+  // is narrowed to the first. Every option is in the markup for a browser
+  // without JavaScript, which is why this prunes rather than fetches; the
+  // submit checks the pair whichever way it arrives.
+  var dirPick = document.querySelector('select[data-slink-places]');
+  var hostPick = document.getElementById('f_host');
+  if (dirPick && hostPick) {
+    var every = [];
+    for (var p = 0; p < dirPick.options.length; p++) {
+      var src = dirPick.options[p];
+      every.push({ value: src.value, label: src.textContent, host: src.getAttribute('data-host') });
+    }
+    var narrow = function (keep) {
+      var want = hostPick.value;
+      while (dirPick.options.length) dirPick.remove(0);
+      for (var q = 0; q < every.length; q++) {
+        if (every[q].host !== want) continue;
+        var made = new Option(every[q].label, every[q].value);
+        made.setAttribute('data-host', every[q].host);
+        dirPick.add(made);
+      }
+      if (keep) dirPick.value = keep;
+      if (!dirPick.value && dirPick.options.length) dirPick.selectedIndex = 0;
+    };
+    hostPick.addEventListener('change', function () { narrow(dirPick.value); });
+    narrow(dirPick.value);
+  }
+
   // Bulk selection on the search page. Without JavaScript the checkboxes
   // still work one by one; these only save the clicking.
   var batch = document.querySelector('[data-slink-batch]');
@@ -236,7 +351,10 @@ export const JS = `
   if (hold) {
     var dest = hold.getAttribute('data-slink-redirect');
     var left = parseInt(hold.getAttribute('data-slink-delay') || '0', 10);
-    var out = hold.querySelector('[data-slink-count]');
+    // The number the visitor watches is in the card; the element holding
+    // the destination is an empty hidden one further down. Searching the
+    // document rather than inside it is what makes the digits move.
+    var out = document.querySelector('[data-slink-count]');
     var tick = function () {
       if (out) out.textContent = String(left);
       if (left <= 0) { window.location.replace(dest); return; }
@@ -259,18 +377,47 @@ export const JS = `
   });
 
   // Copy a short link to the clipboard.
+  //
+  // The confirmation is a class rather than new text, so the button keeps
+  // its size and a row does not jump. The accessible name changes with it,
+  // because a colour swap alone says nothing to a screen reader, and a
+  // failure says so instead of looking like success.
   document.addEventListener('click', function (ev) {
     var el = ev.target.closest ? ev.target.closest('[data-copy]') : null;
     if (!el) return;
     ev.preventDefault();
     var value = el.getAttribute('data-copy');
-    var done = function () {
-      var old = el.textContent;
-      el.textContent = 'Copied';
-      window.setTimeout(function () { el.textContent = old; }, 1200);
+    var was = el.getAttribute('aria-label') || el.textContent;
+    var settle = function (cls, say) {
+      el.classList.add(cls);
+      el.setAttribute('aria-label', say);
+      window.setTimeout(function () {
+        el.classList.remove(cls);
+        el.setAttribute('aria-label', was);
+      }, 1400);
     };
+    var done = function () { settle('copied', el.getAttribute('data-copied-label') || 'Copied'); };
+    var failed = function () { settle('copyfail', 'Could not copy. Select the link and copy it.'); };
+
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(value).then(done, function () {});
+      navigator.clipboard.writeText(value).then(done, failed);
+      return;
+    }
+    // No clipboard API: an insecure origin, or an older browser. The old
+    // selection route still works in both.
+    try {
+      var pad = document.createElement('textarea');
+      pad.value = value;
+      pad.setAttribute('readonly', '');
+      pad.style.position = 'fixed';
+      pad.style.opacity = '0';
+      document.body.appendChild(pad);
+      pad.select();
+      var ok = document.execCommand && document.execCommand('copy');
+      document.body.removeChild(pad);
+      if (ok) { done(); } else { failed(); }
+    } catch (e) {
+      failed();
     }
   });
 
@@ -446,6 +593,68 @@ export const JS = `
           });
       });
     }
+  }
+
+  // The QR that follows the shortcut field.
+  //
+  // The code encodes the short URL, which is known from the form alone, so
+  // this works on the create screen before the link exists. It is filled in
+  // here rather than server-side because it has to track what is being
+  // typed, and it stays hidden until there is a shortcut to encode.
+  var qrBox = document.querySelector('[data-slink-qr]');
+  if (qrBox) {
+    var qrImg = qrBox.querySelector('img');
+    var qrLabel = qrBox.querySelector('[data-slink-qr-label]');
+    var pathField = document.querySelector(
+      '[name="' + (qrBox.getAttribute('data-path-field') || 'path') + '"]'
+    );
+    var hostField = document.querySelector('select[name="host"]');
+    var timer = null;
+
+    var currentHost = function () {
+      return (hostField && hostField.value) || qrBox.getAttribute('data-host') || '';
+    };
+
+    // The same shape the server accepts, so a half-typed path asks for
+    // nothing rather than producing a request that can only be refused.
+    var usable = function (value) {
+      var v = String(value || '').replace(/^\\/+|\\/+$/g, '');
+      return v !== '' && /^[A-Za-z0-9_-]+(\\/[A-Za-z0-9_-]+)*$/.test(v) ? v : '';
+    };
+
+    var paint = function () {
+      var path = usable(pathField && pathField.value);
+      var host = currentHost();
+      if (!path || !host) {
+        qrBox.hidden = true;
+        return;
+      }
+      var logo = qrBox.getAttribute('data-logo');
+      var src =
+        qrBox.getAttribute('data-base') +
+        '?host=' + encodeURIComponent(host) +
+        '&path=' + encodeURIComponent(path) +
+        '&size=300' +
+        (logo ? '&logo=' + encodeURIComponent(logo) : '');
+      if (qrImg) {
+        qrImg.hidden = false;
+        if (qrImg.getAttribute('src') !== src) qrImg.setAttribute('src', src);
+      }
+      if (qrLabel) qrLabel.textContent = host + '/' + path;
+      qrBox.hidden = false;
+    };
+
+    var schedule = function () {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(paint, 250);
+    };
+
+    if (pathField) {
+      pathField.addEventListener('input', schedule);
+      pathField.addEventListener('change', schedule);
+    }
+    if (hostField) hostField.addEventListener('change', schedule);
+    paint();
   }
 
   // Suggest the shortcut path from the destination when the field is empty.

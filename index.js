@@ -36,7 +36,7 @@ import { ensureBootstrapDomains, resolveDomain } from './domains.js';
 import { clientIp, geoCheck, geoMessage } from './geo.js';
 import { IMP_DENY, openImpersonation, splitImpersonation } from './impersonate.js';
 import { loginBegin as passkeyBegin, loginFinish as passkeyFinish } from './admin-passkeys.js';
-import { methodsFor, normalizeOauth } from './oauth.js';
+import { methodsFor, oauthSettings } from './oauth.js';
 import { canonicalHost } from './paths.js';
 import { rootCreateAllowed } from './permissions.js';
 import { getChallenge } from './otp.js';
@@ -109,7 +109,7 @@ async function signInGet(ctx, { error, info } = {}) {
     info,
     email: ctx.prefillEmail || '',
     methods: { ...methods, passkey: methods.passkey && onHub },
-    ssoLabel: normalizeOauth(ctx.domain && ctx.domain.oauth).label,
+    ssoLabel: oauthSettings(ctx.cfg).label,
     passkeyCsrf: onHub ? await tokenFor(ctx, 'passkey.login') : '',
   });
   return withCookies(html(page, { turnstile: true, status: error ? 400 : 200 }), [csrfCookie(ctx)]);

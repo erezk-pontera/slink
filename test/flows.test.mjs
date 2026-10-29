@@ -140,7 +140,7 @@ section('directories and grants');
 
   const nf = Harness.csrf(await (await dave.req('https://ptra.dev/admin/links/new')).text());
   const blocked = await dave.req('https://ptra.dev/admin/links/new', {
-    form: { _csrf: nf, host: 'ptra.cc', path: 'pub/deck', target: 'example.com/d' },
+    form: { _csrf: nf, host: 'ptra.cc', dir: 'ptra.cc/pub', path: 'deck', target: 'example.com/d' },
   });
   ok('ungranted user blocked inside directory', (await blocked.text()).includes('do not have permission to create in this directory'));
 
@@ -153,7 +153,7 @@ section('directories and grants');
 
   const nf2 = Harness.csrf(await (await dave.req('https://ptra.dev/admin/links/new')).text());
   const allowed = await dave.req('https://ptra.dev/admin/links/new', {
-    form: { _csrf: nf2, host: 'ptra.cc', path: 'pub/deck', target: 'example.com/d' },
+    form: { _csrf: nf2, host: 'ptra.cc', dir: 'ptra.cc/pub', path: 'deck', target: 'example.com/d' },
   });
   ok('granted user can create inside', allowed.status === 303 && (allowed.headers.get('Location') || '').includes('link.created'));
   ok('directory link resolves', (await admin.req('https://ptra.cc/pub/deck')).status === 302);

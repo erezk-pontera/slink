@@ -14,13 +14,24 @@ import { adminSearch } from './admin-search.js';
 import { adminUsers } from './admin-users.js';
 import { EXIT_HREF, impersonationNotice, withPrefix, withoutPrefix } from './impersonate.js';
 import { tokenFor } from './auth.js';
-import { creatableDirectories } from './directories.js';
 import { resolveDomain } from './domains.js';
 import { listOwnedLinks } from './links.js';
-import { mayCreateAnyDirectory, requireAdmin, rootCreateAllowed } from './permissions.js';
+import { creatableLocations, mayCreateAnyDirectory, requireAdmin } from './permissions.js';
 import { describePolicy, MAX_DELAY, normalizePolicy } from './interstitial.js';
 import { esc, fmtTime } from './util.js';
-import { alert, checkbox, field, html, layout, messagePage, select } from './views.js';
+import { K } from './kv.js';
+import { pendingUnder } from './pending.js';
+import {
+  alert,
+  checkbox,
+  copyButton,
+  field,
+  html,
+  icon,
+  layout,
+  messagePage,
+  select,
+} from './views.js';
 
 /** The query value meaning "every domain", which is the default everywhere. */
 export const ALL_HOSTS = 'all';
@@ -162,6 +173,9 @@ export const MESSAGES = {
   'passkey.renamed': ['ok', 'Passkey renamed.'],
   'passkey.added': ['ok', 'Passkey added. You can use it to sign in from now on.'],
   'passkey.noname': ['error', 'A passkey needs a name.'],
+  'qr.uploaded': ['ok', 'Centre image uploaded. The code now uses it.'],
+  'qr.removed': ['ok', 'Centre image removed.'],
+  'qr.toobig': ['error', 'That upload is too large.'],
   denied: ['error', 'You do not have permission to do that.'],
   csrf: ['error', 'That request could not be verified. Please try again.'],
   notfound: ['error', 'That item no longer exists.'],
@@ -201,14 +215,17 @@ export function adminNav(ctx, current) {
       { href: '/admin/audit', label: 'Audit', key: 'audit' }
     );
   }
-  // While impersonating, signing out means leaving this tab's view rather
-  // than ending the administrator's own session in every other tab.
-  items.push(
-    ctx.impersonator
-      ? { href: EXIT_HREF, label: 'Sign out', key: 'logout' }
-      : { href: '/logout', label: 'Sign out', key: 'logout' }
-  );
+  // Signing out is an action on the account, not another section, so it
+  // sits with the account rather than in this list. See `signOutHref`.
   return items.map((i) => ({ ...i, current: i.key === current }));
+}
+
+/**
+ * Where "Sign out" goes. While impersonating it means leaving this tab's
+ * view rather than ending the administrator's own session everywhere else.
+ */
+export function signOutHref(ctx) {
+  return ctx.impersonator ? EXIT_HREF : '/logout';
 }
 
 /** Pages where a domain filter means something, so the picker is shown. */
@@ -250,10 +267,12 @@ export function adminPage(ctx, { title, nav, body, status = 200, externalImages 
   const markup = layout({
     title: title + ' - ' + ctx.cfg.appName,
     appName: ctx.cfg.appName,
+    footerText: ctx.cfg.footerText,
     host: ctx.host,
     user: ctx.session.user,
     nav: adminNav(ctx, nav),
-    headerExtra: hostPicker(ctx),
+    account: hostPicker(ctx),
+    signOut: signOutHref(ctx),
     body: impersonationNotice(ctx) + body,
   });
   return html(ctx.prefix ? withPrefix(markup, ctx.prefix) : withoutPrefix(markup), {
@@ -278,6 +297,26 @@ export function denied(ctx, reason) {
 const MAX_FORM_BYTES = 64 * 1024;
 
 /**
+ * Parse a form that may carry a file.
+ *
+ * Only the two screens that accept an upload use this; everything else
+ * goes through readForm, which refuses anything but a urlencoded body on
+ * purpose. The declared length is checked before the body is buffered, so
+ * an oversized upload is turned away rather than read into memory.
+ */
+export async function readFormWithFiles(request, { maxBytes }) {
+  const type = request.headers.get('Content-Type') || '';
+  const declared = Number.parseInt(request.headers.get('Content-Length') || '', 10);
+  if (Number.isFinite(declared) && declared > maxBytes) return null;
+  if (!type.includes('multipart/form-data')) return readForm(request);
+  try {
+    return await request.formData();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Parse a form body, refusing anything that is not a urlencoded form or is
  * larger than any of these pages can produce. The declared length is checked
  * first so an oversized body is rejected before it is buffered.
@@ -297,7 +336,10 @@ export async function readForm(request) {
 async function overview(ctx) {
   const { cfg } = ctx;
   const selected = hostFilter(ctx, ctx.url);
-  const owned = await listOwnedLinks(cfg, ctx.session.user.id, { limit: 200 });
+  const owned = await listOwnedLinks(cfg, ctx.session.user.id, {
+    limit: 200,
+    pending: pendingUnder(ctx, K.ownerPrefix(ctx.session.user.id)),
+  });
   const rows = owned.items
     .filter((row) => !selected || row.host === selected)
     .slice(0, 10)
@@ -305,12 +347,16 @@ async function overview(ctx) {
       const meta = row.meta || {};
       const href = 'https://' + row.host + '/' + (meta.p || row.pathLc);
       return `<tr>
-        <td><a href="${esc(href)}" rel="noreferrer">${esc(row.host)}/${esc(meta.p || row.pathLc)}</a></td>
+        <td><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(row.host)}/${esc(
+          meta.p || row.pathLc
+        )}${icon('external', { cls: 'ic-out' })}</a></td>
         <td><span class="target">${esc(meta.t || '')}</span></td>
         <td class="num">${esc(meta.s || '')}</td>
-        <td><a href="/admin/links/edit?host=${encodeURIComponent(row.host)}&path=${encodeURIComponent(
-        row.pathLc
-      )}">Edit</a></td>
+        <td><div class="rowtools">${copyButton(href, {
+          what: row.host + '/' + (meta.p || row.pathLc),
+        })}<a class="btn secondary small" href="/admin/links/edit?host=${encodeURIComponent(
+          row.host
+        )}&path=${encodeURIComponent(row.pathLc)}">Edit</a></div></td>
       </tr>`;
     })
     .join('');
@@ -321,11 +367,14 @@ async function overview(ctx) {
   const perHost = [];
   for (const host of hostsFor(ctx, selected)) {
     const domain = await resolveDomain(cfg, host);
-    const dirs = admin ? null : await creatableDirectories(cfg, host, ctx.session.user.id);
+    // The same list the create form offers, so this table cannot promise
+    // more or less than the form will actually accept. A directory open to
+    // everyone signed in appears here without any grant behind it.
+    const places = await creatableLocations(cfg, { user: ctx.session.user, domain, host });
     perHost.push({
       host,
-      root: admin || (domain ? rootCreateAllowed(cfg, domain, ctx.session.user) : false),
-      dirs,
+      root: places.some((p) => !p.pathLc),
+      dirs: admin ? null : places.filter((p) => p.pathLc).map((p) => p.path),
       mayAddDir: await mayCreateAnyDirectory(cfg, { user: ctx.session.user, host }),
     });
   }
@@ -352,7 +401,7 @@ ${flashFrom(ctx.url)}
   <h2>Your most recent links</h2>
   ${
     rows
-      ? `<div class="tablewrap"><table>
+      ? `<div class="tablewrap"><table class="cards-sm">
           <thead><tr><th>Short link</th><th>Destination</th><th>Code</th><th></th></tr></thead>
           <tbody>${rows}</tbody></table></div>`
       : '<div class="empty">Nothing here yet.</div>'
@@ -374,9 +423,20 @@ ${flashFrom(ctx.url)}
     <thead><tr><th>Domain</th><th>Links at root</th><th>Directories you may use</th><th>May add directories</th></tr></thead>
     <tbody>${rightsRows}</tbody>
   </table></div>
+</div>
+
+<div class="card">
+  <h2>This account</h2>
   <dl class="kv">
     <dt>Account</dt><dd>${esc(ctx.session.user.emailNorm)}</dd>
     <dt>Last sign-in</dt><dd>${esc(fmtTime(ctx.session.user.lastLoginAt))}</dd>
+    ${
+      // A passkey belongs to the account holder, so an impersonated view is
+      // not offered them here any more than it is in the navigation.
+      ctx.impersonator
+        ? ''
+        : '<dt>Passkeys</dt><dd><a href="/admin/passkeys">Manage the keys on this account</a></dd>'
+    }
   </dl>
 </div>`;
 

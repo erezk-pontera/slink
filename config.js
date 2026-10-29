@@ -31,6 +31,17 @@ export const DEFAULTS = {
   interstitialDefaultDelay: 0,
   defaultStatus: 302,
   blockedSchemes: [],
+  /** The identity provider, one for the whole installation. See oauth.js. */
+  oauth: {
+    enabled: false,
+    label: 'Single sign-on',
+    clientId: '',
+    authorizeUrl: '',
+    tokenUrl: '',
+    userinfoUrl: '',
+    scope: 'openid email profile',
+    emailField: 'email',
+  },
   geo: {
     blockTor: true,
     blockUnknown: true,
@@ -96,6 +107,12 @@ export class Config {
 
     this.hubHost = String(envVar(env, 'HUB_HOST') || 'ptra.dev').toLowerCase().replace(/^www\./, '');
     this.appName = String(envVar(env, 'APP_NAME') || 'Shrink Link');
+    /**
+     * The line at the bottom of every page: a copyright notice, a company
+     * name, whatever this installation needs. Plain text, escaped like
+     * anything else, and left out entirely when it is not set.
+     */
+    this.footerText = String(envVar(env, 'FOOTER_TEXT') || '');
     this.knownHosts = listEnv(envVar(env, 'DOMAINS'), ['ptra.cc', 'ptra.dev']);
 
     this.rootAdmins = listEnv(envVar(env, 'ADMIN'));

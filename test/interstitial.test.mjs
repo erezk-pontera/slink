@@ -56,6 +56,51 @@ section('the countdown defaults on for ptra.dev and off for ptra.cc');
      String(slow.status));
 }
 
+/* --------------------------------------------- offered up front */
+section('the countdown is settled when the link is created');
+{
+  // Every countdown setting the editor offers is on the create form too,
+  // rendered against the policy of the domain currently selected.
+  const dev = await (await h.req('https://ptra.dev/admin/links/new')).text();
+  ok('the countdown is offered', dev.includes('name="countdown"'));
+  ok('so is the delay', dev.includes('name="delay"'));
+  ok('and whether the destination shows', dev.includes('name="showTarget"'));
+  ok('the box starts ticked where the domain default is on',
+     /name="countdown"[^>]*checked/.test(dev), (dev.match(/<input[^>]*name="countdown"[^>]*>/) || [''])[0]);
+  ok('the delay starts at the policy default', dev.includes('value="5"'));
+
+  // `?host=` picks the domain the form is rendered against, so the controls
+  // match the domain the link is about to be created on.
+  const cc = await (await h.req('https://ptra.dev/admin/links/new?host=ptra.cc')).text();
+  ok('another domain can be chosen up front', /value="ptra.cc" selected/.test(cc));
+  ok('its countdown starts unticked', !/name="countdown"[^>]*checked/.test(cc));
+  ok('and the delay is not asked for while it is off', !cc.includes('name="delay"'));
+
+  // Unticking it at creation time is enough: no second save needed.
+  await newLink({
+    host: 'ptra.dev', path: 'straight', target: 'example.com/s', status: '302',
+    countdownSet: '1', enabledSet: '1', enabled: '1',
+  });
+  const off = await h.req('https://ptra.dev/straight');
+  ok('a link created with it off goes straight through', off.status === 302,
+     String(off.status));
+
+  // And the destination can be withheld from the countdown page at creation.
+  //
+  // The destination carries a token that appears nowhere else, so "it is
+  // not on the page" is a question about that token rather than about a
+  // URL that could match something incidental.
+  const token = 'withheld-9f3a2c';
+  await newLink({
+    host: 'ptra.dev', path: 'quiet', target: 'example.com/' + token, status: '302',
+    countdownSet: '1', countdown: '1', delay: '3', enabledSet: '1', enabled: '1',
+  });
+  const quiet = await (await h.req('https://ptra.dev/quiet')).text();
+  ok('the countdown is kept', quiet.includes('data-slink-delay="3"'));
+  ok('the destination is withheld as asked', !quiet.includes(token), token);
+  ok('and the page says so', quiet.includes('destination is not shown'));
+}
+
 /* ------------------------------------------------------- locking */
 section('a locked domain policy cannot be undone by a link');
 {
@@ -126,7 +171,7 @@ section('a directory may tighten, and only tighten, without an exemption');
   await h.req('https://ptra.dev/admin/directories/new', {
     form: { _csrf: dirToken, host: 'ptra.cc', path: 'safe' },
   });
-  await newLink({ host: 'ptra.cc', path: 'safe/doc', target: 'example.com/d', status: '302' });
+  await newLink({ host: 'ptra.cc', dir: 'ptra.cc/safe', path: 'doc', target: 'example.com/d', status: '302' });
   const before = await h.req('https://ptra.cc/safe/doc');
   ok('inherits the domain default of off', before.status === 302, String(before.status));
 
@@ -216,7 +261,11 @@ section('a user exemption follows the links that person owns');
   const kEditTok = Harness.csrfFor(kBody, '/admin/links/edit');
   await kim.req('https://ptra.dev/admin/links/edit', {
     form: { _csrf: kEditTok, host: 'ptra.cc', path: 'kim', newpath: 'kim',
-            target: 'https://example.com/k', status: '302', delay: '0', enabled: '1' },
+            target: 'https://example.com/k', status: '302', delay: '0', enabled: '1',
+            // What the form itself carries: the controls were on the page and
+            // the box was left unticked. Without the marker the post would be
+            // saying nothing about the countdown rather than turning it off.
+            countdownSet: '1' },
   });
   const kimOut = await h.req('https://ptra.cc/kim');
   ok('their link now skips the countdown', kimOut.status === 302, String(kimOut.status));

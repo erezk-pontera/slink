@@ -10,6 +10,7 @@ import {
   isPrivateHost,
   methodsFor,
   normalizeDisabledMethods,
+  oauthMissing,
   normalizeOauth,
   oauthReady,
   oauthSettings,
@@ -111,6 +112,24 @@ section('configuration');
        normalizeOauth({ tokenUrl: `https://${host}/t` }).tokenUrl !== '');
   }
   ok('the host check is exported for reuse', isPrivateHost('10.1.2.3') && !isPrivateHost('example.com'));
+
+  // Which piece is still missing, by name. "Not usable yet" on its own
+  // leaves somebody to work through four fields and a deploy to find out
+  // which, and the secret is set by a command rather than on the screen,
+  // so it is the one most easily believed to be done.
+  const full = {
+    clientId: 'c', authorizeUrl: 'https://i/a', tokenUrl: 'https://i/t', userinfoUrl: 'https://i/u',
+  };
+  ok('nothing missing reads as nothing',
+     oauthMissing({ oauthSecret: 's' }, full).length === 0);
+  ok('a secret set by command is named when absent',
+     oauthMissing({ oauthSecret: '' }, full).join() === 'the client secret');
+  ok('and an empty one counts as absent',
+     oauthMissing({}, full).includes('the client secret'));
+  ok('each field is named on its own',
+     oauthMissing({ oauthSecret: 's' }, { ...full, tokenUrl: '' }).join() === 'the token endpoint');
+  ok('several are named together',
+     oauthMissing({ oauthSecret: '' }, { ...full, clientId: '' }).length === 2);
 
   ok('single sign-on cannot be disabled', !normalizeDisabledMethods(['oauth', 'otp']).includes('oauth'));
   ok('an unknown method is dropped', normalizeDisabledMethods(['nonsense']).length === 0);

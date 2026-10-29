@@ -108,6 +108,26 @@ export function oauthSettings(cfg) {
   return normalizeOauth(cfg && cfg.settings && cfg.settings.oauth);
 }
 
+/**
+ * What single sign-on is still waiting for, in words.
+ *
+ * oauthReady answers yes or no, which is the right answer for the sign-in
+ * page and the wrong one for the screen where somebody is setting this up:
+ * four fields and a secret set by a separate command, and no indication of
+ * which one they have not done yet. None of these names is a secret, and
+ * the values are not shown.
+ */
+export function oauthMissing(cfg, raw) {
+  const o = raw && typeof raw === 'object' ? raw : oauthSettings(cfg);
+  const out = [];
+  if (!o.clientId) out.push('the client ID');
+  if (!o.authorizeUrl) out.push('the authorization endpoint');
+  if (!o.tokenUrl) out.push('the token endpoint');
+  if (!o.userinfoUrl) out.push('the userinfo endpoint');
+  if (!(cfg.oauthSecret && String(cfg.oauthSecret).length)) out.push('the client secret');
+  return out;
+}
+
 export function oauthReady(cfg) {
   const o = oauthSettings(cfg);
   if (!o.enabled) return false;

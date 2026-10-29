@@ -3,3 +3,6 @@
 AUTH_SECRET="generate-with-openssl-rand-base64-48"
 turnstile-sitekey="your-existing-widget-sitekey"
 turnstile-secret="your-existing-widget-secret"
+
+# Only needed when single sign-on is switched on in /admin/settings.
+oauth-secret=

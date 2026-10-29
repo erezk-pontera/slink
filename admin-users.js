@@ -18,6 +18,7 @@ import {
   disabledMethodsFor,
   normalizeDisabledMethods,
   normalizeOauth,
+  oauthMissing,
   oauthReady,
   oauthSettings,
 } from './oauth.js';
@@ -557,9 +558,14 @@ ${flashFrom(url)}${alert('error', error)}
     <p class="note">The provider says who somebody is, and nothing more: letting them through its sign-in makes them an ordinary account here. What they may do is decided on this side, by the host's allowed sign-in domains and by their own record &mdash; no role or privilege is read from the provider.</p>
     <p class="note">The one redirect URI to register with the provider: <code>https://${esc(
       cfg.hubHost
-    )}/__slink/oauth/callback</code>. Signing in happens on this host alone and the others arrive through the handshake, so registering any of them would hold a redirect URI open for a route that is not served. The client secret is the <code>oauth-secret</code> environment variable, never stored here.${
+    )}/__slink/oauth/callback</code>. Signing in happens on this host alone and the others arrive through the handshake, so registering any of them would hold a redirect URI open for a route that is not served.</p>
+    <p class="note">The client secret has no field here, and never will: it is the <code>oauth-secret</code> environment variable, set with <code>wrangler secret put oauth-secret</code>, so it is never written to this record or shown on this screen. It is ${
+      cfg.oauthSecret ? 'set.' : '<strong>not set.</strong>'
+    }${
+      // Saying which piece is missing gives away nothing a visitor could use
+      // and saves working through four fields and a deploy to find out.
       oauth.enabled && !oauthReady(cfg)
-        ? ' <strong>Not usable yet: an endpoint, the client ID or the secret is missing.</strong>'
+        ? ` <strong>Not usable yet: ${esc(oauthMissing(cfg, oauth).join(', '))} missing.</strong>`
         : ''
     }</p>
     </details>

@@ -333,6 +333,7 @@ Secrets, set with `wrangler secret put` (never in the config file):
 | --- | --- |
 | `AUTH_SECRET` | Master key for sessions, CSRF, SSO and OTP hashes. At least 32 characters. |
 | `turnstile-secret` | The existing widget's secret |
+| `oauth-secret` | The identity provider's client secret. Only needed where single sign-on is switched on, and single sign-on will not work without it |
 
 With both `IGNORE_EMAIL_DOT` and `IGNORE_EMAIL_PLUS` on, `A.A+weekly@CC.com`
 and `aa@cc.com` are the same account. The address first used to sign in is
@@ -352,6 +353,7 @@ npm install
 #    your shell history or in a process list.
 wrangler secret put AUTH_SECRET          # e.g. openssl rand -base64 48
 wrangler secret put turnstile-secret     # the existing widget's secret
+wrangler secret put oauth-secret         # only if single sign-on is used
 
 # 2. Put the widget's sitekey into wrangler.toml under [vars], and check that
 #    ADMIN and DEFAULT_ALLOWED_DOMAINS are right.

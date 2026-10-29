@@ -86,13 +86,19 @@ section('the countdown is settled when the link is created');
      String(off.status));
 
   // And the destination can be withheld from the countdown page at creation.
+  //
+  // The destination carries a token that appears nowhere else, so "it is
+  // not on the page" is a question about that token rather than about a
+  // URL that could match something incidental.
+  const token = 'withheld-9f3a2c';
   await newLink({
-    host: 'ptra.dev', path: 'quiet', target: 'example.com/q', status: '302',
+    host: 'ptra.dev', path: 'quiet', target: 'example.com/' + token, status: '302',
     countdownSet: '1', countdown: '1', delay: '3', enabledSet: '1', enabled: '1',
   });
   const quiet = await (await h.req('https://ptra.dev/quiet')).text();
   ok('the countdown is kept', quiet.includes('data-slink-delay="3"'));
-  ok('the destination is withheld as asked', !quiet.includes('https://example.com/q'));
+  ok('the destination is withheld as asked', !quiet.includes(token), token);
+  ok('and the page says so', quiet.includes('destination is not shown'));
 }
 
 /* ------------------------------------------------------- locking */

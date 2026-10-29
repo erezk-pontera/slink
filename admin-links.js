@@ -457,11 +457,28 @@ async function listPage(ctx) {
   // original, so one token for the page is enough.
   const dupToken = await formToken(ctx, 'link.duplicate');
 
-  // The directories the filter can offer. Listed per domain and de-duped by
-  // path, because the same directory name can exist on more than one.
+  // The directories the filter can offer, de-duped by path because the same
+  // name can exist on more than one domain.
+  //
+  // An administrator sees every one. Anybody else sees only the directories
+  // they may already create in, which is what the directories screen shows
+  // them: a filter naming a directory somebody holds no grant on would hand
+  // out the name the other screen withholds.
   const seen = new Map();
   for (const host of hostsFor(ctx, selected)) {
-    for (const d of await listDirectories(cfg, host)) seen.set(d.pathLc, d);
+    const list = ctx.isAdmin
+      ? await listDirectories(cfg, host, { pending: pendingUnder(ctx, K.dirPrefix(host, '')) })
+      : (
+          await creatableLocations(cfg, {
+            user: ctx.session.user,
+            domain: await resolveDomain(cfg, host),
+            host,
+            ...dirCorrection(ctx, host),
+          })
+        )
+          .filter((place) => place.dir)
+          .map((place) => place.dir);
+    for (const d of list) seen.set(d.pathLc, d);
   }
   const known = [...seen.values()].sort((a, b) => a.pathLc.localeCompare(b.pathLc));
 

@@ -208,6 +208,16 @@ section('a row opens, copies and duplicates');
   ok('the filter offers directories', /name="dir"[\s\S]*?<option value="eng">eng\/<\/option>/.test(list),
      (list.match(/<select id="f_dir"[\s\S]*?<\/select>/) || [''])[0].slice(0, 200));
 
+  // And names none that this person is not already allowed to create in,
+  // which is exactly what the directories screen shows them.
+  const guest = peer(root);
+  await guest.signIn('onlooker@pontera.com');
+  const theirs = await (await guest.req('https://ptra.dev/admin/links')).text();
+  const filter = (theirs.match(/<select id="f_dir"[\s\S]*?<\/select>/) || [''])[0];
+  ok('a granted-only directory is not named to somebody without a grant',
+     !filter.includes('>eng/<') && !filter.includes('>ops/<'), filter);
+  ok('while one open to anyone signed in is', filter.includes('>anyone/<'), filter);
+
   const dupTok = Harness.csrfFor(list, '/admin/links/duplicate');
   const dup = await root.req('https://ptra.dev/admin/links/duplicate', {
     form: { _csrf: dupTok, host: 'ptra.cc', path: 'ops/deck' },

@@ -141,6 +141,16 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .field .note{font-size:12px;color:var(--muted);margin:5px 0 0}
 .row{display:flex;gap:12px;flex-wrap:wrap}
 .row>*{flex:1 1 180px;min-width:0}
+/* One domain to copy a link onto: the tick, and the directory on that
+   domain to put it in. Beside each other where there is room, stacked
+   where there is not, and the tick centred against the select rather
+   than against its label. */
+.alsodomain{display:grid;grid-template-columns:minmax(9rem,1fr) 2fr;
+  gap:2px 16px;align-items:center;margin:0 0 12px}
+.alsodomain .check,.alsodomain .field{margin:0}
+@media (max-width:620px){
+  .alsodomain{grid-template-columns:1fr;gap:6px}
+}
 .check{display:flex;align-items:flex-start;gap:8px;margin:0 0 9px;font-size:14px}
 .check input{margin-top:3px;flex:none}
 .check label{margin:0;font-weight:400}

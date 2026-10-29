@@ -360,6 +360,50 @@ function placeOptions(perHost) {
 }
 
 /**
+ * One domain in "Also create it on another domain": the tick, and the
+ * directory on that domain to put it in.
+ *
+ * The directory is a question per domain, not one answer copied across.
+ * `eng/` existing on one domain says nothing about the next, and a grant is
+ * held on a directory rather than on a name, so the options here are that
+ * domain's own creatable places and nothing else. A domain this person
+ * cannot create on at all offers no tick, because there is no directory
+ * that would make it work.
+ */
+function alsoDomain({ host, perHost, values }) {
+  const found = perHost.find((p) => p.host === host);
+  const locations = (found && found.locations) || [];
+  if (!locations.length) {
+    return checkbox({
+      name: 'also__' + host,
+      label: host,
+      checked: false,
+      disabled: true,
+      note: 'you cannot create links here',
+    });
+  }
+
+  const options = locations.map((loc) => ({
+    value: placeValue(host, loc.pathLc),
+    label: loc.pathLc ? `${host}/${loc.path}/` : `${host}/`,
+  }));
+  // The root where that is allowed, and otherwise the first place there is.
+  const fallback = (options.find((o) => o.value === placeValue(host, '')) || options[0]).value;
+  const held = (values.alsoDir || {})[host];
+  const chosen = held && options.some((o) => o.value === held) ? held : fallback;
+
+  return `<div class="alsodomain">
+  ${checkbox({ name: 'also__' + host, label: host, checked: (values.also || []).includes(host) })}
+  ${select({
+    name: 'alsodir__' + host,
+    label: 'Directory on ' + host,
+    value: chosen,
+    options,
+  })}
+</div>`;
+}
+
+/**
  * Note a link this session just wrote or removed, under both the keys the
  * two listings read: the links on a domain, and the links this person owns.
  */
@@ -649,16 +693,10 @@ ${qrFloat({ host: chosenHost })}
       <summary>Also create it on another domain${
         (values.also || []).length ? ` <span class="badge">${(values.also || []).length} ticked</span>` : ''
       }</summary>
-      <p class="hint">The same shortcut, in the same directory, on each domain ticked. If it cannot be made on one of them, none are made.</p>
+      <p class="hint">The same shortcut on each domain ticked, in whichever directory is chosen for it. If it cannot be made on one of them, none are made.</p>
       ${cfg.knownHosts
         .filter((h) => h !== chosenHost)
-        .map((h) =>
-          checkbox({
-            name: 'also__' + h,
-            label: h,
-            checked: (values.also || []).includes(h),
-          })
-        )
+        .map((h) => alsoDomain({ host: h, perHost, values }))
         .join('')}
     </details>`
         : ''
@@ -868,6 +906,13 @@ async function createSubmit(ctx) {
     routing: readRouting(body),
     frame: readFrame(body),
     also: ctx.cfg.knownHosts.filter((h) => body.get('also__' + h) === '1'),
+    // The directory chosen for each of those domains, kept whole so a
+    // rejected submit renders the pickers back as they were left.
+    alsoDir: Object.fromEntries(
+      ctx.cfg.knownHosts
+        .map((h) => [h, String(body.get('alsodir__' + h) || '')])
+        .filter(([, v]) => v)
+    ),
     password: String(body.get('password') || ''),
     preview: {
       enabled: body.get('previewEnabled') === '1',
@@ -1040,10 +1085,32 @@ async function createSubmit(ctx) {
   // is checked before any is written, so a run that cannot finish writes
   // nothing at all.
   if (values.also && values.also.length) {
+    // Each domain carries its own directory, so the path is rebuilt per
+    // domain from the one shortcut. A picker naming a different domain is
+    // the pair out of step, which only a browser without JavaScript can
+    // manage; it is said plainly rather than guessed at. Whether the person
+    // may actually create there is settled by createEverywhere, which asks
+    // the permission code again for every domain.
+    const segment = parseSegment(values.path);
+    const elsewhere = [];
+    for (const other of values.also) {
+      const raw = (values.alsoDir || {})[other];
+      const at = raw ? parsePlace(raw) : { host: other, dirPathLc: '' };
+      if (at.host !== other) {
+        return newForm(ctx, {
+          error: `The directory chosen for ${other} is on ${at.host}.`,
+          values,
+        });
+      }
+      if (at.dirPathLc && !(await getDirectory(ctx.cfg, other, at.dirPathLc))) {
+        return newForm(ctx, { error: `That directory no longer exists on ${other}.`, values });
+      }
+      elsewhere.push({ host: other, rawPath: joinPath(at.dirPathLc, segment) });
+    }
+
     const result = await createEverywhere(ctx.cfg, {
       user: owner,
-      hosts: [host, ...values.also],
-      rawPath: parsed.path,
+      places: [{ host, rawPath: parsed.path }, ...elsewhere],
       fields: { ...fields, target: destination.target },
     });
     if (!result.ok) return newForm(ctx, { error: result.error, values });

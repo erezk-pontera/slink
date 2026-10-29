@@ -106,6 +106,65 @@ section('each domain is checked on its own terms');
   });
 }
 
+/* --------------------------------------- 3b. a directory per domain */
+section('each domain chooses its own directory');
+{
+  // Two directories of the same name would prove nothing, so they differ:
+  // the point is that the second domain is asked separately rather than
+  // handed the first one's answer.
+  const mk = async (host, path) => {
+    const page = await (await root.req('https://ptra.dev/admin/directories')).text();
+    return root.req('https://ptra.dev/admin/directories/new', {
+      form: { _csrf: Harness.csrfFor(page, '/admin/directories/new'), host, path },
+    });
+  };
+  await mk('ptra.dev', 'eng');
+  await mk('ptra.cc', 'ops');
+
+  const form = await (await root.req('https://ptra.dev/admin/links/new')).text();
+  ok('the other domain brings its own directory picker',
+     form.includes('name="alsodir__ptra.cc"'));
+  ok('and the picker offers that domain\'s directories',
+     form.includes('value="ptra.cc/ops"'), 'expected ptra.cc/ops among its options');
+  ok('not the first domain\'s',
+     !/<select[^>]*name="alsodir__ptra.cc"[\s\S]*?value="ptra.dev\/eng"[\s\S]*?<\/select>/.test(form));
+
+  const made = await create({
+    host: 'ptra.dev', dir: 'ptra.dev/eng', path: 'runbook', target: 'example.com/r',
+    'also__ptra.cc': '1', 'alsodir__ptra.cc': 'ptra.cc/ops',
+  });
+  ok('the submission succeeds', (made.headers.get('Location') || '').includes('createdMany'),
+     made.headers.get('Location'));
+  ok('it lands in the chosen directory here', await exists('ptra.dev', 'eng/runbook'));
+  ok('and in a different one there', await exists('ptra.cc', 'ops/runbook'));
+  ok('not at the other domain\'s root', !(await exists('ptra.cc', 'runbook')));
+
+  const hit = await guest.req('https://ptra.cc/ops/runbook');
+  ok('the second one resolves', (hit.headers.get('Location') || '').includes('example.com/r'),
+     hit.headers.get('Location'));
+
+  // Only a browser without the script can post these out of step.
+  const crossed = await create({
+    host: 'ptra.dev', dir: 'ptra.dev/eng', path: 'crossed', target: 'example.com/c',
+    'also__ptra.cc': '1', 'alsodir__ptra.cc': 'ptra.dev/eng',
+  });
+  const text = await crossed.text();
+  ok('a directory on the wrong domain is refused',
+     text.includes('chosen for ptra.cc') && text.includes('ptra.dev'),
+     text.match(/alert[^>]*>([^<]*)/)?.[1]);
+  ok('and nothing was created anywhere', !(await exists('ptra.dev', 'eng/crossed')));
+
+  // The permission check runs again at the destination, so a directory the
+  // picker would not have offered is refused even when it is posted by hand.
+  const gone = await create({
+    host: 'ptra.dev', dir: 'ptra.dev/eng', path: 'nowhere', target: 'example.com/g',
+    'also__ptra.cc': '1', 'alsodir__ptra.cc': 'ptra.cc/no-such-dir',
+  });
+  ok('a directory that does not exist there is refused',
+     (await gone.text()).includes('no longer exists on ptra.cc'));
+  ok('and that created nothing either', !(await exists('ptra.dev', 'eng/nowhere')));
+}
+
 /* --------------------------------------------------------- 4. moving */
 section('moving a link between domains');
 {

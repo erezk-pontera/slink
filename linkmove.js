@@ -79,17 +79,28 @@ export function carryOver(link) {
 }
 
 /**
- * Create the same shortcut on each of `hosts`.
+ * Create the same shortcut in each of `places`, one { host, rawPath } per
+ * domain.
  *
- * Every host is checked before any is written. Returns { ok, created,
+ * A path per domain rather than one for all of them, because the directory
+ * is chosen per domain: the same shortcut can sit at the root of one and
+ * inside `eng/` on another, and which directories exist - and which this
+ * person may create in - is a question each domain answers for itself.
+ *
+ * Every place is checked before any is written. Returns { ok, created,
  * error }, where `created` is the list of hosts written on success.
  */
-export async function createEverywhere(cfg, { user, hosts, rawPath, fields }) {
-  const wanted = [...new Set(hosts.filter(Boolean))];
+export async function createEverywhere(cfg, { user, places, fields }) {
+  const wanted = [];
+  for (const place of places || []) {
+    if (!place || !place.host) continue;
+    if (wanted.some((p) => p.host === place.host)) continue;
+    wanted.push(place);
+  }
   if (!wanted.length) return { ok: false, error: 'Choose at least one domain.' };
 
   const plan = [];
-  for (const host of wanted) {
+  for (const { host, rawPath } of wanted) {
     const check = await checkTarget(cfg, { user, host, rawPath });
     if (!check.ok) return { ok: false, error: check.error };
     plan.push(check);

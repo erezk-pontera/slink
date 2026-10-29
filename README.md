@@ -1,12 +1,21 @@
-# slink
+# Shrink Link (SLink)
+> (C) KSEC - Erez Kalman. All Rights Reserved.
 
-A short-link service for **ptra.cc** and **ptra.dev**, running as a single
-Cloudflare Worker backed by one KV namespace.
+## License
 
-- `ptra.cc/aaa` — public short links, redirecting immediately or after a
+This project is licensed under the GNU Affero General Public License v3.0 or later.
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+## Description
+
+A short-link service for Cloudflare, running as a single Cloudflare Worker
+backed by one KV namespace.
+
+- `example.com/aaa` — public short links, redirecting immediately or after a
   countdown, with a redirect code you choose.
-- `ptra.dev/bbb` — the same, but every link requires a verified sign-in.
-- `ptra.dev/admin` — manage links, directories, domains, users and settings,
+- `example.org/bbb` — the same, but every link requires a verified sign-in.
+- `example.org/admin` — manage links, directories, domains, users and settings,
   and the one place a sign-in form is ever shown.
 
 The admin area spans every domain by default. A picker beside the name in the
@@ -15,8 +24,8 @@ other filters with it; pages that act on one record do not show it, because
 changing the domain there would point at something else.
 
 Apex and `www.` are the same host everywhere. A request to `www.` is
-redirected to the apex before anything else runs, so `www.ptra.dev/bbb` and
-`ptra.dev/bbb` are one link and one session. (Cookies here are `__Host-`
+redirected to the apex before anything else runs, so `www.example.org/bbb` and
+`example.org/bbb` are one link and one session. (Cookies here are `__Host-`
 prefixed, which binds them to an exact hostname; redirecting is what makes
 the two hosts genuinely interchangeable without weakening that.)
 
@@ -159,7 +168,7 @@ there is no second URL where a form appears.
 `/logout` asks for confirmation and then signs the user out of **every** host,
 by revoking every session they hold.
 
-**Across hosts.** Only `ptra.dev` serves `/admin`. Another host
+**Across hosts.** Only `example.org` serves `/admin`. Another host
 that requires sign-in bounces the visitor through a signed, nonce-bound,
 two-minute handshake on the hub, so one sign-in covers every host. The token
 names the host it was minted for and is useless anywhere else.
@@ -291,7 +300,7 @@ On the first request the worker seeds a policy record for each host in
 `DOMAINS`: the hub requires sign-in, the others do not. Adjust them in
 `/admin/domains`.
 
-Check it came up with `curl https://ptra.dev/health` — it reports only whether
+Check it came up with `curl https://example.org/health` — it reports only whether
 configuration is complete; the names of anything missing go to the log, so use
 `wrangler tail` while setting up.
 
@@ -301,7 +310,7 @@ Three cases share one destination:
 
 | Request | Goes to |
 | --- | --- |
-| A host root (`ptra.cc/`, `ptra.dev/`, and their `www.` forms) | the domain's **Where / goes**, else `MISSING` |
+| A host root (`example.com/`, `example.org/`, and their `www.` forms) | the domain's **Where / goes**, else `MISSING` |
 | An unknown shortcut | the domain's **Where unknown … go**, else `MISSING` |
 | A shortcut that is disabled or expired | the same as unknown |
 
@@ -311,7 +320,7 @@ set, a small page is rendered instead — carrying no sign-in button, because a
 short-link host should not advertise that an administration area exists.
 
 The root is answered **before** the sign-in gate. That is deliberate: it means
-`ptra.dev/` redirects like any other host rather than demanding a sign-in from
+`example.org/` redirects like any other host rather than demanding a sign-in from
 a passer-by. Everything below the root on an authenticated host still requires
 a session.
 
@@ -372,7 +381,7 @@ remote has drifted.
 recipients requires the sending domain to be onboarded in Cloudflare Email
 Service (and a Workers Paid plan); before that, only verified destination
 addresses on the account can be reached. Email Sending is enabled for
-`ptra.dev`, which is why `MAIL_FROM` defaults to `no-reply@ptra.dev`.
+`example.org`, which is why `MAIL_FROM` defaults to `no-reply@example.org`.
 
 If delivery is refused, the error in the log distinguishes an un-onboarded
 sending domain from an unverified recipient. Switching to another provider is
@@ -391,7 +400,7 @@ has no route.
 
 Shortcuts use `A-Za-z0-9`, `_` and `-`, in `/`-separated segments. They are
 case-insensitive: `Deck` and `deck` are the same link. Leading and trailing
-slashes are ignored, so `ptra.cc/aaa/` works.
+slashes are ignored, so `example.com/aaa/` works.
 
 Destinations default to `https://`. An explicit scheme is kept as written,
 whether hierarchical (`slack://channel?id=7`) or opaque (`mailto:x@y.com`).
@@ -415,7 +424,7 @@ is always a mistyped `#`, and passing it on would put the password in the
 destination's logs.
 
 **A fragment** is never sent to a server at all. The browser keeps it and
-re-attaches it after a redirect, so `ptra.cc/aa#section-3` lands on the
+re-attaches it after a redirect, so `example.com/aa#section-3` lands on the
 destination with `#section-3` still on the end, provided the destination
 carries no fragment of its own. An interstitial page in the way — the
 countdown, or the password prompt — ends that: its own navigation starts
@@ -459,7 +468,7 @@ copy reveals everything the original holds.
 
 **Framing.** Any slot, the default included, can be marked to show its
 destination inside a frame instead of redirecting to it. The address bar
-then stays on the short link - `ptra.cc/aa` keeps reading `ptra.cc/aa`
+then stays on the short link - `example.com/aa` keeps reading `example.com/aa`
 while the destination fills the page - on the apex and on `www` alike, and
 on every domain the shortcut exists on. The capability is resolved against
 the link's *owner*, not the visitor, because the visitor is usually not
@@ -527,7 +536,7 @@ owner's grants are only loaded when the stored link actually depends on one,
 so an ordinary redirect costs no extra reads.
 
 Out of the box the countdown is available everywhere and defaults to **on for
-`ptra.dev`** and **off for `ptra.cc`**: a public short link should go
+`example.org`** and **off for `example.com`**: a public short link should go
 straight through, while the authenticated host shows where it is sending you.
 Setting a delay on a link is itself a request for a countdown, so a link can
 opt in even where the default is off.

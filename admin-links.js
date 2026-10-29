@@ -67,6 +67,7 @@ import {
 import {
   destinationUserinfo,
   joinPath,
+  MAX_PATH,
   parseDestination,
   parsePath,
   parseSegment,
@@ -299,10 +300,13 @@ function placeValue(host, pathLc) {
 }
 
 function parsePlace(raw) {
-  const value = String(raw || '');
+  // Bounded before anything is built from it: the directory part becomes
+  // part of a KV key, and a key past the store's limit is an error rather
+  // than a miss. MAX_PATH is the longest a real directory can be.
+  const value = String(raw || '').slice(0, MAX_PATH + 300);
   const at = value.indexOf('/');
   if (at < 0) return { host: value, dirPathLc: '' };
-  return { host: value.slice(0, at), dirPathLc: value.slice(at + 1).toLowerCase() };
+  return { host: value.slice(0, at), dirPathLc: value.slice(at + 1, at + 1 + MAX_PATH).toLowerCase() };
 }
 
 /**
@@ -361,9 +365,9 @@ function placeOptions(perHost) {
  */
 function noteLink(ctx, link, { gone = false } = {}) {
   const mark = gone ? noteDelete : noteWrite;
-  return Promise.all([
-    mark(ctx, K.link(link.host, link.pathLc)),
-    link.ownerId ? mark(ctx, K.owner(link.ownerId, link.host, link.pathLc)) : null,
+  return mark(ctx, [
+    K.link(link.host, link.pathLc),
+    link.ownerId ? K.owner(link.ownerId, link.host, link.pathLc) : '',
   ]);
 }
 

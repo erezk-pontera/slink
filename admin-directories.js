@@ -122,9 +122,9 @@ const ACCESS_SHORT = {
  */
 function noteGrant(ctx, grant, { gone = false } = {}) {
   const mark = gone ? noteDelete : noteWrite;
-  return Promise.all([
-    mark(ctx, K.grant(grant.host, grant.dirPathLc, grant.userId)),
-    mark(ctx, K.userGrant(grant.userId, grant.host, grant.dirPathLc)),
+  return mark(ctx, [
+    K.grant(grant.host, grant.dirPathLc, grant.userId),
+    K.userGrant(grant.userId, grant.host, grant.dirPathLc),
   ]);
 }
 

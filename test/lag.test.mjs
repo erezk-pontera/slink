@@ -199,6 +199,44 @@ section('the correction only covers what this session changed');
   kv.thaw();
 }
 
+/* ------------------------------------------- 5. the note itself */
+section('a note is a correction and nothing more');
+{
+  const { noteWrite, pendingUnder, mergeNames } = await import('../pending.js');
+  const { loadConfig } = await import('../config.js');
+  const cfg = await loadConfig(root.env);
+
+  // A session that is gone gets no note, and nothing is written back: a
+  // whole-record write would otherwise put a revoked session on its feet.
+  const ghost = { cfg, session: { sidHash: 'no-such-session', record: { expiresAt: 2e9 } } };
+  await noteWrite(ghost, 'dir:ptra.cc:ghost');
+  ok('a note cannot revive a session that is gone',
+     (await kv.get('ses:no-such-session')) === null);
+
+  // Several keys in one call, because two calls in parallel would each
+  // start from the record as it was and the second would drop the first.
+  const live = (await kv.list({ prefix: 'ses:' })).keys[0].name;
+  const sid = live.slice('ses:'.length);
+  const ctx = { cfg, session: { sidHash: sid, record: await kv.get(live, { type: 'json' }) } };
+  await noteWrite(ctx, ['dir:ptra.cc:one', 'dir:ptra.cc:two']);
+  const after = await kv.get(live, { type: 'json' });
+  const keys = (after.pending || []).map((p) => p.k);
+  ok('both keys are noted', keys.includes('dir:ptra.cc:one') && keys.includes('dir:ptra.cc:two'),
+     JSON.stringify(keys));
+  ok('and the session is otherwise untouched', after.userId === ctx.session.record.userId);
+
+  // The correction is scoped to the prefix asked for.
+  const under = pendingUnder(ctx, 'dir:ptra.cc:');
+  ok('a prefix picks out only its own notes',
+     under.added.every((k) => k.startsWith('dir:ptra.cc:')), JSON.stringify(under));
+  ok('another prefix sees none of them', pendingUnder(ctx, 'usr:') === null);
+
+  // Merging never duplicates a name the listing already had.
+  const merged = mergeNames(['dir:ptra.cc:one'], { added: ['dir:ptra.cc:one'], removed: [] });
+  ok('a name already listed is not added twice', merged.length === 1, JSON.stringify(merged));
+  ok('and a removed one goes', mergeNames(['a', 'b'], { added: [], removed: ['a'] }).join() === 'b');
+}
+
 console.log(`\nlisting lag: ${passed} passed, ${failed} failed`);
 root.restore();
 export default { passed, failed };

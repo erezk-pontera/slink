@@ -1,7 +1,8 @@
 # Shrink Link (SLink)
-> (C) KSEC - Erez Kalman. All Rights Reserved.
 
 ## License
+
+(C) KSEC - Erez Kalman. All Rights Reserved.
 
 This project is licensed under the GNU Affero General Public License v3.0 or later.
 

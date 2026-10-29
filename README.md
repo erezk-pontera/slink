@@ -5,7 +5,7 @@
 Copyright (C) KSEC - Erez Kalman. All Rights Reserved.
 
 This project is dual-licensed. You may choose to use this software under the terms of either:
-1. A proprietary **Custom/Commercial License** obtained directly from KSEC.
+1. A proprietary **Custom/Commercial License** obtained directly from KSEC (KSEC - Erez Kalman).
 2. The **GNU Affero General Public License v3.0 or later** (AGPL-3.0-or-later).
 
 For commercial or non-AGPL licensing inquiries, please contact: [Insert Contact Email/Website]

@@ -165,7 +165,7 @@ section('a directory may tighten, and only tighten, without an exemption');
   await h.req('https://ptra.dev/admin/directories/new', {
     form: { _csrf: dirToken, host: 'ptra.cc', path: 'safe' },
   });
-  await newLink({ host: 'ptra.cc', path: 'safe/doc', target: 'example.com/d', status: '302' });
+  await newLink({ host: 'ptra.cc', dir: 'ptra.cc/safe', path: 'doc', target: 'example.com/d', status: '302' });
   const before = await h.req('https://ptra.cc/safe/doc');
   ok('inherits the domain default of off', before.status === 302, String(before.status));
 

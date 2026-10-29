@@ -5,6 +5,7 @@
  */
 
 import { K } from './kv.js';
+import { mergeNames } from './pending.js';
 import { defaultPolicy } from './interstitial.js';
 import { defaultMissingPolicy } from './dirmissing.js';
 import { defaultInvitePolicy } from './invites.js';
@@ -79,9 +80,9 @@ export async function deleteDomain(cfg, host) {
   await cfg.store.delete(K.domain(host));
 }
 
-export async function listDomains(cfg) {
+export async function listDomains(cfg, { pending } = {}) {
   const keys = await cfg.store.listAll(K.domainPrefix(), { max: 500 });
-  const records = await cfg.store.getMany(keys.map((k) => k.name));
+  const records = await cfg.store.getMany(mergeNames(keys.map((k) => k.name), pending));
   return records.filter(Boolean).sort((a, b) => a.host.localeCompare(b.host));
 }
 

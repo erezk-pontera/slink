@@ -31,6 +31,8 @@ import {
   putPasskey,
   rpId,
 } from './passkeys.js';
+import { K } from './kv.js';
+import { noteDelete, noteWrite, pendingUnder } from './pending.js';
 import * as rl from './ratelimit.js';
 import { harden } from './security.js';
 import { getUserByNorm, isAdmin, putUser } from './users.js';
@@ -187,6 +189,9 @@ export async function registerFinish(ctx) {
 
   const key = newPasskey(session.user, { ...credential, name: str(body, 'name') });
   await putPasskey(cfg, key);
+  // The list that follows is a prefix listing, which can lag a write by
+  // up to a minute. Note the key so the screen shows it straight away.
+  await noteWrite(ctx, K.userPasskey(key.userId, key.id));
 
   ctx.waitUntil(
     audit(cfg, {
@@ -341,7 +346,9 @@ export async function passkeysPage(ctx, { error, info } = {}) {
   if (ctx.impersonator) {
     return denied(ctx, 'Passkeys belong to the account holder and are not visible from here.');
   }
-  const keys = await listPasskeys(ctx.cfg, ctx.session.user.id);
+  const keys = await listPasskeys(ctx.cfg, ctx.session.user.id, {
+    pending: pendingUnder(ctx, K.userPasskeyPrefix(ctx.session.user.id)),
+  });
   const token = await tokenFor(ctx, 'passkey.manage');
   const register = await tokenFor(ctx, 'passkey.register');
 
@@ -437,12 +444,15 @@ async function manageSubmit(ctx) {
   if (!guard.ok) return back('/admin/passkeys', 'csrf');
 
   const id = String(body.get('id') || '');
-  const mine = await listPasskeys(ctx.cfg, ctx.session.user.id);
+  const mine = await listPasskeys(ctx.cfg, ctx.session.user.id, {
+    pending: pendingUnder(ctx, K.userPasskeyPrefix(ctx.session.user.id)),
+  });
   const key = mine.find((candidate) => candidate.id === id);
   if (!key) return back('/admin/passkeys', 'notfound');
 
   if (body.get('action') === 'delete') {
     await deletePasskey(ctx.cfg, key);
+    await noteDelete(ctx, K.userPasskey(key.userId, key.id));
     ctx.waitUntil(
       audit(ctx.cfg, {
         event: EVENTS.passkeyRemoved,

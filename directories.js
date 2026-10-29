@@ -10,7 +10,25 @@
  */
 
 import { K } from './kv.js';
+import { mergeNames } from './pending.js';
 import { now } from './util.js';
+
+/** Who may create links inside a directory. */
+export const CREATE_ACCESS = ['granted', 'root_policy', 'signed_in'];
+
+/**
+ * A directory's create access, read tolerantly.
+ *
+ * The setting began as a boolean called `open`, meaning "inherit the host's
+ * root policy". Records written then are still in the store, so a missing
+ * or unrecognised value falls back to reading that flag rather than to the
+ * most permissive answer.
+ */
+export function createAccess(dir) {
+  if (!dir) return 'granted';
+  if (CREATE_ACCESS.includes(dir.createAccess)) return dir.createAccess;
+  return dir.open ? 'root_policy' : 'granted';
+}
 
 export function newDirectory(host, path, pathLc, overrides = {}) {
   const ts = now();
@@ -20,8 +38,13 @@ export function newDirectory(host, path, pathLc, overrides = {}) {
     pathLc,
     ownerId: null,
     ownerEmail: null,
-    /** Open directories inherit the host's root create policy. */
-    open: false,
+    /**
+     * Who may create links here:
+     *   granted     - only people holding a grant on this directory
+     *   root_policy - anyone who may create at the host root
+     *   signed_in   - anyone with an account that can sign in
+     */
+    createAccess: 'granted',
     /** Read-only directories can only be changed by administrators. */
     readonly: false,
     enabled: true,
@@ -75,7 +98,7 @@ export async function getDirectory(cfg, host, pathLc) {
 export async function putDirectory(cfg, dir) {
   dir.updatedAt = now();
   await cfg.store.put(K.dir(dir.host, dir.pathLc), dir, {
-    metadata: { path: dir.path, readonly: !!dir.readonly, open: !!dir.open },
+    metadata: { path: dir.path, readonly: !!dir.readonly, access: createAccess(dir) },
   });
   return dir;
 }
@@ -91,17 +114,18 @@ export async function deleteDirectory(cfg, dir) {
   await cfg.store.delete(K.dir(dir.host, dir.pathLc));
 }
 
-export async function listDirectories(cfg, host, { max = 1000 } = {}) {
+export async function listDirectories(cfg, host, { max = 1000, pending } = {}) {
   const keys = await cfg.store.listAll(K.dirPrefix(host, ''), { max });
-  const records = await cfg.store.getMany(keys.map((k) => k.name));
+  const names = mergeNames(keys.map((k) => k.name), pending);
+  const records = await cfg.store.getMany(names);
   return records.filter(Boolean).sort((a, b) => a.pathLc.localeCompare(b.pathLc));
 }
 
 /** The set of directory paths on a host, for parent resolution. */
-export async function directoryPathSet(cfg, host) {
-  const keys = await cfg.store.listAll(K.dirPrefix(host, ''), { max: 2000 });
+export async function directoryPathSet(cfg, host, { pending } = {}) {
   const prefix = K.dirPrefix(host, '');
-  return new Set(keys.map((k) => k.name.slice(prefix.length)));
+  const keys = await cfg.store.listAll(prefix, { max: 2000 });
+  return new Set(mergeNames(keys.map((k) => k.name), pending).map((name) => name.slice(prefix.length)));
 }
 
 /* ------------------------------------------------------------------- grants */
@@ -133,17 +157,18 @@ export async function deleteGrant(cfg, host, dirPathLc, userId) {
   await cfg.store.delete(K.userGrant(userId, host, dirPathLc));
 }
 
-export async function listGrants(cfg, host, dirPathLc) {
+export async function listGrants(cfg, host, dirPathLc, { pending } = {}) {
   const keys = await cfg.store.listAll(K.grantPrefix(host, dirPathLc), { max: 1000 });
-  const records = await cfg.store.getMany(keys.map((k) => k.name));
+  const names = mergeNames(keys.map((k) => k.name), pending);
+  const records = await cfg.store.getMany(names);
   return records.filter(Boolean).sort((a, b) => a.userEmail.localeCompare(b.userEmail));
 }
 
 /** Every directory grant held by a user, across hosts. */
-export async function listUserGrants(cfg, userId) {
+export async function listUserGrants(cfg, userId, { pending } = {}) {
   const prefix = K.userGrantPrefix(userId);
   const keys = await cfg.store.listAll(prefix, { max: 1000 });
-  const records = await cfg.store.getMany(keys.map((k) => k.name));
+  const records = await cfg.store.getMany(mergeNames(keys.map((k) => k.name), pending));
   return records.filter(Boolean);
 }
 

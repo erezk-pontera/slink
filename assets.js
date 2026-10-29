@@ -12,7 +12,7 @@ import { harden } from './security.js';
 export const ASSET_PREFIX = '/__slink';
 
 /** Bumped whenever the asset bodies change; used for immutable caching. */
-export const ASSET_VERSION = '9';
+export const ASSET_VERSION = '10';
 
 export const CSS = `
 :root{
@@ -126,6 +126,25 @@ button.secondary,.btn.secondary{background:transparent;color:var(--ink);border-c
 button.danger,.btn.danger{background:transparent;color:var(--danger);border-color:var(--danger)}
 button.link{background:none;border:none;color:var(--accent);padding:0;font-weight:400;
   text-decoration:underline;width:auto}
+button.small,.btn.small{padding:5px 10px;font-size:13px}
+/* Icon buttons: square, quiet until pointed at, and large enough to hit on
+   a touch screen even though the glyph inside is 16px. */
+.iconbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:32px;height:32px;
+  padding:0;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted)}
+.iconbtn.haslabel{width:auto;padding:0 11px;font-size:13px}
+.iconbtn:hover{color:var(--ink);border-color:var(--muted);filter:none}
+.iconbtn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.iconbtn .ic-done{display:none}
+.iconbtn.copied{color:var(--ok);border-color:var(--ok)}
+.iconbtn.copied .ic-idle{display:none}
+.iconbtn.copied .ic-done{display:inline}
+.iconbtn.copyfail{color:var(--danger);border-color:var(--danger)}
+svg.ic{flex:none;vertical-align:-3px}
+/* The marker on a link that opens in a new tab. */
+.ic-out{opacity:.5;margin-left:4px}
+a:hover .ic-out{opacity:1}
+.rowtools{display:flex;gap:6px;align-items:center;justify-content:flex-end}
+.rowtools form{margin:0;display:inline-flex}
 .actions{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-top:16px}
 .actions.tight{margin-top:0}
 .alert{padding:11px 13px;border-radius:8px;margin:0 0 16px;font-size:14px;border:1px solid}
@@ -230,6 +249,34 @@ export const JS = `
     });
   }
 
+  // Domain and Directory describe one choice between them, so the second
+  // is narrowed to the first. Every option is in the markup for a browser
+  // without JavaScript, which is why this prunes rather than fetches; the
+  // submit checks the pair whichever way it arrives.
+  var dirPick = document.querySelector('select[data-slink-places]');
+  var hostPick = document.getElementById('f_host');
+  if (dirPick && hostPick) {
+    var every = [];
+    for (var p = 0; p < dirPick.options.length; p++) {
+      var src = dirPick.options[p];
+      every.push({ value: src.value, label: src.textContent, host: src.getAttribute('data-host') });
+    }
+    var narrow = function (keep) {
+      var want = hostPick.value;
+      while (dirPick.options.length) dirPick.remove(0);
+      for (var q = 0; q < every.length; q++) {
+        if (every[q].host !== want) continue;
+        var made = new Option(every[q].label, every[q].value);
+        made.setAttribute('data-host', every[q].host);
+        dirPick.add(made);
+      }
+      if (keep) dirPick.value = keep;
+      if (!dirPick.value && dirPick.options.length) dirPick.selectedIndex = 0;
+    };
+    hostPick.addEventListener('change', function () { narrow(dirPick.value); });
+    narrow(dirPick.value);
+  }
+
   // Bulk selection on the search page. Without JavaScript the checkboxes
   // still work one by one; these only save the clicking.
   var batch = document.querySelector('[data-slink-batch]');
@@ -250,7 +297,10 @@ export const JS = `
   if (hold) {
     var dest = hold.getAttribute('data-slink-redirect');
     var left = parseInt(hold.getAttribute('data-slink-delay') || '0', 10);
-    var out = hold.querySelector('[data-slink-count]');
+    // The number the visitor watches is in the card; the element holding
+    // the destination is an empty hidden one further down. Searching the
+    // document rather than inside it is what makes the digits move.
+    var out = document.querySelector('[data-slink-count]');
     var tick = function () {
       if (out) out.textContent = String(left);
       if (left <= 0) { window.location.replace(dest); return; }
@@ -273,18 +323,47 @@ export const JS = `
   });
 
   // Copy a short link to the clipboard.
+  //
+  // The confirmation is a class rather than new text, so the button keeps
+  // its size and a row does not jump. The accessible name changes with it,
+  // because a colour swap alone says nothing to a screen reader, and a
+  // failure says so instead of looking like success.
   document.addEventListener('click', function (ev) {
     var el = ev.target.closest ? ev.target.closest('[data-copy]') : null;
     if (!el) return;
     ev.preventDefault();
     var value = el.getAttribute('data-copy');
-    var done = function () {
-      var old = el.textContent;
-      el.textContent = 'Copied';
-      window.setTimeout(function () { el.textContent = old; }, 1200);
+    var was = el.getAttribute('aria-label') || el.textContent;
+    var settle = function (cls, say) {
+      el.classList.add(cls);
+      el.setAttribute('aria-label', say);
+      window.setTimeout(function () {
+        el.classList.remove(cls);
+        el.setAttribute('aria-label', was);
+      }, 1400);
     };
+    var done = function () { settle('copied', el.getAttribute('data-copied-label') || 'Copied'); };
+    var failed = function () { settle('copyfail', 'Could not copy. Select the link and copy it.'); };
+
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(value).then(done, function () {});
+      navigator.clipboard.writeText(value).then(done, failed);
+      return;
+    }
+    // No clipboard API: an insecure origin, or an older browser. The old
+    // selection route still works in both.
+    try {
+      var pad = document.createElement('textarea');
+      pad.value = value;
+      pad.setAttribute('readonly', '');
+      pad.style.position = 'fixed';
+      pad.style.opacity = '0';
+      document.body.appendChild(pad);
+      pad.select();
+      var ok = document.execCommand && document.execCommand('copy');
+      document.body.removeChild(pad);
+      if (ok) { done(); } else { failed(); }
+    } catch (e) {
+      failed();
     }
   });
 

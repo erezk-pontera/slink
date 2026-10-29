@@ -25,8 +25,11 @@ const admin = newUser('admin@pontera.com', 'admin@pontera.com', { isAdmin: true 
 const staff = newUser('staff@pontera.com', 'staff@pontera.com');
 const other = newUser('someone@pontera.com', 'someone@pontera.com');
 const outsider = newUser('x@gmail.com', 'x@gmail.com');
+// A second outsider, kept without any root grant so it stays the example of
+// someone the host's root policy turns away.
+const outsider2 = newUser('y@gmail.com', 'y@gmail.com');
 const disabled = newUser('off@pontera.com', 'off@pontera.com', { disabled: true });
-for (const u of [root, admin, staff, other, outsider, disabled]) await putUser(cfg, u);
+for (const u of [root, admin, staff, other, outsider, outsider2, disabled]) await putUser(cfg, u);
 
 // ---- root-level creation on ptra.cc (DEFAULT_ALLOWED_DOMAINS = pontera.com)
 check('staff may create at root', (await canCreate(cfg, { user: staff, domain: cc, host: 'ptra.cc', pathLc: 'aaa' })).allowed, true);
@@ -60,10 +63,44 @@ check('ungranted user blocked in dir despite root rights', (await canCreate(cfg,
 check('admin may create in dir', (await canCreate(cfg, { user: admin, domain: cc, host: 'ptra.cc', pathLc: 'pub/x' })).allowed, true);
 check('other may still create at root', (await canCreate(cfg, { user: other, domain: cc, host: 'ptra.cc', pathLc: 'zzz' })).allowed, true);
 
-// open directory falls through to root policy
-const openDir = newDirectory('ptra.cc', 'open', 'open', { open: true });
+// a directory set to follow the root policy falls through to it
+const openDir = newDirectory('ptra.cc', 'open', 'open', { createAccess: 'root_policy' });
 await putDirectory(cfg, openDir);
-check('open dir allows root-eligible user', (await canCreate(cfg, { user: other, domain: cc, host: 'ptra.cc', pathLc: 'open/x' })).allowed, true);
+check('root-policy dir allows root-eligible user', (await canCreate(cfg, { user: other, domain: cc, host: 'ptra.cc', pathLc: 'open/x' })).allowed, true);
+check('root-policy dir still blocks someone the root policy blocks',
+  (await canCreate(cfg, { user: outsider2, domain: cc, host: 'ptra.cc', pathLc: 'open/x' })).allowed, false);
+
+// The setting was once a boolean named `open`. Records written then are
+// still in the store and must keep behaving the way they were configured.
+const legacy = newDirectory('ptra.cc', 'legacy', 'legacy');
+delete legacy.createAccess;
+legacy.open = true;
+await putDirectory(cfg, legacy);
+check('a pre-rename open directory still follows the root policy',
+  (await canCreate(cfg, { user: other, domain: cc, host: 'ptra.cc', pathLc: 'legacy/x' })).allowed, true);
+const legacyShut = newDirectory('ptra.cc', 'legacyshut', 'legacyshut');
+delete legacyShut.createAccess;
+await putDirectory(cfg, legacyShut);
+check('and a pre-rename closed one still needs a grant',
+  (await canCreate(cfg, { user: other, domain: cc, host: 'ptra.cc', pathLc: 'legacyshut/x' })).allowed, false);
+
+// anyone who can sign in, which does not consult the root policy at all
+const anyone = newDirectory('ptra.cc', 'anyone', 'anyone', { createAccess: 'signed_in' });
+await putDirectory(cfg, anyone);
+check('signed-in access lets in someone the root policy blocks',
+  (await canCreate(cfg, { user: outsider2, domain: cc, host: 'ptra.cc', pathLc: 'anyone/x' })).allowed, true);
+check('but not a disabled account',
+  (await canCreate(cfg, { user: { ...outsider2, disabled: true }, domain: cc, host: 'ptra.cc', pathLc: 'anyone/x' })).allowed, false);
+const anyoneOff = newDirectory('ptra.cc', 'anyoneoff', 'anyoneoff', { createAccess: 'signed_in', enabled: false });
+await putDirectory(cfg, anyoneOff);
+check('a disabled directory is still shut',
+  (await canCreate(cfg, { user: outsider2, domain: cc, host: 'ptra.cc', pathLc: 'anyoneoff/x' })).allowed, false);
+const anyoneRo = newDirectory('ptra.cc', 'anyonero', 'anyonero', { createAccess: 'signed_in', readonly: true });
+await putDirectory(cfg, anyoneRo);
+check('so is a read-only one',
+  (await canCreate(cfg, { user: outsider2, domain: cc, host: 'ptra.cc', pathLc: 'anyonero/x' })).allowed, false);
+check('and a read-only domain still wins',
+  (await canCreate(cfg, { user: outsider2, domain: ccRo, host: 'ptra.cc', pathLc: 'anyone/x' })).allowed, false);
 
 // nested directory resolution picks the longest parent
 const eng = newDirectory('ptra.cc', 'pub/eng', 'pub/eng');

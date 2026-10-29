@@ -40,7 +40,9 @@ import {
   normalizeDisabledMethods,
   oauthReady,
 } from './oauth.js';
+import { K } from './kv.js';
 import { canonicalHost, parseDestination, ValidationError } from './paths.js';
+import { noteDelete, noteWrite, pendingUnder } from './pending.js';
 import { requireAdmin } from './permissions.js';
 import { esc, listEnv } from './util.js';
 import { alert, checkbox, csrfField, field, hidden, select, textarea } from './views.js';
@@ -65,7 +67,7 @@ function parseDomainList(raw) {
 
 async function listPage(ctx) {
   const { url } = ctx;
-  const domains = await listDomains(ctx.cfg);
+  const domains = await listDomains(ctx.cfg, { pending: pendingUnder(ctx, K.domainPrefix()) });
   const token = await formToken(ctx, 'domain.create');
 
   const rows = domains
@@ -127,12 +129,15 @@ async function createSubmit(ctx) {
   }
   if (await getDomainFresh(ctx.cfg, host)) return back(domainHref(host), 'domain.updated');
 
+  // A new domain starts with the same list for signing in and for creating
+  // at its root; the edit screen separates them afterwards.
   const domain = newDomain(host, {
     authRequired: body.get('authRequired') === '1',
     allowedAuthDomains: parseDomainList(body.get('allowedAuthDomains')),
     allowedCreateDomains: parseDomainList(body.get('allowedAuthDomains')),
   });
   await putDomain(ctx.cfg, domain);
+  await noteWrite(ctx, K.domain(host));
 
   ctx.waitUntil(
     audit(ctx.cfg, {
@@ -398,6 +403,7 @@ async function deleteSubmit(ctx) {
   const host = canonicalHost(body.get('host'));
   if (host === ctx.cfg.hubHost) return denied(ctx, 'The administration host cannot be removed.');
   await deleteDomain(ctx.cfg, host);
+  await noteDelete(ctx, K.domain(host));
 
   ctx.waitUntil(
     audit(ctx.cfg, {

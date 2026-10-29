@@ -48,7 +48,11 @@ section('administrators hold every permission by default');
   ok('overview lists every domain', over.includes('ptra.cc') && over.includes('ptra.dev'));
   ok('directories column reads All', /<td>All<\/td>/.test(over));
   const newForm = await (await admin.req('https://ptra.dev/admin/links/new')).text();
-  ok('create form states admin reach', newForm.includes('you may create anywhere on any domain'));
+  // The directory picker is the statement now: an administrator is offered
+  // every root and every directory on every domain.
+  ok('create form offers every domain root',
+     newForm.includes('>ptra.cc/<') && newForm.includes('>ptra.dev/<'),
+     (newForm.match(/<option[^>]*data-host[^>]*>[^<]*<\/option>/g) || []).join(' '));
 }
 
 /* --------------------------- 2. per user:domain directory creation */

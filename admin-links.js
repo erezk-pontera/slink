@@ -20,7 +20,9 @@ import {
 } from './admin.js';
 import { audit, EVENTS } from './audit.js';
 import { checkCsrf } from './auth.js';
-import { creatableDirectories, getDirectory, governingDirectory } from './directories.js';
+import { getDirectory, governingDirectory, listDirectories } from './directories.js';
+import { K } from './kv.js';
+import { noteDelete, noteWrite, pendingUnder } from './pending.js';
 import { policyFor, resolveLink, userExemption, MAX_DELAY } from './interstitial.js';
 import {
   emptyPreview,
@@ -64,13 +66,17 @@ import {
 } from './links.js';
 import {
   destinationUserinfo,
+  joinPath,
   parseDestination,
   parsePath,
+  parseSegment,
   RESERVED_PATHS,
+  splitPath,
   ValidationError,
 } from './paths.js';
 import {
   canCreate,
+  creatableLocations,
   canManageLink,
   canReceiveTransfer,
   canSetReadonly,
@@ -83,9 +89,11 @@ import {
   alert,
   checkbox,
   clickChart,
+  copyButton,
   csrfField,
   field,
   hidden,
+  icon,
   select,
   statusBadges,
   textarea,
@@ -256,20 +264,101 @@ function cleanRouting(raw, opts) {
   return r;
 }
 
+/**
+ * A place a link can live: the root of a domain, or a directory on it.
+ * `ptra.cc/pub` names the directory `pub`; `ptra.cc/` names the root. One
+ * value rather than two fields, so a directory can never be paired with the
+ * wrong domain by accident.
+ */
+function placeValue(host, pathLc) {
+  return host + '/' + pathLc;
+}
+
+function parsePlace(raw) {
+  const value = String(raw || '');
+  const at = value.indexOf('/');
+  if (at < 0) return { host: value, dirPathLc: '' };
+  return { host: value.slice(0, at), dirPathLc: value.slice(at + 1).toLowerCase() };
+}
+
+/**
+ * Every place this person may put a link, across every domain.
+ *
+ * The create form offers the lot and carries each option's domain on the
+ * option itself, so the script can narrow the list to the domain currently
+ * chosen while a browser without JavaScript still sees every choice written
+ * out in full. The submit checks the pair either way.
+ */
+async function creatablePlaces(ctx) {
+  const { cfg } = ctx;
+  return Promise.all(
+    cfg.knownHosts.map(async (host) => ({
+      host,
+      locations: await creatableLocations(cfg, {
+        user: ctx.session.user,
+        domain: await resolveDomain(cfg, host),
+        host,
+        ...dirCorrection(ctx, host),
+      }),
+    }))
+  );
+}
+
+/**
+ * A directory created moments ago may not be in the next prefix listing.
+ * Passing this alongside lets the permission code find it, so creating a
+ * directory and then a link inside it works on the first try rather than
+ * after the listing settles.
+ */
+function dirCorrection(ctx, host) {
+  return {
+    pending: pendingUnder(ctx, K.dirPrefix(host, '')),
+    grantPending: pendingUnder(ctx, K.userGrantPrefix(ctx.session.user.id)),
+  };
+}
+
+function placeOptions(perHost) {
+  const out = [];
+  for (const { host, locations } of perHost) {
+    for (const loc of locations) {
+      out.push({
+        value: placeValue(host, loc.pathLc),
+        label: loc.pathLc ? `${host}/${loc.path}/` : `${host}/`,
+        data: { name: 'host', value: host },
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Note a link this session just wrote or removed, under both the keys the
+ * two listings read: the links on a domain, and the links this person owns.
+ */
+function noteLink(ctx, link, { gone = false } = {}) {
+  const mark = gone ? noteDelete : noteWrite;
+  return Promise.all([
+    mark(ctx, K.link(link.host, link.pathLc)),
+    link.ownerId ? mark(ctx, K.owner(link.ownerId, link.host, link.pathLc)) : null,
+  ]);
+}
+
 function linkEditHref(host, pathLc) {
   return `/admin/links/edit?host=${encodeURIComponent(host)}&path=${encodeURIComponent(pathLc)}`;
 }
 
 /** Rows for a list of link records. */
-function linkRows(records, { showOwner = false, maySee = () => true } = {}) {
+function linkRows(records, { showOwner = false, maySee = () => true, dupToken = '' } = {}) {
   return records
     .map((link) => {
       const href = 'https://' + link.host + '/' + link.path;
+      const name = link.host + '/' + link.path;
       return `<tr>
       <td>
-        <a href="${esc(href)}" rel="noreferrer">${esc(link.host)}/${esc(link.path)}</a>
+        <a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(name)}${icon('external', {
+          cls: 'ic-out',
+        })}</a>
         ${statusBadges(link)}
-        <button class="link" type="button" data-copy="${esc(href)}">Copy</button>
       </td>
       <td>${
         hasPassword(link) && !maySee(link)
@@ -278,7 +367,19 @@ function linkRows(records, { showOwner = false, maySee = () => true } = {}) {
       }</td>
       ${showOwner ? `<td>${esc(link.ownerEmail || '—')}</td>` : ''}
       <td class="num">${esc(link.status)}${link.delay ? ` / ${esc(link.delay)}s` : ''}</td>
-      <td><a href="${esc(linkEditHref(link.host, link.pathLc))}">Edit</a></td>
+      <td><div class="rowtools">
+        ${copyButton(href, { what: name })}
+        ${
+          dupToken
+            ? `<form method="post" action="/admin/links/duplicate" data-no-busy>
+          ${csrfField(dupToken)}${hidden('host', link.host)}${hidden('path', link.pathLc)}
+          <button type="submit" class="iconbtn" title="Duplicate ${esc(name)}"
+            aria-label="Duplicate ${esc(name)}">${icon('duplicate')}</button>
+        </form>`
+            : ''
+        }
+        <a class="btn secondary small" href="${esc(linkEditHref(link.host, link.pathLc))}">Edit</a>
+      </div></td>
     </tr>`;
     })
     .join('');
@@ -299,12 +400,19 @@ async function listPage(ctx) {
     // One listing per domain, because KV lists by key prefix and each host is
     // its own prefix. With a domain chosen this is a single pass.
     for (const host of hostsFor(ctx, selected)) {
-      const page = await listLinks(cfg, host, { dirPathLc: dir, limit: 100 });
+      const page = await listLinks(cfg, host, {
+        dirPathLc: dir,
+        limit: 100,
+        pending: pendingUnder(ctx, K.linkPrefix(host, dir ? dir + '/' : '')),
+      });
       records.push(...(await hydrate(cfg, host, page.items)));
       if (page.cursor) truncated = true;
     }
   } else {
-    const page = await listOwnedLinks(cfg, ctx.session.user.id, { limit: 200 });
+    const page = await listOwnedLinks(cfg, ctx.session.user.id, {
+      limit: 200,
+      pending: pendingUnder(ctx, K.ownerPrefix(ctx.session.user.id)),
+    });
     const wanted = page.items.filter((row) => {
       if (selected && row.host !== selected) return false;
       if (dir && !row.pathLc.startsWith(dir + '/')) return false;
@@ -315,6 +423,19 @@ async function listPage(ctx) {
   }
 
   records.sort((a, b) => a.host.localeCompare(b.host) || a.pathLc.localeCompare(b.pathLc));
+
+  // Duplicating from the list posts the link back to the create screen
+  // pre-filled; the submit there re-checks that this person may manage the
+  // original, so one token for the page is enough.
+  const dupToken = await formToken(ctx, 'link.duplicate');
+
+  // The directories the filter can offer. Listed per domain and de-duped by
+  // path, because the same directory name can exist on more than one.
+  const seen = new Map();
+  for (const host of hostsFor(ctx, selected)) {
+    for (const d of await listDirectories(cfg, host)) seen.set(d.pathLc, d);
+  }
+  const known = [...seen.values()].sort((a, b) => a.pathLc.localeCompare(b.pathLc));
 
   const where = selected ? esc(selected) : 'every domain';
   const body = `
@@ -331,10 +452,14 @@ ${flashFrom(url)}
         ${ctx.isAdmin ? `<option value="all"${scope === 'all' ? ' selected' : ''}>All links</option>` : ''}
       </select>
     </div>
-    <div class="field">
-      <label for="f_dir">Directory</label>
-      <input id="f_dir" name="dir" type="text" value="${esc(dir)}" placeholder="pub">
-    </div>
+    ${select({
+      name: 'dir',
+      label: 'Directory',
+      value: dir,
+      options: [{ value: '', label: 'Anywhere' }].concat(
+        known.map((d) => ({ value: d.pathLc, label: d.path + '/' }))
+      ),
+    })}
     <div class="field"><label>&nbsp;</label><button type="submit" class="secondary">Apply</button></div>
   </form>
 </div>
@@ -346,6 +471,7 @@ ${flashFrom(url)}
           <th>Short link</th><th>Destination</th>${scope === 'all' ? '<th>Owner</th>' : ''}
           <th>Code</th><th></th></tr></thead>
           <tbody>${linkRows(records, {
+            dupToken,
             showOwner: scope === 'all',
             // The listing is already scoped to what this person may see at
             // all; this is only about the destination of a protected link.
@@ -376,7 +502,20 @@ async function newForm(ctx, { error, info, values = {} } = {}) {
   // is rendered against, so it has to be settled first.
   const fromQuery = hostFilter(ctx, ctx.url);
   const chosenHost = values.host || fromQuery || ctx.host;
-  const dirs = ctx.isAdmin ? null : await creatableDirectories(cfg, chosenHost, ctx.session.user.id);
+  // Where this person may put a link, on every domain. The pair of pickers
+  // below is the only way to choose a directory, so this list is also what
+  // the submit measures the choice against.
+  const perHost = await creatablePlaces(ctx);
+  const places = placeOptions(perHost);
+  const here = places.filter((o) => o.data.value === chosenHost);
+  const chosenPlace =
+    values.dir && places.some((o) => o.value === values.dir)
+      ? values.dir
+      : here.length
+        ? here[0].value
+        : places.length
+          ? places[0].value
+          : placeValue(chosenHost, '');
 
   const hostOptions = cfg.knownHosts
     .map((h) => `<option value="${esc(h)}"${h === chosenHost ? ' selected' : ''}>${esc(h)}</option>`)
@@ -437,19 +576,24 @@ ${qrFloat({ host: chosenHost })}
             : ''
         }
       </div>
+      ${select({
+        name: 'dir',
+        label: 'Directory',
+        value: chosenPlace,
+        options: places,
+        attrs: 'data-slink-places',
+        note: places.length
+          ? 'Where the link lives. A domain on its own means its root.'
+          : 'You cannot create links on any domain yet.',
+      })}
       ${field({
         name: 'path',
         label: 'Shortcut',
         value: values.path || '',
         required: true,
-        placeholder: dirs && dirs.length ? dirs[0] + '/my-link' : 'my-link',
-        attrs: 'data-slink-slug spellcheck="false"',
-        note:
-          dirs === null
-            ? 'As an administrator you may create anywhere on any domain.'
-            : dirs.length
-              ? 'You may create at the root or inside: ' + dirs.join(', ')
-              : 'You may create at the root of the selected domain.',
+        placeholder: 'my-link',
+        attrs: 'data-slink-slug spellcheck="false" maxlength="64"',
+        note: 'Letters, digits, underscore and hyphen. No "/" \u2014 the directory above decides that.',
       })}
     </div>
     ${field({
@@ -643,6 +787,7 @@ async function createSubmit(ctx) {
 
   const values = {
     host,
+    dir: String(body.get('dir') || ''),
     path: body.get('path') || '',
     target: body.get('target') || '',
     status: body.get('status'),
@@ -671,13 +816,31 @@ async function createSubmit(ctx) {
     },
   };
 
+  // The directory comes from a picker. An empty value is a post that never
+  // carried one, which means the root of the chosen domain; a value naming
+  // another domain is the two pickers out of step, which only a browser
+  // without JavaScript can manage and which is said plainly rather than
+  // guessed at.
+  const place = values.dir ? parsePlace(values.dir) : { host, dirPathLc: '' };
+  if (place.host !== host) {
+    return newForm(ctx, {
+      error: `That directory is on ${place.host}. Pick one on ${host}, or change the domain.`,
+      values,
+    });
+  }
+  if (place.dirPathLc && !(await getDirectory(ctx.cfg, host, place.dirPathLc))) {
+    return newForm(ctx, { error: 'That directory no longer exists.', values });
+  }
+
   let parsed;
   let destination;
   let expiresAt;
   let activeFrom;
   let routing;
   try {
-    parsed = parsePath(values.path, { reserved: reservedFor(ctx, host) });
+    parsed = parsePath(joinPath(place.dirPathLc, parseSegment(values.path)), {
+      reserved: reservedFor(ctx, host),
+    });
     destination = parseDestination(values.target, { blockedSchemes: ctx.cfg.settings.blockedSchemes });
     expiresAt = parseExpiry(values.expires);
     activeFrom = parseActiveFrom(values.activeFrom);
@@ -696,6 +859,7 @@ async function createSubmit(ctx) {
     domain,
     host,
     pathLc: parsed.pathLc,
+    pending: pendingUnder(ctx, K.dirPrefix(host, '')),
   });
   if (!permit.allowed) {
     ctx.waitUntil(
@@ -818,10 +982,11 @@ async function createSubmit(ctx) {
     const result = await createEverywhere(ctx.cfg, {
       user: owner,
       hosts: [host, ...values.also],
-      rawPath: values.path,
+      rawPath: parsed.path,
       fields: { ...fields, target: destination.target },
     });
     if (!result.ok) return newForm(ctx, { error: result.error, values });
+    for (const made of result.links) await noteLink(ctx, made);
     ctx.waitUntil(
       Promise.all(
         result.links.map((made) =>
@@ -841,6 +1006,7 @@ async function createSubmit(ctx) {
 
   const link = newLink(host, parsed, destination.target, owner, fields);
   await putLink(ctx.cfg, link);
+  await noteLink(ctx, link);
 
   ctx.waitUntil(
     audit(ctx.cfg, {
@@ -1017,6 +1183,30 @@ async function editForm(ctx, { error, info } = {}) {
   const shortUrl = 'https://' + host + '/' + link.path;
   const mayReadonly = canSetReadonly(cfg, ctx.session.user);
 
+  // Where this link sits, and everywhere on this domain it could be moved
+  // to. Its own directory is always offered even where this person could
+  // not create there, so editing a link never forces it out of the place
+  // somebody else put it.
+  const at = splitPath(link.pathLc);
+  const places = placeOptions([
+    {
+      host,
+      locations: await creatableLocations(cfg, {
+        user: ctx.session.user,
+        domain: parentDomain,
+        host,
+        ...dirCorrection(ctx, host),
+      }),
+    },
+  ]);
+  if (!places.some((o) => o.value === placeValue(host, at.dirPathLc))) {
+    places.unshift({
+      value: placeValue(host, at.dirPathLc),
+      label: at.dirPathLc ? `${host}/${at.dirPathLc}/` : `${host}/`,
+      data: { name: 'host', value: host },
+    });
+  }
+
   // A destination whose authority carries a username reads as one host and
   // goes to another. It is sometimes meant, so it is said out loud rather
   // than refused.
@@ -1052,14 +1242,23 @@ ${qrFloat({
   <h2>Settings</h2>
   <form method="post" action="/admin/links/edit">
     ${csrfField(token)}${hidden('host', host)}${hidden('path', pathLc)}
-    ${field({
-      name: 'newpath',
-      label: 'Shortcut',
-      value: link.path,
-      required: true,
-      attrs: 'data-slink-slug spellcheck="false"',
-      note: 'Renaming changes the short link; the old one stops working.',
-    })}
+    <div class="row">
+      ${select({
+        name: 'dir',
+        label: 'Directory',
+        value: placeValue(host, at.dirPathLc),
+        options: places,
+        note: 'Moving it between directories needs permission to create in the new one.',
+      })}
+      ${field({
+        name: 'newpath',
+        label: 'Shortcut',
+        value: at.segment,
+        required: true,
+        attrs: 'data-slink-slug spellcheck="false" maxlength="64"',
+        note: 'Renaming or moving changes the short link; the old one stops working.',
+      })}
+    </div>
     ${field({ name: 'target', label: 'Destination', value: link.target, required: true, note: 'Used when nothing more specific matches.' })}
     ${select({ name: 'status', label: 'Redirect code', value: link.status, options: STATUS_OPTIONS })}
     ${countdownControls(behaviour, link)}
@@ -1111,7 +1310,7 @@ ${qrFloat({
     <div class="actions">
       <button type="submit">Save changes</button>
       <a class="btn secondary" href="/admin/links">Back</a>
-      <button class="link" type="button" data-copy="${esc(shortUrl)}">Copy short link</button>
+      ${copyButton(shortUrl, { what: 'the short link', label: 'Copy short link' })}
     </div>
   </form>
 </div>
@@ -1171,9 +1370,10 @@ ${qrFloat({
   <p class="hint">Adding the password to the end of the link opens it straight away. The part after <code>#</code> never leaves the browser, so it stays out of our logs and out of the referrer sent to the destination, and this page clears it from the address bar as soon as it has used it. Anyone holding this form of the link has the password, so share it exactly as carefully.</p>
   <p class="target-big">${esc(shareableUrl(host, link.path, currentPassword))}</p>
   <div class="actions">
-    <button class="link" type="button" data-copy="${esc(
-      shareableUrl(host, link.path, currentPassword)
-    )}">Copy link with password</button>
+    ${copyButton(shareableUrl(host, link.path, currentPassword), {
+      what: 'the link with its password',
+      label: 'Copy link with password',
+    })}
   </div>`
       : ''
   }
@@ -1452,12 +1652,34 @@ async function editSubmit(ctx) {
   if (!permit.allowed) return denied(ctx, permit.reason);
 
   const domain = await resolveDomain(ctx.cfg, host);
+
+  // The directory is a picker on this screen too. A post without one keeps
+  // the link where it is, so a caller that only means to change the
+  // destination cannot move it by omission.
+  const at = splitPath(link.pathLc);
+  const place = body.get('dir') ? parsePlace(String(body.get('dir'))) : { host, dirPathLc: at.dirPathLc };
+  const bad = (message) => {
+    ctx.url.searchParams.set('host', host);
+    ctx.url.searchParams.set('path', pathLc);
+    return editForm(ctx, { error: message });
+  };
+  if (place.host !== host) {
+    return bad(`That directory is on ${place.host}. Use "Move to another domain" to change domain.`);
+  }
+  if (place.dirPathLc && place.dirPathLc !== at.dirPathLc &&
+      !(await getDirectory(ctx.cfg, host, place.dirPathLc))) {
+    return bad('That directory no longer exists.');
+  }
+
   let parsed;
   let destination;
   let expiresAt;
   let activeFrom;
   try {
-    parsed = parsePath(body.get('newpath') || link.path, { reserved: reservedFor(ctx, host) });
+    parsed = parsePath(
+      joinPath(place.dirPathLc, parseSegment(body.get('newpath') || at.segment)),
+      { reserved: reservedFor(ctx, host) }
+    );
     destination = parseDestination(body.get('target'), {
       blockedSchemes: ctx.cfg.settings.blockedSchemes,
     });
@@ -1482,6 +1704,7 @@ async function editSubmit(ctx) {
       domain,
       host,
       pathLc: parsed.pathLc,
+      pending: pendingUnder(ctx, K.dirPrefix(host, '')),
     });
     if (!mayPlace.allowed) {
       ctx.url.searchParams.set('host', host);
@@ -1489,9 +1712,13 @@ async function editSubmit(ctx) {
       return editForm(ctx, { error: mayPlace.reason });
     }
     if (await getLink(ctx.cfg, host, parsed.pathLc)) {
-      ctx.url.searchParams.set('host', host);
-      ctx.url.searchParams.set('path', pathLc);
-      return editForm(ctx, { error: 'That shortcut is already in use.' });
+      return bad('That shortcut is already in use.');
+    }
+    // Create refuses to put a link where a directory already is; a rename
+    // has to refuse it too, or the directory and the link would both claim
+    // the same path.
+    if (await getDirectory(ctx.cfg, host, parsed.pathLc)) {
+      return bad('A directory already uses that path.');
     }
   }
 
@@ -1546,8 +1773,10 @@ async function editSubmit(ctx) {
 
   if (renamed) {
     await deleteLink(ctx.cfg, { ...link, pathLc: oldPathLc });
+    await noteLink(ctx, { ...link, pathLc: oldPathLc }, { gone: true });
   }
   await putLink(ctx.cfg, link);
+  if (renamed) await noteLink(ctx, link);
 
   ctx.waitUntil(
     audit(ctx.cfg, {
@@ -1577,6 +1806,7 @@ async function deleteSubmit(ctx) {
   if (!permit.allowed) return denied(ctx, permit.reason);
 
   await deleteLink(ctx.cfg, link);
+  await noteLink(ctx, link, { gone: true });
   ctx.waitUntil(
     audit(ctx.cfg, {
       event: EVENTS.linkDeleted,
@@ -1688,6 +1918,10 @@ async function duplicateSubmit(ctx) {
     info: 'Copied from ' + host + '/' + source.path + '. Give it a shortcut to save it.',
     values: {
       host,
+      // The copy starts in the same directory as the original. If this
+      // person cannot create there the form falls back to somewhere they
+      // can, rather than offering a place the submit would refuse.
+      dir: placeValue(host, splitPath(source.pathLc).dirPathLc),
       path: '',
       target: source.target,
       status: source.status,

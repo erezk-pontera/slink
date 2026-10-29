@@ -55,9 +55,9 @@ function isRootAccount(cfg, user) {
 
 async function usersPage(ctx, { error } = {}) {
   const { cfg, url } = ctx;
-  const all = await listUsers(cfg);
-  const users = all.filter((u) => !isRootAdmin(cfg, u.emailNorm));
-  const hidden = all.length - users.length;
+  // Root administrators come from the ADMIN variable rather than from a
+  // record, so there is nothing on this screen that could act on them.
+  const users = (await listUsers(cfg)).filter((u) => !isRootAdmin(cfg, u.emailNorm));
   const impToken = await formToken(ctx, 'user.impersonate');
 
   const rows = users
@@ -85,12 +85,6 @@ async function usersPage(ctx, { error } = {}) {
 ${flashFrom(url)}${alert('error', error)}
 <h1>Users</h1>
 <p class="sub">Accounts are created the first time someone completes a sign-in.</p>
-${
-  hidden
-    ? `<p class="sub">${hidden} root administrator${hidden === 1 ? ' is' : 's are'} not listed. They are set by the ADMIN variable, always hold every permission, and cannot be changed, disabled or deleted from here — edit ADMIN and redeploy instead.</p>`
-    : ''
-}
-
 <div class="card">
   ${
     users.length

@@ -132,18 +132,20 @@ export function textarea({ name, label, value = '', note = '', placeholder = '' 
 </div>`;
 }
 
-export function select({ name, label, value, options, note = '' }) {
+export function select({ name, label, value, options, note = '', attrs = '', tooltip = '' }) {
   const opts = options
     .map(
       (o) =>
-        `<option value="${esc(o.value)}"${String(o.value) === String(value) ? ' selected' : ''}>${esc(
-          o.label
-        )}</option>`
+        `<option value="${esc(o.value)}"${String(o.value) === String(value) ? ' selected' : ''}${
+          // A data attribute per option, for the few selects whose choices
+          // belong to something else on the page.
+          o.data ? ` data-${esc(o.data.name)}="${esc(o.data.value)}"` : ''
+        }>${esc(o.label)}</option>`
     )
     .join('');
   return `<div class="field">
-  <label for="f_${esc(name)}">${esc(label)}</label>
-  <select id="f_${esc(name)}" name="${esc(name)}">${opts}</select>
+  <label for="f_${esc(name)}">${esc(label)}${tooltip ? hint(tooltip) : ''}</label>
+  <select id="f_${esc(name)}" name="${esc(name)}" ${attrs}>${opts}</select>
   ${note ? `<p class="note">${esc(note)}</p>` : ''}
 </div>`;
 }
@@ -166,6 +168,40 @@ export function checkbox({ name, label, checked = false, note = '', disabled = f
  */
 export function hint(text) {
   return `<span class="tip" tabindex="0" role="note" title="${esc(text)}" aria-label="${esc(text)}">?</span>`;
+}
+
+/**
+ * The small inline icons. Inline SVG rather than an icon font or a sprite:
+ * no extra request, no flash of missing glyph, and `currentColor` means
+ * they follow the theme without a second set for dark mode.
+ */
+const ICONS = {
+  copy: '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><rect x="7" y="7" width="11" height="11" rx="2"/>',
+  check: '<path d="M4 10.5 8 14.5 16 5.5"/>',
+  duplicate: '<rect x="7" y="7" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  external: '<path d="M8 4H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-3"/><path d="M12 3h5v5"/><path d="M9 11 17 3"/>',
+};
+
+export function icon(name, { cls = '' } = {}) {
+  return `<svg class="ic${cls ? ' ' + esc(cls) : ''}" viewBox="0 0 20 20" width="16" height="16"
+    fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+    stroke-linejoin="round" aria-hidden="true" focusable="false">${ICONS[name] || ''}</svg>`;
+}
+
+/**
+ * Copy-to-clipboard as a button rather than a word.
+ *
+ * It carries both icons and the script swaps which one shows, so the
+ * confirmation does not reflow the row. The accessible name says what is
+ * being copied, since "Copy" on its own tells a screen reader nothing about
+ * which row it belongs to.
+ */
+export function copyButton(value, { what = 'link', label = '' } = {}) {
+  return `<button type="button" class="iconbtn${label ? ' haslabel' : ''}" data-copy="${esc(value)}"
+  data-copied-label="Copied" title="Copy ${esc(what)}" aria-label="Copy ${esc(what)}"
+  >${icon('copy', { cls: 'ic-idle' })}${icon('check', { cls: 'ic-done' })}${
+    label ? `<span>${esc(label)}</span>` : ''
+  }</button>`;
 }
 
 /** Status pill for a link or directory row. */

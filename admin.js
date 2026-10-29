@@ -14,13 +14,24 @@ import { adminSearch } from './admin-search.js';
 import { adminUsers } from './admin-users.js';
 import { EXIT_HREF, impersonationNotice, withPrefix, withoutPrefix } from './impersonate.js';
 import { tokenFor } from './auth.js';
-import { creatableDirectories } from './directories.js';
 import { resolveDomain } from './domains.js';
 import { listOwnedLinks } from './links.js';
-import { mayCreateAnyDirectory, requireAdmin, rootCreateAllowed } from './permissions.js';
+import { creatableLocations, mayCreateAnyDirectory, requireAdmin } from './permissions.js';
 import { describePolicy, MAX_DELAY, normalizePolicy } from './interstitial.js';
 import { esc, fmtTime } from './util.js';
-import { alert, checkbox, field, html, layout, messagePage, select } from './views.js';
+import { K } from './kv.js';
+import { pendingUnder } from './pending.js';
+import {
+  alert,
+  checkbox,
+  copyButton,
+  field,
+  html,
+  icon,
+  layout,
+  messagePage,
+  select,
+} from './views.js';
 
 /** The query value meaning "every domain", which is the default everywhere. */
 export const ALL_HOSTS = 'all';
@@ -320,7 +331,10 @@ export async function readForm(request) {
 async function overview(ctx) {
   const { cfg } = ctx;
   const selected = hostFilter(ctx, ctx.url);
-  const owned = await listOwnedLinks(cfg, ctx.session.user.id, { limit: 200 });
+  const owned = await listOwnedLinks(cfg, ctx.session.user.id, {
+    limit: 200,
+    pending: pendingUnder(ctx, K.ownerPrefix(ctx.session.user.id)),
+  });
   const rows = owned.items
     .filter((row) => !selected || row.host === selected)
     .slice(0, 10)
@@ -328,12 +342,16 @@ async function overview(ctx) {
       const meta = row.meta || {};
       const href = 'https://' + row.host + '/' + (meta.p || row.pathLc);
       return `<tr>
-        <td><a href="${esc(href)}" rel="noreferrer">${esc(row.host)}/${esc(meta.p || row.pathLc)}</a></td>
+        <td><a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(row.host)}/${esc(
+          meta.p || row.pathLc
+        )}${icon('external', { cls: 'ic-out' })}</a></td>
         <td><span class="target">${esc(meta.t || '')}</span></td>
         <td class="num">${esc(meta.s || '')}</td>
-        <td><a href="/admin/links/edit?host=${encodeURIComponent(row.host)}&path=${encodeURIComponent(
-        row.pathLc
-      )}">Edit</a></td>
+        <td><div class="rowtools">${copyButton(href, {
+          what: row.host + '/' + (meta.p || row.pathLc),
+        })}<a class="btn secondary small" href="/admin/links/edit?host=${encodeURIComponent(
+          row.host
+        )}&path=${encodeURIComponent(row.pathLc)}">Edit</a></div></td>
       </tr>`;
     })
     .join('');
@@ -344,11 +362,14 @@ async function overview(ctx) {
   const perHost = [];
   for (const host of hostsFor(ctx, selected)) {
     const domain = await resolveDomain(cfg, host);
-    const dirs = admin ? null : await creatableDirectories(cfg, host, ctx.session.user.id);
+    // The same list the create form offers, so this table cannot promise
+    // more or less than the form will actually accept. A directory open to
+    // everyone signed in appears here without any grant behind it.
+    const places = await creatableLocations(cfg, { user: ctx.session.user, domain, host });
     perHost.push({
       host,
-      root: admin || (domain ? rootCreateAllowed(cfg, domain, ctx.session.user) : false),
-      dirs,
+      root: places.some((p) => !p.pathLc),
+      dirs: admin ? null : places.filter((p) => p.pathLc).map((p) => p.path),
       mayAddDir: await mayCreateAnyDirectory(cfg, { user: ctx.session.user, host }),
     });
   }

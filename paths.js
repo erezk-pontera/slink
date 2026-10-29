@@ -85,6 +85,50 @@ export function parsePath(raw, { reserved = RESERVED_PATHS, allowReserved = fals
 }
 
 /**
+ * One shortcut segment: what a person types into the Shortcut field.
+ *
+ * A '/' is refused rather than accepted and split. A slash is what marks a
+ * directory, directories are chosen from their own control, and a shortcut
+ * that quietly became a path in a directory nobody picked would be a
+ * surprise about where the link lives.
+ */
+export function parseSegment(raw, { field = 'path' } = {}) {
+  const value = String(raw ?? '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!value) throw new ValidationError('Shortcut is required.', field);
+  if (value.includes('/')) {
+    throw new ValidationError(
+      'A shortcut cannot contain "/". Pick the directory from the list instead.',
+      field
+    );
+  }
+  if (value.length > MAX_SEGMENT) throw new ValidationError('Shortcut is too long.', field);
+  if (!SEGMENT_RE.test(value)) {
+    throw new ValidationError(
+      'Shortcut may only contain letters, digits, underscore and hyphen.',
+      field
+    );
+  }
+  return value.toLowerCase();
+}
+
+/**
+ * Split a stored path into the directory it sits in and its own shortcut.
+ * `pub/eng/deck` is the shortcut `deck` inside `pub/eng`, so the split is at
+ * the last separator rather than the first.
+ */
+export function splitPath(pathLc) {
+  const value = String(pathLc || '');
+  const at = value.lastIndexOf('/');
+  if (at < 0) return { dirPathLc: '', segment: value };
+  return { dirPathLc: value.slice(0, at), segment: value.slice(at + 1) };
+}
+
+/** The stored path for a shortcut in a directory. */
+export function joinPath(dirPathLc, segment) {
+  return dirPathLc ? dirPathLc + '/' + segment : segment;
+}
+
+/**
  * `new URL()` lowercases the scheme and the host, and changes the case of
  * nothing else. This puts those two back exactly as they were typed, so a
  * destination is stored the way it was entered, while everything else the

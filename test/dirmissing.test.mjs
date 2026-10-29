@@ -98,7 +98,7 @@ section('a live shortcut is never replaced by the MISSING destination');
 {
   const tok = Harness.csrf(await (await root.req('https://ptra.dev/admin/links/new')).text());
   await root.req('https://ptra.dev/admin/links/new', {
-    form: { _csrf: tok, host: 'ptra.cc', path: 'team/deck', target: 'example.com/deck', status: '302' },
+    form: { _csrf: tok, host: 'ptra.cc', dir: 'ptra.cc/team', path: 'deck', target: 'example.com/deck', status: '302' },
   });
   const r = await hit('team/deck');
   ok('the shortcut resolves normally',

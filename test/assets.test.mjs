@@ -68,6 +68,19 @@ ok('CSP permits a same-origin icon', /img-src [^;]*'self'/.test(csp), csp);
   ok('and debounces rather than firing per keystroke', JS.includes('window.clearTimeout(timer)'));
 }
 
+// The countdown digits.
+{
+  // The number the visitor watches is in the card; the element carrying the
+  // destination is an empty hidden one further down the page. A lookup
+  // scoped to the latter finds nothing and the digits sit still, which is
+  // exactly the bug this guards.
+  ok('the script looks for the counter in the document',
+     JS.includes("document.querySelector('[data-slink-count]')"),
+     (JS.match(/querySelector\('\[data-slink-count\]'\)/g) || []).join(' '));
+  ok('and nowhere narrower', !/hold\.querySelector\('\[data-slink-count\]'\)/.test(JS));
+  ok('it decrements', JS.includes('left -= 1'));
+}
+
 console.log(`\nassets: ${passed} passed, ${failed} failed`);
 h.restore();
 if (failed) process.exit(1);

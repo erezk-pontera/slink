@@ -381,8 +381,19 @@ async function route(request, env, exec) {
   const path = url.pathname.replace(/\/+$/, '') || '/';
   const isHub = host === cfg.hubHost;
 
-  // The identity-provider handshake. Both legs live on every host, because
-  // a host that requires authentication may offer single sign-on of its own.
+  // The identity-provider handshake. Both legs live on the hub alone.
+  //
+  // Signing in happens there and nowhere else: a host that requires
+  // authentication sends the visitor to the hub through the single-sign-on
+  // handshake below and takes them back with a session, and the sign-in
+  // page that carries the provider's button is only ever rendered there.
+  // Served on every host, these would have sent the provider a redirect_uri
+  // on whichever host the request arrived at - so every host would have to
+  // be registered with the provider to make a route that nothing uses work,
+  // which is a redirect URI held open for no reason.
+  if (path === '/__slink/oauth/start' || path === '/__slink/oauth/callback') {
+    if (!isHub) return textResponse('Not found', 404);
+  }
   if (path === '/__slink/oauth/start') {
     if (ctx.session) return seeOther(safeNext(url.searchParams.get('r'), '/admin'));
     const begin = await oauthBegin(ctx, url.searchParams.get('r') || '/admin');

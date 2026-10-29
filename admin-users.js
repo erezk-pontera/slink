@@ -555,9 +555,9 @@ ${flashFrom(url)}${alert('error', error)}
       ${field({ name: 'oauthEmailField', label: 'Email field', value: oauth.emailField, note: 'Where the address sits in the userinfo response.' })}
     </div>
     <p class="note">The provider says who somebody is, and nothing more: letting them through its sign-in makes them an ordinary account here. What they may do is decided on this side, by the host's allowed sign-in domains and by their own record &mdash; no role or privilege is read from the provider.</p>
-    <p class="note">Redirect URI to register with the provider, one per host: ${cfg.knownHosts
-      .map((h) => `<code>https://${esc(h)}/__slink/oauth/callback</code>`)
-      .join(', ')}. The client secret is the <code>oauth-secret</code> environment variable, never stored here.${
+    <p class="note">The one redirect URI to register with the provider: <code>https://${esc(
+      cfg.hubHost
+    )}/__slink/oauth/callback</code>. Signing in happens on this host alone and the others arrive through the handshake, so registering any of them would hold a redirect URI open for a route that is not served. The client secret is the <code>oauth-secret</code> environment variable, never stored here.${
       oauth.enabled && !oauthReady(cfg)
         ? ' <strong>Not usable yet: an endpoint, the client ID or the secret is missing.</strong>'
         : ''

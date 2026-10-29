@@ -162,6 +162,15 @@ section('the sign-in page');
   await setProvider({ disableOtp: '' });
 }
 
+/* --------------------------------------- 2b. what to give the provider */
+section('the settings screen names one redirect URI');
+{
+  const page = await (await root.req('https://ptra.dev/admin/settings')).text();
+  ok('the hub is named', page.includes('https://ptra.dev/__slink/oauth/callback'));
+  ok('and no other host is', !page.includes('https://ptra.cc/__slink/oauth/callback'),
+     'a host that does not serve the callback was offered for registration');
+}
+
 /* ------------------------------------------------------ 3. the handshake */
 section('the authorization request');
 {
@@ -178,6 +187,16 @@ section('the authorization request');
   ok('declares the redirect URI',
      u.searchParams.get('redirect_uri') === 'https://ptra.dev/__slink/oauth/callback');
   ok('carries a state', (u.searchParams.get('state') || '').length >= 16);
+
+  // Both legs are the hub's. Served anywhere else they would send the
+  // provider a redirect_uri on that host, so every host would have to be
+  // registered with the provider to make a route nothing links to work.
+  const elsewhereStart = await peer(root).req('https://ptra.cc/__slink/oauth/start?r=%2Fadmin');
+  ok('another host does not start the handshake', elsewhereStart.status === 404,
+     String(elsewhereStart.status));
+  const elsewhereBack = await peer(root).req('https://ptra.cc/__slink/oauth/callback?code=a&state=b');
+  ok('nor take the provider back', elsewhereBack.status === 404,
+     String(elsewhereBack.status));
 
   const setCookie = r.headers.get('Set-Cookie') || '';
   ok('the attempt is held in a host-locked cookie', setCookie.includes('__Host-slink_oauth='));

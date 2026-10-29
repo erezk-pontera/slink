@@ -251,8 +251,11 @@ in happens.
 The client secret is the `oauth-secret` environment variable and is sent only
 in a token-exchange request body, never in a URL. Endpoints must be HTTPS and
 are refused if they resolve to a private address, because they are fetched
-with that secret attached. The redirect URI is
-`https://<host>/__slink/oauth/callback`, registered once per host.
+with that secret attached. There is one redirect URI to register,
+`https://<hub>/__slink/oauth/callback`, because both legs of the handshake
+are served on the hub alone: signing in happens there and every other host
+arrives through the single-sign-on handshake above. Registering the other
+hosts would hold a redirect URI open for a route they do not serve.
 
 **The provider says who, never what.** Letting somebody through its sign-in
 establishes an address and nothing else: they become an ordinary account

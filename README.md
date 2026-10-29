@@ -2,11 +2,16 @@
 
 ## License
 
-(C) KSEC - Erez Kalman. All Rights Reserved.
+Copyright (C) KSEC - Erez Kalman. All Rights Reserved.
 
-This project is licensed under the GNU Affero General Public License v3.0 or later.
+This project is dual-licensed. You may choose to use this software under the terms of either:
+1. A proprietary **Custom/Commercial License** obtained directly from KSEC.
+2. The **GNU Affero General Public License v3.0 or later** (AGPL-3.0-or-later).
 
-SPDX-License-Identifier: AGPL-3.0-or-later
+For commercial or non-AGPL licensing inquiries, please contact: [Insert Contact Email/Website]
+
+SPDX-License-Identifier: LicenseRef-KSEC-Commercial OR AGPL-3.0-or-later
+
 
 ## Description
 

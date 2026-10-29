@@ -232,6 +232,46 @@ section('the settings screen names one redirect URI');
   ok('and it is the hub', offered[0] === 'ptra.dev', String(offered[0]));
 }
 
+/* --------------------- 2c. the way back in when the provider is the only way */
+section('the other methods are named rather than hidden behind a parameter');
+{
+  const page = await (await root.req('https://ptra.dev/admin/settings')).text();
+  ok('the screen says what kind of client to make', page.includes('OIDC web application'));
+  ok('and where the three endpoints come from',
+     page.includes('.well-known/openid-configuration') && page.includes('authorization_endpoint'));
+  ok('and which token auth method is sent', page.includes('client_secret_post'));
+  // Compared as a host rather than looked for as a URL: a URL can sit
+  // inside a longer one, and the question here is which host the screen
+  // tells somebody to register.
+  const starts = [...page.matchAll(/https:\/\/([a-z0-9.-]+)\/__slink\/oauth\/start/g)]
+    .map((m) => m[1]);
+  ok('the initiate-login URI is given, for a provider tile', starts.length >= 1,
+     'none offered');
+  ok('and it is the hub', starts.every((h) => h === 'ptra.dev'), starts.join(', '));
+
+  await setProvider({ disableOtp: '1', disablePasskey: '1' });
+  const only = await (await peer(root).req('https://ptra.dev/admin', { cookies: false })).text();
+  ok('with both off the code form is gone', !only.includes('name="email"'));
+  ok('but the way to it is named', only.includes('Other sign-in methods'));
+  ok('and points at the exemption', only.includes('/admin?otp=1'));
+  ok('naming the provider it is a fallback for', only.includes('Example SSO cannot be reached'));
+
+  // Following it is the same page the parameter always reached.
+  const taken = await (await peer(root).req('https://ptra.dev/admin?otp=1', { cookies: false })).text();
+  ok('following it offers the code', taken.includes('name="email"'));
+  ok('and the passkey button', taken.includes('data-slink-passkey-login'));
+  ok('and does not offer itself again', !taken.includes('Other sign-in methods'));
+
+  // Where a route is still open to everyone there is nothing to point at.
+  await setProvider({ disableOtp: '1', disablePasskey: '' });
+  const partly = await (await peer(root).req('https://ptra.dev/admin', { cookies: false })).text();
+  ok('one route left open needs no link', !partly.includes('Other sign-in methods'));
+
+  await setProvider({ disableOtp: '', disablePasskey: '' });
+  const open = await (await peer(root).req('https://ptra.dev/admin', { cookies: false })).text();
+  ok('and neither does none switched off', !open.includes('Other sign-in methods'));
+}
+
 /* ------------------------------------------------------ 3. the handshake */
 section('the authorization request');
 {

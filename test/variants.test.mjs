@@ -124,7 +124,10 @@ section('preview cards, on public domains only');
   ok('a crawler gets the card', bot.status === 200 && card.includes('og:title'), String(bot.status));
   ok('the title is in the card', card.includes('content="Quarterly deck"'));
   ok('the image makes it a large card', card.includes('summary_large_image'));
-  ok('the canonical points at the short link', card.includes('https://ptra.cc/card'));
+  // The href itself, not a URL looked for anywhere in the markup: the
+  // question is where the canonical points, which is an equality.
+  const canonical = (card.match(/<link rel="canonical" href="([^"]*)"/) || [])[1];
+  ok('the canonical points at the short link', canonical === 'https://ptra.cc/card', String(canonical));
 
   const person = await h.req('https://ptra.cc/card', { headers: { 'User-Agent': UA.desktop } });
   ok('a person still gets the redirect',

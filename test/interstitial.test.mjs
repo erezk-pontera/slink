@@ -46,7 +46,8 @@ section('the countdown defaults on for ptra.dev and off for ptra.cc');
      String(dev.status));
   ok('countdown uses the 5s default', body.includes('data-slink-delay="5"'),
      (body.match(/data-slink-delay="[^"]*"/) || [''])[0]);
-  ok('destination is shown by default', body.includes('https://example.com/b'));
+  const shown = (body.match(/<p class="dest mono">([^<]*)<\/p>/) || [])[1];
+  ok('destination is shown by default', shown === 'https://example.com/b', String(shown));
 
   // Asking for a delay is itself asking for a countdown, even where the
   // domain default is off.

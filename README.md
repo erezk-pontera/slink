@@ -277,6 +277,13 @@ are served on the hub alone: signing in happens there and every other host
 arrives through the single-sign-on handshake above. Registering the other
 hosts would hold a redirect URI open for a route they do not serve.
 
+When every other route is switched off, the sign-in page names the way
+back in rather than leaving it to be guessed: administrators keep the
+emailed code and passkeys, and the page links to them. Naming the route
+tells nobody who the administrators are, because everyone is shown the
+same link, the same form and the same answer; only the code itself goes
+nowhere for somebody who is not one.
+
 **The provider says who, never what.** Letting somebody through its sign-in
 establishes an address and nothing else: they become an ordinary account
 here. No role, group or privilege is read from the provider, and the

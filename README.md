@@ -102,7 +102,7 @@ usage signal, not analytics. It can be switched off in settings.
 | Administrator (flag set by an admin) | Everything, on every domain. No grant narrows an administrator, and the UI says so rather than showing an empty grant list. |
 | Directory administrator (`manage` grant) | Everything inside their directory, including other people's links, plus granting and revoking access to it. |
 | Granted user (`create` grant) | Create links inside that directory; edit and delete only their own. |
-| Signed-in user | Create at a host root if the host's policy allows; edit and delete only their own links. |
+| Signed-in user | Create at a host root if the host's policy allows, and in any directory whose access says so; edit and delete only their own links. |
 
 Rules that override the table:
 
@@ -135,6 +135,26 @@ Root-level creation on a host is governed by its `rootCreatePolicy`:
 `email_domain` (the default — the host's allow list, falling back to
 `DEFAULT_ALLOWED_DOMAINS`, or an explicit per-user grant), `explicit`,
 `open`, or `admins_only`.
+
+**Creation inside a directory** is governed by the directory's own
+`createAccess`, which answers one of three ways:
+
+| Setting | Who may create there |
+| --- | --- |
+| `granted` (the default) | Only people holding a grant on that directory. |
+| `root_policy` | Anyone the host's `rootCreatePolicy` would let create at its root. |
+| `signed_in` | Anyone with an account that can sign in, with no grant and without consulting the root policy. |
+
+`signed_in` is the answer a domain whose root is shut cannot otherwise
+give: it opens one directory to everybody who can get in, while the root
+and every other directory stay as they were. Directory administrators and
+Shrink Link administrators reach a directory whichever is chosen, and a
+disabled or read-only directory, or a read-only domain, still shuts it for
+everyone else.
+
+The setting began life as a boolean named `open`, meaning `root_policy`.
+Records written then are read as they were configured; nothing needs
+migrating.
 
 ---
 
@@ -412,9 +432,20 @@ has no route.
 
 ## Shortcuts and destinations
 
-Shortcuts use `A-Za-z0-9`, `_` and `-`, in `/`-separated segments. They are
-case-insensitive: `Deck` and `deck` are the same link. Leading and trailing
-slashes are ignored, so `ptra.cc/aaa/` works.
+Shortcuts use `A-Za-z0-9`, `_` and `-` and are one segment: a `/` is
+refused. A `/` in a stored path is what marks a directory, and a
+directory is chosen from its own control on the create and edit screens,
+which offer exactly the places that person may create in. Shortcuts are
+case-insensitive: `Deck` and `deck` are the same link. Leading and
+trailing slashes are ignored, so `ptra.cc/aaa/` works.
+
+Links created before this rule keep their stored path and go on
+resolving. The editor splits such a path into the directory it sits in
+and the shortcut itself, and offers its own place even where the person
+editing it could not create there, so editing a link never forces it out
+of where somebody else put it. Changing the directory moves the link,
+which needs create permission at the new place, exactly as a rename
+does.
 
 Destinations default to `https://`. An explicit scheme is kept as written,
 whether hierarchical (`slack://channel?id=7`) or opaque (`mailto:x@y.com`).
@@ -640,8 +671,16 @@ The page works without JavaScript via a meta refresh.
 - The same lack of compare-and-set means the twenty-passkey cap per account
   can be passed by registering from two tabs at the same instant. It is a
   sanity bound on how much one account can store, not a security boundary.
-- There is no CI in this repository. `npm test` is the gate and it is run by
-  hand; the only automatic check on a pull request is the Cloudflare build.
+- **A listing can be a minute behind a change.** KV prefix listing is
+  eventually consistent, so a record written a moment ago can be missing
+  from the next listing and one just deleted can still be in it. Reading a
+  single key is not subject to that, so each change a session makes is
+  noted on its session record and the listing is reconciled against a
+  direct read of those few keys. The correction covers the session that
+  made the change and lasts two minutes; another person's screen still
+  shows the listing as KV reports it. It changes what a screen shows and
+  never what it permits: a note only causes a read, and a record that has
+  really gone reads as nothing and disappears from the list anyway.
 
 ### Rotating AUTH_SECRET
 
@@ -667,9 +706,15 @@ it cannot read unless you confirm.
 
 ```sh
 npm run check   # syntax-check every module as an ES module
-npm test        # 1,138 checks across 25 suites
+npm test        # 1,284 checks across 28 suites
 wrangler dev    # local run; see the note below
 ```
+
+Every push and every pull request runs the same three gates in GitHub
+Actions (`.github/workflows/ci.yml`): the syntax check, the suite, and
+`wrangler deploy --dry-run`, which catches a module that parses and
+passes but will not bundle for the Workers runtime. The dry run uploads
+nothing and needs no credentials.
 
 Tests run on plain Node against an in-memory KV, a stubbed siteverify and a
 capturing mail binding, driving the real `fetch` handler — no account or

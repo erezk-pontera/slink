@@ -228,7 +228,9 @@ section('who may create in a directory');
   ok('and shows what this one is set to', /value="signed_in" selected/.test(page));
 
   const list = await (await root.req('https://ptra.dev/admin/directories?host=ptra.cc')).text();
-  ok('the list badges it', list.includes('>anyone</span>'), '');
+  ok('the list has a column for it', list.includes('<th>Who may create</th>'));
+  ok('and says what this one is', list.includes('<td>Anyone signed in</td>'),
+     (list.match(/<td>[A-Z][^<]*<\/td>/g) || []).join(' '));
 }
 
 /* ----------------------------- 8. a directory open to anyone signed in */

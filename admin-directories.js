@@ -108,10 +108,11 @@ const ACCESS_OPTIONS = [
 const ACCESS_NOTE =
   'Directory administrators and Shrink Link administrators always reach it. ' +
   'Disabled and read-only still apply whichever is chosen.';
-/** The short form, for a row in the list. */
-const ACCESS_BADGE = {
-  root_policy: '<span class="badge" title="Anyone who may create at the root of this domain">root policy</span>',
-  signed_in: '<span class="badge" title="Anyone who can sign in">anyone</span>',
+/** The short form, for the column in the list. */
+const ACCESS_SHORT = {
+  granted: 'Granted people',
+  root_policy: "The domain's root policy",
+  signed_in: 'Anyone signed in',
 };
 
 /**
@@ -162,8 +163,8 @@ async function listPage(ctx) {
       ({ host, dir }) => `<tr>
       <td><a href="${esc(dirHref(host, dir.pathLc))}">${esc(host)}/${esc(dir.path)}</a>
         ${dir.readonly ? '<span class="badge ro">read-only</span>' : ''}
-        ${ACCESS_BADGE[createAccess(dir)] || ''}
         ${dir.enabled === false ? '<span class="badge off">disabled</span>' : ''}</td>
+      <td>${esc(ACCESS_SHORT[createAccess(dir)])}</td>
       <td>${esc(dir.note || '\u2014')}</td>
       <td class="num">${esc(fmtTime(dir.createdAt))}</td>
     </tr>`
@@ -185,7 +186,7 @@ ${flashFrom(url)}
 <div class="card">
   ${
     rows.length
-      ? `<div class="tablewrap"><table><thead><tr><th>Directory</th><th>Note</th><th>Created</th></tr></thead>
+      ? `<div class="tablewrap"><table><thead><tr><th>Directory</th><th>Who may create</th><th>Note</th><th>Created</th></tr></thead>
          <tbody>${tableRows}</tbody></table></div>`
       : '<div class="empty">No directories here.</div>'
   }

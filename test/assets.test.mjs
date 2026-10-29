@@ -68,6 +68,52 @@ ok('CSP permits a same-origin icon', /img-src [^;]*'self'/.test(csp), csp);
   ok('and debounces rather than firing per keystroke', JS.includes('window.clearTimeout(timer)'));
 }
 
+// One link, so the listings below have a row to render.
+{
+  const form = await (await h.req('https://ptra.dev/admin/links/new')).text();
+  await h.req('https://ptra.dev/admin/links/new', {
+    form: {
+      _csrf: Harness.csrf(form),
+      host: 'ptra.cc',
+      dir: 'ptra.cc/',
+      path: 'chrome',
+      target: 'example.com/chrome',
+      status: '302',
+    },
+  });
+}
+
+// The chrome: where you can go, and who you are, are two groups.
+{
+  const page = await (await h.req('https://ptra.dev/admin')).text();
+  const navBlock = (page.match(/<nav class="main"[\s\S]*?<\/nav>/) || [''])[0];
+  ok('the sections are a nav', navBlock.includes('href="/admin/links"'), navBlock.slice(0, 80));
+  ok('signing out is not one of them', !navBlock.includes('Sign out'), navBlock);
+  ok('it is with the account instead', /<div class="acct">[\s\S]*?class="signout"/.test(page),
+     (page.match(/<div class="acct">[\s\S]*?<\/div>/) || [''])[0].slice(0, 160));
+  ok('the nav says what it is', navBlock.includes('aria-label="Sections"'));
+
+  // A phone cannot show a link row as a table row, so it is told to stack.
+  ok('link listings can stack on a narrow screen', page.includes('<table class="cards-sm"'));
+  ok('and the stylesheet knows how', CSS.includes('.cards-sm thead{display:none}'));
+
+  // Sections inside one card are separated rather than run together.
+  ok('a second heading in a card draws a rule', /\.card h2~h2[^{]*\{[^}]*border-top/.test(CSS));
+
+  // The floating QR only pins itself where there is room beside the column.
+  ok('the QR floats rather than taking a band', /\.qrfloat\{[^}]*float:right/.test(CSS));
+  ok('and pins only on a wide screen', /@media \(min-width:14\d\dpx\)\{\s*\.qrfloat\{position:fixed/.test(CSS),
+     (CSS.match(/@media \(min-width:\d+px\)\{\s*\.qrfloat[^}]*\}/) || [''])[0]);
+}
+
+// Copy and duplicate must not read as the same glyph.
+{
+  const list = await (await h.req('https://ptra.dev/admin/links')).text();
+  const copyIcon = (list.match(/class="ic ic-idle"[\s\S]*?<\/svg>/) || [''])[0];
+  ok('copy is drawn', copyIcon.length > 0);
+  ok('and is not the duplicate glyph', !copyIcon.includes('M12 9.5v5'), copyIcon.slice(0, 120));
+}
+
 // The countdown digits.
 {
   // The number the visitor watches is in the card; the element carrying the

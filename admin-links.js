@@ -205,24 +205,39 @@ const FRAME_HINT =
   'Many sites refuse to be framed (X-Frame-Options, or a frame-ancestors policy) ' +
   'and show nothing at all. Test this destination before sharing the link.';
 
-/** The five destination slots. */
+/**
+ * The five destination slots.
+ *
+ * Four of them are device overrides that almost every link leaves empty,
+ * and spelled out in full they were the longest thing on both forms. They
+ * fold into one disclosure, opened already when the link actually uses
+ * one, so nothing is hidden from a link that has it set.
+ */
 function routingFields(routing, { frame, mayFrame = false } = {}) {
   const r = normalizeRouting(routing);
   const frames = normalizeFrame(frame);
   const slot = (key) => {
     const isDefault = key === 'default';
+    // The main destination's framing choice belongs with the destination
+    // itself, not inside a box labelled as one slot among five.
+    if (isDefault) {
+      return mayFrame
+        ? checkbox({
+            name: 'frame__default',
+            label: 'Show in a frame instead of sending the visitor there',
+            checked: frames.default === true,
+            tooltip: FRAME_HINT,
+          })
+        : '';
+    }
     return `<fieldset class="grants">
-      <legend class="note">${esc(SLOT_LABELS[key])}${isDefault ? '' : ' (optional)'}</legend>
-      ${
-        isDefault
-          ? ''
-          : field({
-              name: 'url__' + key,
-              label: 'Destination',
-              value: r[key].url,
-              placeholder: 'leave blank to use the main destination',
-            })
-      }
+      <legend class="note">${esc(SLOT_LABELS[key])}</legend>
+      ${field({
+        name: 'url__' + key,
+        label: 'Destination',
+        value: r[key].url,
+        placeholder: 'leave blank to use the main destination',
+      })}
       ${
         mayFrame
           ? checkbox({
@@ -235,7 +250,16 @@ function routingFields(routing, { frame, mayFrame = false } = {}) {
       }
     </fieldset>`;
   };
-  return ALL_SLOTS.map(slot).join('');
+  const devices = ALL_SLOTS.filter((key) => key !== 'default');
+  const used = devices.filter((key) => r[key].url || frames[key] === true).length;
+  return `${slot('default')}
+<details class="group"${used ? ' open' : ''}>
+  <summary>Per-device destinations${
+    used ? ` <span class="badge">${used} set</span>` : ' <span class="note">(none set)</span>'
+  }</summary>
+  <p class="hint">A slot left blank falls through to the destination above, so most links need none of these.</p>
+  ${devices.map(slot).join('')}
+</details>`;
 }
 
 /** Read the per-slot frame flags back out of a submitted form. */
@@ -460,14 +484,14 @@ ${flashFrom(url)}
         known.map((d) => ({ value: d.pathLc, label: d.path + '/' }))
       ),
     })}
-    <div class="field"><label>&nbsp;</label><button type="submit" class="secondary">Apply</button></div>
+    <div class="actions tight filterdo"><button type="submit" class="secondary">Apply</button></div>
   </form>
 </div>
 
 <div class="card">
   ${
     records.length
-      ? `<div class="tablewrap"><table><thead><tr>
+      ? `<div class="tablewrap"><table class="cards-sm"><thead><tr>
           <th>Short link</th><th>Destination</th>${scope === 'all' ? '<th>Owner</th>' : ''}
           <th>Code</th><th></th></tr></thead>
           <tbody>${linkRows(records, {
@@ -566,15 +590,11 @@ ${qrFloat({ host: chosenHost })}
 <div class="card">
   <form method="post" action="/admin/links/new" enctype="multipart/form-data">
     ${csrfField(token)}
+    <h2>Where it lives</h2>
     <div class="row">
       <div class="field">
         <label for="f_host">Domain</label>
         <select id="f_host" name="host">${hostOptions}</select>
-        ${
-          cfg.knownHosts.length > 1
-            ? `<p class="note">Tick more domains below to create the same shortcut on each. If it cannot be made on one of them, none are made.</p>`
-            : ''
-        }
       </div>
       ${select({
         name: 'dir',
@@ -596,6 +616,34 @@ ${qrFloat({ host: chosenHost })}
         note: 'Letters, digits, underscore and hyphen. No "/" \u2014 the directory above decides that.',
       })}
     </div>
+    ${textarea({
+      name: 'note',
+      label: 'Note (optional)',
+      value: values.note || '',
+      note: 'For whoever looks at this link later. Visitors never see it.',
+    })}
+    ${
+      cfg.knownHosts.length > 1
+        ? `<details class="group"${(values.also || []).length ? ' open' : ''}>
+      <summary>Also create it on another domain${
+        (values.also || []).length ? ` <span class="badge">${(values.also || []).length} ticked</span>` : ''
+      }</summary>
+      <p class="hint">The same shortcut, in the same directory, on each domain ticked. If it cannot be made on one of them, none are made.</p>
+      ${cfg.knownHosts
+        .filter((h) => h !== chosenHost)
+        .map((h) =>
+          checkbox({
+            name: 'also__' + h,
+            label: h,
+            checked: (values.also || []).includes(h),
+          })
+        )
+        .join('')}
+    </details>`
+        : ''
+    }
+
+    <h2>Where it goes</h2>
     ${field({
       name: 'target',
       label: 'Destination',
@@ -605,7 +653,13 @@ ${qrFloat({ host: chosenHost })}
       note: 'Without a scheme this becomes https://. Other schemes such as mailto: or slack:// are kept as written.',
     })}
     ${select({ name: 'status', label: 'Redirect code', value: values.status || 302, options: STATUS_OPTIONS })}
+    ${checkbox({ name: 'forwardQuery', label: 'Append the incoming query string to the destination', checked: !!values.forwardQuery })}
+    ${routingFields(values.routing, { frame: values.frame, mayFrame })}
+
+    <h2>How it opens</h2>
     ${countdownControls(behaviour, pending)}
+
+    <h2>When it works</h2>
     <div class="row">
       ${field({
         name: 'activeFrom',
@@ -623,15 +677,25 @@ ${qrFloat({ host: chosenHost })}
         tooltip: UTC_HINT,
         note: 'After this it stops resolving.',
       })}
-      ${textarea({ name: 'note', label: 'Note (optional)', value: values.note || '' })}
     </div>
-    ${checkbox({ name: 'forwardQuery', label: 'Append the incoming query string to the destination', checked: !!values.forwardQuery })}
     ${hidden('enabledSet', '1')}${checkbox({
       name: 'enabled',
       label: 'Enabled',
       checked: values.enabled !== false,
       tooltip: 'A disabled link resolves to the domain\u2019s MISSING destination, the same as one that does not exist. Useful for preparing a link before it is announced.',
     })}
+
+    <h2>Who may use it</h2>
+    ${
+      canSetReadonly(ctx.cfg, ctx.session.user)
+        ? checkbox({
+            name: 'readonly',
+            label: 'Read-only',
+            checked: !!values.readonly,
+            note: '(only administrators can change it afterwards)',
+          })
+        : ''
+    }
     ${
       mayTransfer
         ? field({
@@ -646,9 +710,6 @@ ${qrFloat({ host: chosenHost })}
           })
         : ''
     }
-
-    <h2>Where different visitors go</h2>
-    <p class="hint">All optional. A device slot left blank falls through to the main destination.</p>
     ${
       mayPassword
         ? field({
@@ -661,33 +722,22 @@ ${qrFloat({ host: chosenHost })}
           })
         : ''
     }
-    ${
-      cfg.knownHosts.length > 1
-        ? `<fieldset class="grants">
-      <legend class="note">Also create on</legend>
-      ${cfg.knownHosts
-        .filter((h) => h !== chosenHost)
-        .map((h) =>
-          checkbox({
-            name: 'also__' + h,
-            label: h,
-            checked: (values.also || []).includes(h),
-          })
-        )
-        .join('')}
-    </fieldset>`
-        : ''
-    }
-    ${routingFields(values.routing, { frame: values.frame, mayFrame })}
 
     <h2>Preview card</h2>
-    <p class="hint">Shown when something like Slack or Twitter unfurls this link.${
-      previewBlocked ? ' ' + esc(previewBlocked) : ''
-    }</p>
+    <p class="hint">Shown when something like Slack or Twitter unfurls this link. Leave it off and the unfurler reads the destination's own tags instead.</p>
+    ${
+      // Blocked on the domain currently chosen, but the domain is a picker
+      // on this form, so the fields are folded away with the reason rather
+      // than removed: the next domain in the list may well allow them.
+      previewBlocked ? `<details class="group"><summary>Not used on ${esc(chosenHost)}</summary>
+    <p class="hint">${esc(previewBlocked)}</p>` : ''
+    }
     ${checkbox({ name: 'previewEnabled', label: 'Use a preview card for this link', checked: !!preview.enabled })}
-    ${field({ name: 'previewTitle', label: 'Title', value: preview.title })}
+    ${field({ name: 'previewTitle', label: 'Title', value: preview.title, placeholder: 'Required for a card to show' })}
     ${textarea({ name: 'previewDescription', label: 'Description', value: preview.description })}
     ${field({ name: 'previewImage', label: 'Image URL', value: preview.image, placeholder: 'https://example.com/card.png', note: 'Must be https.' })}
+    ${previewBlocked ? '</details>' : ''}
+
     <h2>QR code</h2>
     <p class="hint">The code appears beside this form as soon as there is a shortcut, and encodes the short link rather than the destination, so it keeps working if the destination changes. Its size and durability are chosen on the edit screen afterwards.</p>
     <div class="field">
@@ -696,16 +746,6 @@ ${qrFloat({ host: chosenHost })}
       <p class="note">PNG, JPEG, GIF or WebP, up to ${MAX_LOGO_BYTES / 1024}&nbsp;KB. An SVG is a document rather than a picture, so it is not accepted.</p>
     </div>
 
-    ${
-      canSetReadonly(ctx.cfg, ctx.session.user)
-        ? checkbox({
-            name: 'readonly',
-            label: 'Read-only',
-            checked: !!values.readonly,
-            note: '(only administrators can change it afterwards)',
-          })
-        : ''
-    }
     <div class="actions">
       <button type="submit">Create link</button>
       <a class="btn secondary" href="/admin/links">Cancel</a>
@@ -1239,7 +1279,7 @@ ${qrFloat({
   )} hit${clicks === 1 ? '' : 's'} or more</span></p>
 
 <div class="card">
-  <h2>Settings</h2>
+  <h2>Where it lives</h2>
   <form method="post" action="/admin/links/edit">
     ${csrfField(token)}${hidden('host', host)}${hidden('path', pathLc)}
     <div class="row">
@@ -1259,9 +1299,23 @@ ${qrFloat({
         note: 'Renaming or moving changes the short link; the old one stops working.',
       })}
     </div>
+    ${textarea({
+      name: 'note',
+      label: 'Note',
+      value: link.note || '',
+      note: 'For whoever looks at this link later. Visitors never see it.',
+    })}
+
+    <h2>Where it goes</h2>
     ${field({ name: 'target', label: 'Destination', value: link.target, required: true, note: 'Used when nothing more specific matches.' })}
     ${select({ name: 'status', label: 'Redirect code', value: link.status, options: STATUS_OPTIONS })}
+    ${checkbox({ name: 'forwardQuery', label: 'Append the incoming query string to the destination', checked: !!link.forwardQuery })}
+    ${routingFields(link.routing, { frame: link.frame, mayFrame })}
+
+    <h2>How it opens</h2>
     ${countdownControls(behaviour, link)}
+
+    <h2>When it works</h2>
     <div class="row">
       ${field({
         name: 'activeFrom',
@@ -1279,14 +1333,8 @@ ${qrFloat({
         tooltip: UTC_HINT,
         note: 'After this it stops resolving.',
       })}
-      ${textarea({ name: 'note', label: 'Note', value: link.note || '' })}
     </div>
     ${checkbox({ name: 'enabled', label: 'Enabled', checked: link.enabled !== false })}
-    ${checkbox({ name: 'forwardQuery', label: 'Append the incoming query string to the destination', checked: !!link.forwardQuery })}
-
-    <h2>Where different visitors go</h2>
-    <p class="hint">All optional. A device slot left blank falls through to the main destination, so configuring only one is perfectly normal.</p>
-    ${routingFields(link.routing, { frame: link.frame, mayFrame })}
 
     <h2>Preview card</h2>
     ${
@@ -1383,26 +1431,27 @@ ${qrCard(host, link, url, { uploadToken: qrLogoToken, appName: cfg.appName })}
 
 <div class="card">
   <h2>Hits</h2>
-  <p class="hint">${
-    history.lastAt ? 'Last hit ' + esc(fmtTime(history.lastAt)) + '.' : 'Never used.'
-  } Counting is approximate and can be turned off in Settings.</p>
+  ${
+    history.lastAt
+      ? `<p class="hint">${esc(clicks)} or more, last one ${esc(fmtTime(history.lastAt))}.</p>
   ${clickChart(history.series)}
+  <p class="note">Counted approximately: arrivals at the same moment can overwrite one another. Counting can be turned off in Settings.</p>`
+      : '<p class="hint">Nobody has followed this link yet.</p>'
+  }
 </div>
 
 <div class="card">
-  <h2>Owner</h2>
+  <h2>Ownership and copies</h2>
+  <h3>Owner</h3>
   <p class="hint">Currently ${esc(link.ownerEmail || 'unassigned')}. Transferring hands over the right to edit and delete it.</p>
   <form method="post" action="/admin/links/transfer">
     ${csrfField(moveToken)}${hidden('host', host)}${hidden('path', pathLc)}
     ${field({ name: 'owner', label: 'New owner email', type: 'email', value: '', required: true, placeholder: 'colleague@example.com' })}
     <div class="actions"><button type="submit" class="secondary">Transfer</button></div>
   </form>
-</div>
-
 ${
   cfg.knownHosts.length > 1
-    ? `<div class="card">
-  <h2>Move to another domain</h2>
+    ? `  <h3>Move to another domain</h3>
   <p class="hint">Keeps everything about the link, including its password and destinations, and stops answering on ${esc(
     host
   )}. You need to be allowed to create it on the domain you move it to.</p>
@@ -1426,13 +1475,10 @@ ${
       })}
     </div>
     <div class="actions"><button type="submit" class="secondary">Move</button></div>
-  </form>
-</div>`
+  </form>`
     : ''
 }
-
-<div class="card">
-  <h2>Duplicate</h2>
+  <h3>Duplicate</h3>
   <p class="hint">Copies everything on this link except the shortcut, and opens a new one for you to name.</p>
   <form method="post" action="/admin/links/duplicate">
     ${csrfField(dupToken)}${hidden('host', host)}${hidden('path', pathLc)}

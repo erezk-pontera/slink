@@ -499,6 +499,16 @@ ${flashFrom(url)}${alert('error', error)}
     <h2>Single sign-on</h2>
     <p class="hint">One provider for the whole installation. Signing in happens on the hub and every other host comes through the handshake, so this is not a per-domain thing. Each domain still chooses, on its own screen, whether it also offers the emailed code and passkeys.</p>
     ${checkbox({ name: 'oauthEnabled', label: 'Offer single sign-on', checked: !!oauth.enabled })}
+    ${
+      // Seven provider fields that mean nothing until somebody is wiring a
+      // provider up. Folded away, and opened on its own once it is on or
+      // half-filled, so nobody has to hunt for where they left off.
+      ''
+    }
+    <details class="group"${oauth.enabled || oauth.clientId || oauth.authorizeUrl ? ' open' : ''}>
+    <summary>Provider details${
+      oauth.enabled && !oauthReady(cfg) ? ' <span class="badge off">incomplete</span>' : ''
+    }</summary>
     ${field({ name: 'oauthLabel', label: 'Button label', value: oauth.label, placeholder: 'Okta' })}
     ${field({ name: 'oauthClientId', label: 'Client ID', value: oauth.clientId })}
     ${field({
@@ -522,6 +532,7 @@ ${flashFrom(url)}${alert('error', error)}
         ? ' <strong>Not usable yet: an endpoint, the client ID or the secret is missing.</strong>'
         : ''
     }</p>
+    </details>
 
     <h2>Mail</h2>
     <div class="row">

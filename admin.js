@@ -215,14 +215,17 @@ export function adminNav(ctx, current) {
       { href: '/admin/audit', label: 'Audit', key: 'audit' }
     );
   }
-  // While impersonating, signing out means leaving this tab's view rather
-  // than ending the administrator's own session in every other tab.
-  items.push(
-    ctx.impersonator
-      ? { href: EXIT_HREF, label: 'Sign out', key: 'logout' }
-      : { href: '/logout', label: 'Sign out', key: 'logout' }
-  );
+  // Signing out is an action on the account, not another section, so it
+  // sits with the account rather than in this list. See `signOutHref`.
   return items.map((i) => ({ ...i, current: i.key === current }));
+}
+
+/**
+ * Where "Sign out" goes. While impersonating it means leaving this tab's
+ * view rather than ending the administrator's own session everywhere else.
+ */
+export function signOutHref(ctx) {
+  return ctx.impersonator ? EXIT_HREF : '/logout';
 }
 
 /** Pages where a domain filter means something, so the picker is shown. */
@@ -267,7 +270,8 @@ export function adminPage(ctx, { title, nav, body, status = 200, externalImages 
     host: ctx.host,
     user: ctx.session.user,
     nav: adminNav(ctx, nav),
-    headerExtra: hostPicker(ctx),
+    account: hostPicker(ctx),
+    signOut: signOutHref(ctx),
     body: impersonationNotice(ctx) + body,
   });
   return html(ctx.prefix ? withPrefix(markup, ctx.prefix) : withoutPrefix(markup), {
@@ -396,7 +400,7 @@ ${flashFrom(ctx.url)}
   <h2>Your most recent links</h2>
   ${
     rows
-      ? `<div class="tablewrap"><table>
+      ? `<div class="tablewrap"><table class="cards-sm">
           <thead><tr><th>Short link</th><th>Destination</th><th>Code</th><th></th></tr></thead>
           <tbody>${rows}</tbody></table></div>`
       : '<div class="empty">Nothing here yet.</div>'
@@ -418,9 +422,20 @@ ${flashFrom(ctx.url)}
     <thead><tr><th>Domain</th><th>Links at root</th><th>Directories you may use</th><th>May add directories</th></tr></thead>
     <tbody>${rightsRows}</tbody>
   </table></div>
+</div>
+
+<div class="card">
+  <h2>This account</h2>
   <dl class="kv">
     <dt>Account</dt><dd>${esc(ctx.session.user.emailNorm)}</dd>
     <dt>Last sign-in</dt><dd>${esc(fmtTime(ctx.session.user.lastLoginAt))}</dd>
+    ${
+      // A passkey belongs to the account holder, so an impersonated view is
+      // not offered them here any more than it is in the navigation.
+      ctx.impersonator
+        ? ''
+        : '<dt>Passkeys</dt><dd><a href="/admin/passkeys">Manage the keys on this account</a></dd>'
+    }
   </dl>
 </div>`;
 

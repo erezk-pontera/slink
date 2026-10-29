@@ -35,9 +35,14 @@ export function layout({
   footer = '',
   homeHref = '/admin',
   headerExtra = '',
+  account = '',
+  signOut = '',
 }) {
+  // Two groups, not one list: where you can go, and who you are. Signing
+  // out and switching domain are things done to the account, so putting
+  // them among the sections made them read as places.
   const navHtml = nav.length
-    ? `<nav class="main">${nav
+    ? `<nav class="main" aria-label="Sections">${nav
         .map(
           (item) =>
             `<a href="${esc(item.href)}"${item.current ? ' aria-current="page"' : ''}>${esc(
@@ -52,6 +57,12 @@ export function layout({
         user.isAdminEffective ? ' <span class="badge ok">admin</span>' : ''
       }</span>`
     : '';
+  const acctHtml =
+    account || whoHtml || signOut
+      ? `<div class="acct">${account}${whoHtml}${
+          signOut ? `<a class="signout" href="${esc(signOut)}">Sign out</a>` : ''
+        }</div>`
+      : '';
 
   return `<!doctype html>
 <html lang="en"><head>
@@ -66,8 +77,8 @@ ${turnstile ? turnstileScriptTag() : ''}
 </head><body>
 <header class="top"><div class="wrap">
   <a class="brand" href="${esc(homeHref)}">${esc(appName)}</a>
-  ${headerExtra || (host ? `<span class="hostname">${esc(host)}</span>` : '')}
-  ${navHtml}${whoHtml}
+  ${headerExtra || (!account && host ? `<span class="hostname">${esc(host)}</span>` : '')}
+  ${navHtml}${acctHtml}
 </div></header>
 <main class="wrap${narrow ? ' narrow' : ''}">${body}</main>
 <footer class="foot">${footer ? `<div>${footer}</div>` : ''}<div>&copy; Pontera Solutions Inc. All rights reserved</div></footer>
@@ -176,9 +187,13 @@ export function hint(text) {
  * they follow the theme without a second set for dark mode.
  */
 const ICONS = {
-  copy: '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><rect x="7" y="7" width="11" height="11" rx="2"/>',
+  // A clipboard, not a second pair of sheets: copy and duplicate sit next
+  // to each other in a row and two stacked-paper glyphs read as one icon.
+  copy: '<path d="M7 4H5.5A1.5 1.5 0 0 0 4 5.5v11A1.5 1.5 0 0 0 5.5 18h9a1.5 1.5 0 0 0 1.5-1.5v-11A1.5 1.5 0 0 0 14.5 4H13"/><rect x="7" y="2.2" width="6" height="3.2" rx="1"/>',
   check: '<path d="M4 10.5 8 14.5 16 5.5"/>',
-  duplicate: '<rect x="7" y="7" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  // Two sheets and a plus, so it cannot be mistaken for copy-to-clipboard
+  // sitting next to it in the same row.
+  duplicate: '<path d="M4 13H3.5A1.5 1.5 0 0 1 2 11.5v-8A1.5 1.5 0 0 1 3.5 2h8A1.5 1.5 0 0 1 13 3.5V4"/><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M12 9.5v5M9.5 12h5"/>',
   external: '<path d="M8 4H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-3"/><path d="M12 3h5v5"/><path d="M9 11 17 3"/>',
 };
 

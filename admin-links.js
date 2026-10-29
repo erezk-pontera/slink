@@ -79,6 +79,7 @@ import {
   canCreate,
   creatableLocations,
   canManageLink,
+  directoryAuthority,
   canReceiveTransfer,
   canSetReadonly,
   canTransferLink,
@@ -461,14 +462,55 @@ function linkRows(records, { showOwner = false, maySee = () => true, dupToken = 
 
 async function listPage(ctx) {
   const { cfg, url } = ctx;
-  const scope = url.searchParams.get('scope') === 'all' && ctx.isAdmin ? 'all' : 'mine';
   const selected = hostFilter(ctx, url);
   const dir = String(url.searchParams.get('dir') || '').trim().toLowerCase();
+
+  // Which directories this person administers, read once for the page. A
+  // directory administrator stands to the links inside their directory as
+  // an administrator does: they are listed, and a protected one shows its
+  // destination rather than being struck out.
+  const authority = await directoryAuthority(ctx.cfg, ctx.session.user, hostsFor(ctx, selected), {
+    pendingFor: (host) => pendingUnder(ctx, K.dirPrefix(host, '')),
+    grantPending: pendingUnder(ctx, K.userGrantPrefix(ctx.session.user.id)),
+  });
+
+  const asked = url.searchParams.get('scope');
+  const scope =
+    asked === 'all' && ctx.isAdmin
+      ? 'all'
+      : asked === 'managed' && authority.any
+        ? 'managed'
+        : 'mine';
 
   let records = [];
   let truncated = false;
 
-  if (scope === 'all') {
+  if (scope === 'managed') {
+    // One listing per directory administered rather than per host: the
+    // prefix is the directory, so this reads what they may see and not the
+    // whole domain.
+    const seen = new Map();
+    for (const place of authority.places) {
+      if (selected && place.host !== selected) continue;
+      const page = await listLinks(cfg, place.host, {
+        dirPathLc: place.dirPathLc,
+        limit: 100,
+        pending: pendingUnder(ctx, K.linkPrefix(place.host, place.dirPathLc + '/')),
+      });
+      for (const rec of await hydrate(cfg, place.host, page.items)) {
+        seen.set(rec.host + ':' + rec.pathLc, rec);
+      }
+      if (page.cursor) truncated = true;
+    }
+    records = [...seen.values()].filter((rec) => {
+      // A directory nested inside one they administer can belong to
+      // somebody else, and its links are governed by it rather than by the
+      // ancestor. Keep only what they actually govern.
+      if (!authority.manages(rec.host, rec.pathLc)) return false;
+      if (dir && !rec.pathLc.startsWith(dir + '/')) return false;
+      return true;
+    });
+  } else if (scope === 'all') {
     // One listing per domain, because KV lists by key prefix and each host is
     // its own prefix. With a domain chosen this is a single pass.
     for (const host of hostsFor(ctx, selected)) {
@@ -530,7 +572,13 @@ async function listPage(ctx) {
   const body = `
 ${flashFrom(url)}
 <h1>Links</h1>
-<p class="sub">${scope === 'all' ? 'Every link on ' : 'Links you created on '}${where}.</p>
+<p class="sub">${
+  scope === 'all'
+    ? 'Every link on '
+    : scope === 'managed'
+      ? 'Links in directories you administer on '
+      : 'Links you created on '
+}${where}.</p>
 
 <div class="card">
   <form method="get" action="/admin/links" class="row" data-no-busy>
@@ -538,6 +586,11 @@ ${flashFrom(url)}
       <label for="f_scope">Show</label>
       <select id="f_scope" name="scope">
         <option value="mine"${scope === 'mine' ? ' selected' : ''}>My links</option>
+        ${
+          authority.any
+            ? `<option value="managed"${scope === 'managed' ? ' selected' : ''}>Links I administer</option>`
+            : ''
+        }
         ${ctx.isAdmin ? `<option value="all"${scope === 'all' ? ' selected' : ''}>All links</option>` : ''}
       </select>
     </div>
@@ -561,11 +614,15 @@ ${flashFrom(url)}
           <th>Code</th><th></th></tr></thead>
           <tbody>${linkRows(records, {
             dupToken,
-            showOwner: scope === 'all',
+            showOwner: scope !== 'mine',
             // The listing is already scoped to what this person may see at
             // all; this is only about the destination of a protected link.
+            // Whoever may edit the link sees it on the edit screen anyway,
+            // so the three who may are the three named here.
             maySee: (link) =>
-              ctx.isAdmin || (link.ownerId && link.ownerId === ctx.session.user.id),
+              ctx.isAdmin ||
+              (link.ownerId && link.ownerId === ctx.session.user.id) ||
+              authority.manages(link.host, link.pathLc),
           })}</tbody></table></div>`
       : '<div class="empty">No links to show.</div>'
   }

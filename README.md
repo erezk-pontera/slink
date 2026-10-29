@@ -131,6 +131,19 @@ Rules that override the table:
 - **Renaming is a create.** Moving a link to a new path requires create
   permission at the new path.
 
+**What a directory administrator sees.** The links screen offers them *Links
+I administer* beside *My links*: every link under the directories they hold a
+`manage` grant on, other people's included. A link carrying a password shows
+its destination to them there, and in search, as it does to the link's owner
+— they may open and edit it either way, so withholding it from the listing
+only made the two screens disagree.
+
+The *governing* directory decides, not any ancestor: a grant on `eng` does
+not reach a link inside a nested `eng/secret` that the grant does not cover,
+and such a link is neither listed for them nor unmasked. Someone holding no
+`manage` grant is not offered the scope at all, and asking for it by hand
+returns their own links.
+
 **Creating directories** is a separate, per-user and per-domain grant
 (`/admin/users` → *May create directories* for each domain). Administrators
 always have it. A directory administrator may nest directories inside the

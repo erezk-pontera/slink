@@ -234,6 +234,96 @@ section('branding and the header domain picker');
   ok('picker has a no-JS submit', ff.includes('<button type="submit"'));
 }
 
+/* ----------------------- a directory administrator inside their directory */
+section('a directory administrator sees their directory like an administrator');
+{
+  const mkDir = async (host, path) => {
+    const page = await (await admin.req('https://ptra.dev/admin/directories')).text();
+    return admin.req('https://ptra.dev/admin/directories/new', {
+      form: { _csrf: Harness.csrfFor(page, '/admin/directories/new'), host, path },
+    });
+  };
+  await mkDir('ptra.cc', 'eng');
+  // Nested, and administered by nobody: a grant on the parent does not
+  // reach the links a nested directory governs.
+  await mkDir('ptra.cc', 'eng/secret');
+
+  const dee = peer(admin);
+  await dee.signIn('dee@pontera.com');
+  const gp = 'https://ptra.dev/admin/directories/edit?host=ptra.cc&path=eng';
+  const gt = Harness.csrfFor(await (await admin.req(gp)).text(), '/admin/directories/grant');
+  await admin.req('https://ptra.dev/admin/directories/grant', {
+    form: { _csrf: gt, host: 'ptra.cc', path: 'eng', email: 'dee@pontera.com',
+            canCreate: '1', canManage: '1' },
+  });
+
+  const mk = async (dirValue, path, target) => {
+    const t = Harness.csrf(await (await admin.req('https://ptra.dev/admin/links/new')).text());
+    return admin.req('https://ptra.dev/admin/links/new', {
+      form: { _csrf: t, host: 'ptra.cc', dir: dirValue, path, target, status: '302' },
+    });
+  };
+  await mk('ptra.cc/eng', 'alpha', 'example.com/alpha-dst');
+  await mk('ptra.cc/eng/secret', 'beta', 'example.com/beta-dst');
+
+  // Somebody else's link, protected: the destination is the thing at stake.
+  const ed = 'https://ptra.dev/admin/links/edit?host=ptra.cc&path=eng%2Falpha';
+  const pt = Harness.csrfFor(await (await admin.req(ed)).text(), '/admin/links/password');
+  await admin.req('https://ptra.dev/admin/links/password', {
+    form: { _csrf: pt, host: 'ptra.cc', path: 'eng/alpha', password: 'alpha-secret' },
+  });
+
+  const own = await (await dee.req('https://ptra.dev/admin/links')).text();
+  ok('the scope is offered to them', own.includes('<option value="managed"'));
+
+  const managed = await (await dee.req('https://ptra.dev/admin/links?scope=managed')).text();
+  ok('a link they do not own is listed', managed.includes('ptra.cc/eng/alpha'));
+  ok('and a protected one shows its destination', managed.includes('example.com/alpha-dst'),
+     'the destination was struck out for the directory administrator');
+  ok('a nested directory they do not administer is not theirs to see',
+     !managed.includes('eng/secret/beta'));
+
+  const found = await (await dee.req('https://ptra.dev/admin/search?q=alpha')).text();
+  ok('search agrees with the listing', found.includes('example.com/alpha-dst'));
+
+  // Somebody holding no grant at all is unchanged by any of this.
+  const plain = peer(admin);
+  await plain.signIn('plain@pontera.com');
+  const theirs = await (await plain.req('https://ptra.dev/admin/links?scope=managed')).text();
+  ok('nobody else is offered the scope', !theirs.includes('<option value="managed"'));
+  ok('and asking for it anyway only shows their own',
+     theirs.includes('Links you created on'));
+  ok('which does not include the protected link', !theirs.includes('example.com/alpha-dst'));
+}
+
+/* ------------------- the owner of a protected link, in search */
+section('a protected link is not withheld from its own owner');
+{
+  const nat = peer(admin);
+  await nat.signIn('nat@pontera.com');
+  const t = Harness.csrf(await (await nat.req('https://ptra.dev/admin/links/new')).text());
+  await nat.req('https://ptra.dev/admin/links/new', {
+    form: { _csrf: t, host: 'ptra.cc', path: 'nat-own', target: 'example.com/nat-dst', status: '302' },
+  });
+  const ed = 'https://ptra.dev/admin/links/edit?host=ptra.cc&path=nat-own';
+  const pt = Harness.csrfFor(await (await nat.req(ed)).text(), '/admin/links/password');
+  await nat.req('https://ptra.dev/admin/links/password', {
+    form: { _csrf: pt, host: 'ptra.cc', path: 'nat-own', password: 'nat-secret' },
+  });
+
+  // `mine` was read one line before it was assigned, so it was undefined at
+  // the test and an owner searching for their own link got it struck out.
+  const found = await (await nat.req('https://ptra.dev/admin/search?q=nat-own')).text();
+  ok('the row is there', found.includes('ptra.cc/nat-own'));
+  ok('with the destination on it', found.includes('example.com/nat-dst'),
+     'the owner was shown a password badge instead of their own destination');
+
+  const stranger = peer(admin);
+  await stranger.signIn('stranger@pontera.com');
+  const theirs = await (await stranger.req('https://ptra.dev/admin/search?q=nat-own')).text();
+  ok('and a stranger still gets neither', !theirs.includes('example.com/nat-dst'));
+}
+
 console.log(`\ngrants: ${passed} passed, ${failed} failed`);
 admin.restore();
 if (failed) process.exit(1);

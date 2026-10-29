@@ -15,7 +15,7 @@
 import { listDirectories, listUserGrants } from './directories.js';
 import { hasPassword } from './linkpass.js';
 import { hydrate, listLinks, listOwnedLinks } from './links.js';
-import { adminReachesAllDirectories } from './permissions.js';
+import { adminReachesAllDirectories, directoryAuthority } from './permissions.js';
 import { isAdmin } from './users.js';
 
 /** Keys one listing will walk before the query is called too broad. */
@@ -113,6 +113,11 @@ function linkRow(host, pathLc, meta, dir) {
 export async function search(cfg, { user, hosts, query, type = 'all', offset = 0, limit = PAGE_SIZE }) {
   const want = terms(query);
   const admin = isAdmin(cfg, user);
+  // Who administers which directory, read once for the whole page rather
+  // than per row. A directory administrator stands to a link inside their
+  // directory as its owner does, the destination of a protected one
+  // included.
+  const authority = await directoryAuthority(cfg, user, hosts);
   const reaches = adminReachesAllDirectories(cfg, user);
   const grants = await listUserGrants(cfg, user.id);
   const results = [];
@@ -229,8 +234,13 @@ export async function search(cfg, { user, hosts, query, type = 'all', offset = 0
       // it in a listing would hand out what the prompt is there to withhold.
       // Whoever may edit the link already sees it on the edit screen.
       row.locked = hasPassword(rec);
-      row.detail = row.locked && !(admin || row.mine) ? '' : rec.target || '';
+      // `mine` is settled before it is read. It used to be assigned on the
+      // line after the one that tests it, so it was always undefined there
+      // and a person searching for their own protected link got a row with
+      // the destination struck out of it.
       row.mine = !!(rec.ownerId && rec.ownerId === user.id);
+      const held = admin || row.mine || authority.manages(row.host, row.pathLc);
+      row.detail = row.locked && !held ? '' : rec.target || '';
     }
   }
 

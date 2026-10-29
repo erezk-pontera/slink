@@ -183,6 +183,50 @@ export async function creatableLocations(cfg, { user, domain, host, pending, gra
 }
 
 /**
+ * The directories this person administers, as something that can answer for
+ * a link without a read of its own.
+ *
+ * canManageLink asks the same question one link at a time, which is right
+ * for one link and wrong for a listing: it is two reads each. This reads the
+ * grants once and the directory names once per host, and then answers from
+ * memory — and answers it the same way, against the *governing* directory
+ * rather than any ancestor, so a grant on `eng` does not reach a link inside
+ * a nested `eng/secret` that the grant does not cover.
+ */
+export async function directoryAuthority(cfg, user, hosts, { pendingFor, grantPending } = {}) {
+  const none = { any: false, places: [], manages: () => false };
+  if (!user || user.disabled) return none;
+
+  const held = (await listUserGrants(cfg, user.id, { pending: grantPending })).filter(
+    (g) => g.canManage
+  );
+  if (!held.length) return none;
+
+  const wanted = [...new Set((hosts || []).filter(Boolean))];
+  const names = new Map();
+  await Promise.all(
+    wanted.map(async (host) => {
+      names.set(
+        host,
+        await directoryPathSet(cfg, host, { pending: pendingFor ? pendingFor(host) : undefined })
+      );
+    })
+  );
+  const grantedAt = new Set(held.map((g) => g.host + '/' + g.dirPathLc));
+
+  return {
+    any: true,
+    places: held.map((g) => ({ host: g.host, dirPathLc: g.dirPathLc })),
+    manages(host, pathLc) {
+      const known = names.get(host);
+      if (!known) return false;
+      const parentLc = parentDirectory(String(pathLc || ''), known);
+      return parentLc !== null && grantedAt.has(host + '/' + parentLc);
+    },
+  };
+}
+
+/**
  * May `user` modify, delete or transfer `link`?
  * Ownership, directory administration and the read-only flag are all applied.
  */

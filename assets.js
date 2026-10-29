@@ -146,6 +146,10 @@ body.framed{margin:0;padding:0;height:100vh;overflow:hidden;display:flex;flex-di
 .card>h3{font-size:14px;font-weight:600}
 .card h2~h2+.hint,.card>h3+.hint{margin-top:4px}
 .hint{color:var(--muted);font-size:13px;margin:0 0 14px}
+/* A status line with nothing in it yet still reserved its margin, which
+   on the sign-in page opened a gap under the passkey button. It reappears
+   the moment the script writes a message into it. */
+.hint:empty{display:none}
 h1{font-size:21px;font-weight:650;letter-spacing:-.01em;margin:0 0 4px}
 .sub{color:var(--muted);font-size:13.5px;margin:0 0 18px}
 label{display:block;font-size:13px;font-weight:550;margin:0 0 5px}

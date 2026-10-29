@@ -267,6 +267,7 @@ export function adminPage(ctx, { title, nav, body, status = 200, externalImages 
   const markup = layout({
     title: title + ' - ' + ctx.cfg.appName,
     appName: ctx.cfg.appName,
+    footerText: ctx.cfg.footerText,
     host: ctx.host,
     user: ctx.session.user,
     nav: adminNav(ctx, nav),

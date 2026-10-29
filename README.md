@@ -297,6 +297,7 @@ Set in `wrangler.toml` under `[vars]`:
 | `DOMAINS` | Hosts the worker serves, comma separated |
 | `HUB_HOST` | The host carrying `/admin`, `/login` and `/logout` |
 | `APP_NAME` | Name shown in the UI and in emails (default `Shrink Link`) |
+| `FOOTER_TEXT` | The line at the bottom of every page, such as a copyright notice. Plain text, escaped; unset means no line |
 | `ADMIN` | Root administrator addresses, comma separated |
 | `DEFAULT_ALLOWED_DOMAINS` | Default email domains for signing in and for creating at a host root |
 | `MISSING` | Where a host root, an unknown shortcut, or a disabled or expired one goes, unless a domain overrides it |

@@ -37,6 +37,7 @@ export function layout({
   headerExtra = '',
   account = '',
   signOut = '',
+  footerText = '',
 }) {
   // Two groups, not one list: where you can go, and who you are. Signing
   // out and switching domain are things done to the account, so putting
@@ -81,7 +82,11 @@ ${turnstile ? turnstileScriptTag() : ''}
   ${navHtml}${acctHtml}
 </div></header>
 <main class="wrap${narrow ? ' narrow' : ''}">${body}</main>
-<footer class="foot">${footer ? `<div>${footer}</div>` : ''}<div>&copy; Pontera Solutions Inc. All rights reserved</div></footer>
+<footer class="foot">${footer ? `<div>${footer}</div>` : ''}${
+    // Set by FOOTER_TEXT. Escaped like any other configured string, and
+    // the line is left out altogether when there is nothing to put in it.
+    footerText ? `<div>${esc(footerText)}</div>` : ''
+  }</footer>
 <script src="${esc(JS_SRC)}" defer></script>
 </body></html>`;
 }
@@ -344,6 +349,7 @@ ${alert('error', error)}${alert('info', info)}
   return layout({
     title: 'Sign in - ' + cfg.appName,
     appName: cfg.appName,
+    footerText: cfg.footerText,
     host,
     body,
     narrow: true,
@@ -383,6 +389,7 @@ ${alert('error', error)}
   return layout({
     title: 'Protected link - ' + cfg.appName,
     appName: cfg.appName,
+    footerText: cfg.footerText,
     host,
     body,
     narrow: true,
@@ -454,6 +461,7 @@ ${alert('error', error)}${alert('info', info)}
   return layout({
     title: 'Verify - ' + cfg.appName,
     appName: cfg.appName,
+    footerText: cfg.footerText,
     host,
     body,
     narrow: true,
@@ -501,6 +509,7 @@ export function interstitialPage({
   const page = layout({
     title: 'Redirecting - ' + cfg.appName,
     appName: cfg.appName,
+    footerText: cfg.footerText,
     host,
     body,
     narrow: true,
@@ -529,6 +538,7 @@ export function messagePage({ cfg, host, title, heading, message, status = 200, 
     body: layout({
       title: title + ' - ' + cfg.appName,
       appName: cfg.appName,
+      footerText: cfg.footerText,
       host,
       body,
       narrow: true,
@@ -553,6 +563,7 @@ export function landingPage({ cfg, host }) {
   return layout({
     title: cfg.appName,
     appName: cfg.appName,
+    footerText: cfg.footerText,
     host,
     body,
     narrow: true,

@@ -107,6 +107,12 @@ export class Config {
 
     this.hubHost = String(envVar(env, 'HUB_HOST') || 'ptra.dev').toLowerCase().replace(/^www\./, '');
     this.appName = String(envVar(env, 'APP_NAME') || 'Shrink Link');
+    /**
+     * The line at the bottom of every page: a copyright notice, a company
+     * name, whatever this installation needs. Plain text, escaped like
+     * anything else, and left out entirely when it is not set.
+     */
+    this.footerText = String(envVar(env, 'FOOTER_TEXT') || '');
     this.knownHosts = listEnv(envVar(env, 'DOMAINS'), ['ptra.cc', 'ptra.dev']);
 
     this.rootAdmins = listEnv(envVar(env, 'ADMIN'));

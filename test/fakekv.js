@@ -86,6 +86,7 @@ export function makeEnv(overrides = {}) {
     DOMAINS: 'ptra.cc,ptra.dev',
     MAIL_FROM: 'no-reply@ptra.dev',
     MISSING: 'https://fallback.example/home',
+    FOOTER_TEXT: '© Example Inc. All rights reserved',
     ...overrides,
   };
 }

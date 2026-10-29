@@ -519,7 +519,8 @@ ${flashFrom(url)}${alert('error', error)}
     })}
 
     <h2>Single sign-on</h2>
-    <p class="hint">One provider for the whole installation. Signing in happens on the hub and every other host comes through the handshake, so this is not a per-domain thing.</p>
+    <p class="hint">OAuth 2.0 Authorization Code with PKCE, which is what an identity provider means by an <strong>OIDC web application</strong> &mdash; a confidential client with a secret, not a single-page app. One provider for the whole installation: signing in happens on the hub and every other host comes through the handshake, so this is not a per-domain thing.</p>
+    <p class="hint">The three endpoints below are in the provider's discovery document, at <code>https://idp.example.com/.well-known/openid-configuration</code>, under <code>authorization_endpoint</code>, <code>token_endpoint</code> and <code>userinfo_endpoint</code>. Copy them rather than typing them: some providers put a tenant or an authorization-server name in the path, and the wrong one of two that look alike fails only at the token exchange.</p>
     ${checkbox({ name: 'oauthEnabled', label: 'Offer single sign-on', checked: !!oauth.enabled })}
 
     <h3>The other sign-in methods</h3>
@@ -566,19 +567,34 @@ ${flashFrom(url)}${alert('error', error)}
       name: 'oauthAuthorizeUrl',
       label: 'Authorization endpoint',
       value: oauth.authorizeUrl,
-      placeholder: 'https://idp.example.com/authorize',
-      note: 'HTTPS only, and never a private address. Anything else is discarded.',
+      placeholder: 'https://idp.example.com/oauth2/v1/authorize',
+      note: 'From authorization_endpoint in the discovery document. HTTPS only, and never a private address \u2014 anything else is discarded.',
     })}
-    ${field({ name: 'oauthTokenUrl', label: 'Token endpoint', value: oauth.tokenUrl, placeholder: 'https://idp.example.com/oauth/token' })}
-    ${field({ name: 'oauthUserinfoUrl', label: 'Userinfo endpoint', value: oauth.userinfoUrl, placeholder: 'https://idp.example.com/userinfo' })}
+    ${field({
+      name: 'oauthTokenUrl',
+      label: 'Token endpoint',
+      value: oauth.tokenUrl,
+      placeholder: 'https://idp.example.com/oauth2/v1/token',
+      note: 'From token_endpoint. The client secret is sent here in the request body, so the provider\u2019s client must be set to client_secret_post rather than client_secret_basic.',
+    })}
+    ${field({
+      name: 'oauthUserinfoUrl',
+      label: 'Userinfo endpoint',
+      value: oauth.userinfoUrl,
+      placeholder: 'https://idp.example.com/oauth2/v1/userinfo',
+      note: 'From userinfo_endpoint. The address is read from here with the access token, not from an id_token, so the provider\u2019s token-signing settings do not apply.',
+    })}
     <div class="row">
-      ${field({ name: 'oauthScope', label: 'Scope', value: oauth.scope })}
+      ${field({ name: 'oauthScope', label: 'Scope', value: oauth.scope, note: 'openid is required; email is what the address comes from.' })}
       ${field({ name: 'oauthEmailField', label: 'Email field', value: oauth.emailField, note: 'Where the address sits in the userinfo response.' })}
     </div>
     <p class="note">The provider says who somebody is, and nothing more: letting them through its sign-in makes them an ordinary account here. What they may do is decided on this side, by the host's allowed sign-in domains and by their own record &mdash; no role or privilege is read from the provider.</p>
     <p class="note">The one redirect URI to register with the provider: <code>https://${esc(
       cfg.hubHost
-    )}/__slink/oauth/callback</code>. Signing in happens on this host alone and the others arrive through the handshake, so registering any of them would hold a redirect URI open for a route that is not served.</p>
+    )}/__slink/oauth/callback</code>. Signing in happens on this host alone and the others arrive through the handshake, so registering any of them would hold a redirect URI open for a route that is not served. There is no sign-out redirect to register: signing out here ends the session here and does not reach the provider.</p>
+    <p class="note">The provider's client wants Authorization Code as its only grant; a refresh token is never asked for and never used. PKCE is always sent, with <code>S256</code>, so requiring it there is free. If the provider offers a tile or a portal link, its initiate-login URI is <code>https://${esc(
+      cfg.hubHost
+    )}/__slink/oauth/start</code>, which begins the same handshake and ignores the parameters a provider adds to it.</p>
     <p class="note">The client secret is sealed under <code>AUTH_SECRET</code> before it is stored and is never read back onto this screen, so rotating <code>AUTH_SECRET</code> without <code>AUTH_SECRET_PREVIOUS</code> strands it exactly as it stands a link password. Leaving it set here as <code>oauth-secret</code> in the environment works too, and the stored one wins. It is ${
       hasOauthSecret(cfg) ? 'set.' : '<strong>not set.</strong>'
     }${

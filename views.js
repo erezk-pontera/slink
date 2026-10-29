@@ -335,11 +335,30 @@ export function loginPage({
   </form>`
     : '';
 
+  // Single sign-on alone, because the other two were switched off. They
+  // are still open to administrators - that is the point of the exemption,
+  // so an outage at the provider cannot lock out the people who would fix
+  // it - but reaching them meant knowing to type `?otp=1`, which is a
+  // password of a sort and a poor one. The route is named instead.
+  //
+  // Naming it tells nobody who the administrators are: everyone sees the
+  // same link, is shown the same form, and gets the same answer back. Only
+  // the code itself goes nowhere for somebody who is not one.
+  const adminOnly =
+    methods.oauth && !methods.otp && !methods.passkey
+      ? `<p class="divider"><span>or</span></p>
+  <p class="sub">Administrators keep the emailed code and passkeys for when
+  ${esc(ssoLabel)} cannot be reached.
+  <a href="${esc(
+    '/admin?otp=1' + (next && next !== '/admin' ? '&next=' + encodeURIComponent(next) : '')
+  )}">Other sign-in methods</a>.</p>`
+      : '';
+
   const body = `
 ${alert('error', error)}${alert('info', info)}
 <div class="card">
   <h1>Sign in</h1>
-  ${sso}${passkey}${divider}${byEmail}
+  ${sso}${passkey}${divider}${byEmail}${adminOnly}
   ${
     !methods.otp && !methods.oauth && !methods.passkey
       ? '<p class="sub">No sign-in method is available on this domain. An administrator needs to enable one.</p>'

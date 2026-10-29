@@ -58,7 +58,6 @@ import {
   hydrate,
   listLinks,
   listOwnedLinks,
-  MAX_DELAY_SECONDS,
   newLink,
   putLink,
   readClickHistory,
@@ -105,7 +104,10 @@ const STATUS_OPTIONS = [
  * setting is shown as settled rather than as a control that does nothing.
  */
 function countdownControls(behaviour, link) {
-  const parts = [];
+  // Says the form carried these controls at all. An unticked checkbox
+  // submits nothing, so without it a request that simply omits the field
+  // could not be told apart from one asking for no countdown.
+  const parts = [hidden('countdownSet', '1')];
   if (behaviour.countdownLocked) {
     parts.push(
       `<p class="note">Countdown is ${behaviour.show ? 'required' : 'disabled'} by policy for this location.</p>`
@@ -145,6 +147,19 @@ function countdownControls(behaviour, link) {
     }
   }
   return parts.join('\n');
+}
+
+/**
+ * The countdown choice a submitted form actually made.
+ *
+ * A ticked box is an unambiguous yes. An unticked one submits nothing, so
+ * the marker above is what distinguishes "no, thank you" from a request
+ * that never carried the control: the latter leaves the choice unset, and
+ * the policy and the link's own delay go on deciding.
+ */
+function readChoice(body, name) {
+  if (body.get(name) === '1') return true;
+  return body.get('countdownSet') ? false : null;
 }
 
 
@@ -355,7 +370,12 @@ ${flashFrom(url)}
 async function newForm(ctx, { error, info, values = {} } = {}) {
   const { cfg } = ctx;
   const token = await formToken(ctx, 'link.create');
-  const chosenHost = values.host || ctx.host;
+  // A submitted host wins; failing that, `?host=` lets the links list link
+  // straight to "create on this domain", and the current host is the last
+  // resort. Which domain is chosen decides the policy the rest of the form
+  // is rendered against, so it has to be settled first.
+  const fromQuery = hostFilter(ctx, ctx.url);
+  const chosenHost = values.host || fromQuery || ctx.host;
   const dirs = ctx.isAdmin ? null : await creatableDirectories(cfg, chosenHost, ctx.session.user.id);
 
   const hostOptions = cfg.knownHosts
@@ -380,6 +400,23 @@ async function newForm(ctx, { error, info, values = {} } = {}) {
   // Creating in somebody else's name is the same power as transferring one
   // afterwards, and before the link exists only an administrator holds it.
   const mayTransfer = ctx.isAdmin;
+  // What the form is holding, shaped like a link so the countdown controls
+  // the editor uses can read it here too. Nothing is chosen on a first
+  // render, so the policy's own defaults show; after a rejected submit the
+  // booleans are back and the person's choice survives.
+  const pending = {
+    countdown: typeof values.countdown === 'boolean' ? values.countdown : null,
+    showTarget: typeof values.showTarget === 'boolean' ? values.showTarget : null,
+    delay: clampDelay(values.delay, 0),
+  };
+  // The shortcut is still being typed, so no directory is known: this is the
+  // domain's policy. A directory that narrows it is applied again when the
+  // form is submitted, which is where the path is finally settled.
+  const behaviour = resolveLink(
+    policyFor(chosenDomain, null),
+    pending,
+    userExemption(ctx.session.user, chosenHost)
+  );
 
   const body = `
 ${alert('error', error)}${alert('ok', info)}
@@ -423,17 +460,8 @@ ${qrFloat({ host: chosenHost })}
       placeholder: 'example.com/page',
       note: 'Without a scheme this becomes https://. Other schemes such as mailto: or slack:// are kept as written.',
     })}
-    <div class="row">
-      ${select({ name: 'status', label: 'Redirect code', value: values.status || 302, options: STATUS_OPTIONS })}
-      ${field({
-        name: 'delay',
-        label: 'Delay (seconds)',
-        type: 'number',
-        value: values.delay || 0,
-        attrs: `min="0" max="${MAX_DELAY_SECONDS}"`,
-        note: '0 redirects immediately; above 0 shows a countdown page first.',
-      })}
-    </div>
+    ${select({ name: 'status', label: 'Redirect code', value: values.status || 302, options: STATUS_OPTIONS })}
+    ${countdownControls(behaviour, pending)}
     <div class="row">
       ${field({
         name: 'activeFrom',
@@ -619,6 +647,8 @@ async function createSubmit(ctx) {
     target: body.get('target') || '',
     status: body.get('status'),
     delay: body.get('delay'),
+    countdown: readChoice(body, 'countdown'),
+    showTarget: readChoice(body, 'showTarget'),
     activeFrom: body.get('activeFrom') || '',
     expires: body.get('expires') || '',
     note: body.get('note') || '',
@@ -723,9 +753,22 @@ async function createSubmit(ctx) {
     owner = invited.user;
   }
 
+  // Only record a choice the policy actually leaves open, so a locked
+  // setting cannot be smuggled in by hand-posting the form. The shortcut is
+  // parsed by now, so the governing directory is known and this is exactly
+  // the check the editor makes on a save.
+  const delay = clampDelay(values.delay, domain.defaultDelay || 0);
+  const effective = resolveLink(
+    policyFor(domain, await governingDirectory(ctx.cfg, host, parsed.pathLc)),
+    { countdown: values.countdown, showTarget: values.showTarget, delay },
+    userExemption(ctx.session.user, host)
+  );
+
   const fields = {
     status: clampStatus(values.status, domain.defaultStatus || 302),
-    delay: clampDelay(values.delay, domain.defaultDelay || 0),
+    delay,
+    countdown: effective.countdownLocked ? null : values.countdown,
+    showTarget: effective.targetLocked ? null : values.showTarget,
     note: String(values.note).slice(0, 500),
     activeFrom,
     expiresAt,
@@ -1465,8 +1508,8 @@ async function editSubmit(ctx) {
   const dir = await governingDirectory(ctx.cfg, host, pathLc);
   const policy = policyFor(domain, dir);
   const effective = resolveLink(policy, link, userExemption(ctx.session.user, host));
-  link.countdown = effective.countdownLocked ? null : body.get('countdown') === '1';
-  link.showTarget = effective.targetLocked ? null : body.get('showTarget') === '1';
+  link.countdown = effective.countdownLocked ? null : readChoice(body, 'countdown');
+  link.showTarget = effective.targetLocked ? null : readChoice(body, 'showTarget');
   link.routing = cleanRouting(readRouting(body), {
     blockedSchemes: ctx.cfg.settings.blockedSchemes,
   });

@@ -475,6 +475,27 @@ Every URL in the table goes through the same validation as the main
 destination, so a device branch cannot smuggle in a scheme the main one
 forbids.
 
+**The create screen carries every setting the edit screen does**, bar the
+ones that need the record to exist first — renaming, moving, duplicating
+and deleting. That includes the owner (administrators only, through the
+same invite checks a later transfer would face), whether the link starts
+enabled, the preview card, and the QR centre image.
+
+**The QR code** appears beside the form as soon as there is a shortcut, on
+both screens, and updates as the shortcut or the domain changes. It encodes
+the short link rather than the destination, so it keeps working when the
+destination changes, and it is served for a shortcut that does not exist
+yet — which is what lets it fill in while somebody is still typing.
+
+Its centre can carry an uploaded image: PNG, JPEG, GIF or WebP, up to
+128 KB, sniffed by its leading bytes rather than its name or declared type.
+**An SVG is refused.** The code is itself an SVG and the image is inlined
+into it, so accepting one would mean serving attacker-chosen markup — which
+can carry script and remote references — from this origin. Whatever the
+image covers has to be reconstructed from the error correction, which is
+why choosing one raises durability to High and, on a small symbol, the
+version too.
+
 **Duplicating** a link copies everything except the shortcut and opens the
 create form. It needs the same standing as editing the original, since the
 copy reveals everything the original holds.

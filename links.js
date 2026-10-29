@@ -26,6 +26,8 @@ export function newLink(host, parsed, target, owner, overrides = {}) {
     status: 302,
     /** Seconds of countdown. 0 means "use the policy default". */
     delay: 0,
+    /** An uploaded image for the centre of the QR code. See qrlogo.js. */
+    qrLogo: null,
     /** null inherits the policy; true or false overrides it where allowed. */
     countdown: null,
     showTarget: null,

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { Harness } from './harness.js';
-import { serveAsset, ASSET_VERSION } from '../assets.js';
+import { CSS, JS, serveAsset, ASSET_VERSION } from '../assets.js';
 import { LOGO_SVG } from '../logo.js';
 
 let passed = 0;
@@ -55,6 +55,18 @@ ok('hub pages link the favicon', loginBody.includes('/__slink/logo.svg'));
 // The icon is same-origin, which img-src 'self' already permits.
 const csp = login.headers.get('Content-Security-Policy') || '';
 ok('CSP permits a same-origin icon', /img-src [^;]*'self'/.test(csp), csp);
+
+
+// The floating QR can actually hide itself.
+{
+  // An explicit display beats the browser's own [hidden] rule, so the
+  // stylesheet has to repeat it or the panel is stuck on screen.
+  ok('the panel has a display of its own', /\.qrfloat\{[^}]*display:block/.test(CSS));
+  ok('and a rule that lets it hide', /\.qrfloat\[hidden\][^{]*\{display:none\}/.test(CSS));
+  ok('the image inside can hide too', /\.qrfloat img\[hidden\]|img\[hidden\]\{display:none\}/.test(CSS));
+  ok('the script hides and shows it', JS.includes('qrBox.hidden = true') && JS.includes('qrBox.hidden = false'));
+  ok('and debounces rather than firing per keystroke', JS.includes('window.clearTimeout(timer)'));
+}
 
 console.log(`\nassets: ${passed} passed, ${failed} failed`);
 h.restore();

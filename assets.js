@@ -12,7 +12,7 @@ import { harden } from './security.js';
 export const ASSET_PREFIX = '/__slink';
 
 /** Bumped whenever the asset bodies change; used for immutable caching. */
-export const ASSET_VERSION = '8';
+export const ASSET_VERSION = '9';
 
 export const CSS = `
 :root{
@@ -49,6 +49,18 @@ nav.main a[aria-current=page]{background:var(--bg);color:var(--ink);font-weight:
 .hostpick select{width:auto;min-width:9.5rem;padding:5px 8px;font-size:13px;border-radius:7px}
 .hostpick .nojs{padding:5px 10px;font-size:13px}
 .js .hostpick .nojs{display:none}
+/* The QR that follows the shortcut field. Fixed beside the form on a wide
+   screen; above it on a narrow one, where there is no room to the side. */
+.qrfloat{display:block;margin:0 0 16px;padding:12px;border:1px solid var(--line);
+  border-radius:var(--radius);background:var(--panel);box-shadow:var(--shadow);text-align:center}
+/* An explicit display beats the browser's own [hidden] rule, so say it
+   again here or the panel can never hide itself. */
+.qrfloat[hidden],.qrfloat img[hidden]{display:none}
+.qrfloat img{display:block;width:150px;height:150px;margin:0 auto;border-radius:6px}
+.qrfloat .note{margin:8px 0 0;word-break:break-all}
+@media (min-width:1180px){
+  .qrfloat{position:fixed;top:96px;right:max(16px,calc(50vw - 520px - 182px));width:174px;margin:0;z-index:5}
+}
 .tip{display:inline-flex;align-items:center;justify-content:center;flex:none;
   width:16px;height:16px;margin-left:6px;border:1px solid var(--line);border-radius:50%;
   font-size:11px;line-height:1;color:var(--muted);cursor:help;user-select:none}
@@ -448,6 +460,68 @@ export const JS = `
           });
       });
     }
+  }
+
+  // The QR that follows the shortcut field.
+  //
+  // The code encodes the short URL, which is known from the form alone, so
+  // this works on the create screen before the link exists. It is filled in
+  // here rather than server-side because it has to track what is being
+  // typed, and it stays hidden until there is a shortcut to encode.
+  var qrBox = document.querySelector('[data-slink-qr]');
+  if (qrBox) {
+    var qrImg = qrBox.querySelector('img');
+    var qrLabel = qrBox.querySelector('[data-slink-qr-label]');
+    var pathField = document.querySelector(
+      '[name="' + (qrBox.getAttribute('data-path-field') || 'path') + '"]'
+    );
+    var hostField = document.querySelector('select[name="host"]');
+    var timer = null;
+
+    var currentHost = function () {
+      return (hostField && hostField.value) || qrBox.getAttribute('data-host') || '';
+    };
+
+    // The same shape the server accepts, so a half-typed path asks for
+    // nothing rather than producing a request that can only be refused.
+    var usable = function (value) {
+      var v = String(value || '').replace(/^\\/+|\\/+$/g, '');
+      return v !== '' && /^[A-Za-z0-9_-]+(\\/[A-Za-z0-9_-]+)*$/.test(v) ? v : '';
+    };
+
+    var paint = function () {
+      var path = usable(pathField && pathField.value);
+      var host = currentHost();
+      if (!path || !host) {
+        qrBox.hidden = true;
+        return;
+      }
+      var logo = qrBox.getAttribute('data-logo');
+      var src =
+        qrBox.getAttribute('data-base') +
+        '?host=' + encodeURIComponent(host) +
+        '&path=' + encodeURIComponent(path) +
+        '&size=300' +
+        (logo ? '&logo=' + encodeURIComponent(logo) : '');
+      if (qrImg) {
+        qrImg.hidden = false;
+        if (qrImg.getAttribute('src') !== src) qrImg.setAttribute('src', src);
+      }
+      if (qrLabel) qrLabel.textContent = host + '/' + path;
+      qrBox.hidden = false;
+    };
+
+    var schedule = function () {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(paint, 250);
+    };
+
+    if (pathField) {
+      pathField.addEventListener('input', schedule);
+      pathField.addEventListener('change', schedule);
+    }
+    if (hostField) hostField.addEventListener('change', schedule);
+    paint();
   }
 
   // Suggest the shortcut path from the destination when the field is empty.

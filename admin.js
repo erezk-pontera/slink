@@ -162,6 +162,9 @@ export const MESSAGES = {
   'passkey.renamed': ['ok', 'Passkey renamed.'],
   'passkey.added': ['ok', 'Passkey added. You can use it to sign in from now on.'],
   'passkey.noname': ['error', 'A passkey needs a name.'],
+  'qr.uploaded': ['ok', 'Centre image uploaded. The code now uses it.'],
+  'qr.removed': ['ok', 'Centre image removed.'],
+  'qr.toobig': ['error', 'That upload is too large.'],
   denied: ['error', 'You do not have permission to do that.'],
   csrf: ['error', 'That request could not be verified. Please try again.'],
   notfound: ['error', 'That item no longer exists.'],
@@ -276,6 +279,26 @@ export function denied(ctx, reason) {
 
 /** The largest form body any page here legitimately produces. */
 const MAX_FORM_BYTES = 64 * 1024;
+
+/**
+ * Parse a form that may carry a file.
+ *
+ * Only the two screens that accept an upload use this; everything else
+ * goes through readForm, which refuses anything but a urlencoded body on
+ * purpose. The declared length is checked before the body is buffered, so
+ * an oversized upload is turned away rather than read into memory.
+ */
+export async function readFormWithFiles(request, { maxBytes }) {
+  const type = request.headers.get('Content-Type') || '';
+  const declared = Number.parseInt(request.headers.get('Content-Length') || '', 10);
+  if (Number.isFinite(declared) && declared > maxBytes) return null;
+  if (!type.includes('multipart/form-data')) return readForm(request);
+  try {
+    return await request.formData();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Parse a form body, refusing anything that is not a urlencoded form or is

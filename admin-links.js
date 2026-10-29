@@ -7,7 +7,17 @@
  * by administrators alone.
  */
 
-import { adminPage, back, denied, flashFrom, formToken, hostFilter, hostsFor, readForm } from './admin.js';
+import {
+  adminPage,
+  back,
+  denied,
+  flashFrom,
+  formToken,
+  hostFilter,
+  hostsFor,
+  readForm,
+  readFormWithFiles,
+} from './admin.js';
 import { audit, EVENTS } from './audit.js';
 import { checkCsrf } from './auth.js';
 import { creatableDirectories, getDirectory, governingDirectory } from './directories.js';
@@ -38,6 +48,7 @@ import {
   qrSvg,
 } from './admin-qr.js';
 import { inviteAllowed } from './invites.js';
+import { hasLogo, makeLogo, MAX_LOGO_BYTES } from './qrlogo.js';
 import { clientIp } from './geo.js';
 import {
   clampDelay,
@@ -136,6 +147,30 @@ function countdownControls(behaviour, link) {
   return parts.join('\n');
 }
 
+
+/**
+ * The QR that follows the shortcut field.
+ *
+ * Rendered on both the create and the edit screen and filled in by the
+ * script as the shortcut is typed, which is why it carries the endpoint
+ * rather than a finished `src`: on the create screen there is no link yet,
+ * and the code encodes the short URL, which is known from the form alone.
+ * It starts hidden and stays hidden without JavaScript, where it could
+ * never update.
+ */
+function qrFloat({ host, path = '', pathField = 'path', logo = '' }) {
+  return `<aside class="qrfloat" hidden
+  data-slink-qr
+  data-base="/admin/links/qr"
+  data-path-field="${esc(pathField)}"
+  data-host="${esc(host)}"
+  data-logo="${esc(logo)}">
+  <img class="qr" alt="QR code for the short link" width="150" height="150"${
+    path ? '' : ' hidden'
+  }>
+  <p class="note" data-slink-qr-label></p>
+</aside>`;
+}
 
 /**
  * Said beside each framing checkbox rather than on the visitor's page.
@@ -338,15 +373,22 @@ async function newForm(ctx, { error, info, values = {} } = {}) {
     user: ctx.session.user,
     domain: chosenDomain,
   }).allowed;
+  // Said rather than hidden: the host is a picker on this form, so a card
+  // that is useless on the host currently selected may be exactly right on
+  // the one about to be chosen. The submit drops it where it does not apply.
   const previewBlocked = previewBlockedReason(parentDomain);
+  // Creating in somebody else's name is the same power as transferring one
+  // afterwards, and before the link exists only an administrator holds it.
+  const mayTransfer = ctx.isAdmin;
 
   const body = `
 ${alert('error', error)}${alert('ok', info)}
 <h1>Create a link</h1>
 <p class="sub">Shortcuts use letters, digits, underscore and hyphen. They are case-insensitive, so <code>Deck</code> and <code>deck</code> are the same link.</p>
 
+${qrFloat({ host: chosenHost })}
 <div class="card">
-  <form method="post" action="/admin/links/new">
+  <form method="post" action="/admin/links/new" enctype="multipart/form-data">
     ${csrfField(token)}
     <div class="row">
       <div class="field">
@@ -412,6 +454,26 @@ ${alert('error', error)}${alert('ok', info)}
       ${textarea({ name: 'note', label: 'Note (optional)', value: values.note || '' })}
     </div>
     ${checkbox({ name: 'forwardQuery', label: 'Append the incoming query string to the destination', checked: !!values.forwardQuery })}
+    ${hidden('enabledSet', '1')}${checkbox({
+      name: 'enabled',
+      label: 'Enabled',
+      checked: values.enabled !== false,
+      tooltip: 'A disabled link resolves to the domain\u2019s MISSING destination, the same as one that does not exist. Useful for preparing a link before it is announced.',
+    })}
+    ${
+      mayTransfer
+        ? field({
+            name: 'owner',
+            label: 'Owner (optional)',
+            type: 'email',
+            value: values.owner || '',
+            placeholder: ctx.session.user.email,
+            tooltip:
+              'Create the link in somebody else\u2019s name. Leave blank to own it yourself. ' +
+              'The same invite rules apply as when a link changes hands later.',
+          })
+        : ''
+    }
 
     <h2>Where different visitors go</h2>
     <p class="hint">All optional. A device slot left blank falls through to the main destination.</p>
@@ -447,15 +509,21 @@ ${alert('error', error)}${alert('ok', info)}
     ${routingFields(values.routing, { frame: values.frame, mayFrame })}
 
     <h2>Preview card</h2>
-    ${
-      previewBlocked
-        ? `<p class="note">${esc(previewBlocked)}</p>`
-        : `<p class="hint">Shown when something like Slack or Twitter unfurls this link.</p>
+    <p class="hint">Shown when something like Slack or Twitter unfurls this link.${
+      previewBlocked ? ' ' + esc(previewBlocked) : ''
+    }</p>
     ${checkbox({ name: 'previewEnabled', label: 'Use a preview card for this link', checked: !!preview.enabled })}
     ${field({ name: 'previewTitle', label: 'Title', value: preview.title })}
     ${textarea({ name: 'previewDescription', label: 'Description', value: preview.description })}
-    ${field({ name: 'previewImage', label: 'Image URL', value: preview.image, placeholder: 'https://example.com/card.png', note: 'Must be https.' })}`
-    }
+    ${field({ name: 'previewImage', label: 'Image URL', value: preview.image, placeholder: 'https://example.com/card.png', note: 'Must be https.' })}
+    <h2>QR code</h2>
+    <p class="hint">The code appears beside this form as soon as there is a shortcut, and encodes the short link rather than the destination, so it keeps working if the destination changes. Its size and durability are chosen on the edit screen afterwards.</p>
+    <div class="field">
+      <label for="f_qrimage">Centre image (optional)</label>
+      <input id="f_qrimage" name="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
+      <p class="note">PNG, JPEG, GIF or WebP, up to ${MAX_LOGO_BYTES / 1024}&nbsp;KB. An SVG is a document rather than a picture, so it is not accepted.</p>
+    </div>
+
     ${
       canSetReadonly(ctx.cfg, ctx.session.user)
         ? checkbox({
@@ -535,7 +603,7 @@ const UTC_HINT =
   'instant to everyone who edits it. Leave blank for none.';
 
 async function createSubmit(ctx) {
-  const body = await readForm(ctx.request);
+  const body = await readFormWithFiles(ctx.request, { maxBytes: MAX_LOGO_BYTES + 64 * 1024 });
   if (!body) return back('/admin/links', 'csrf');
   const guard = await checkCsrf(ctx, 'link.create', body);
   if (!guard.ok) return back('/admin/links/new', 'csrf');
@@ -555,6 +623,11 @@ async function createSubmit(ctx) {
     expires: body.get('expires') || '',
     note: body.get('note') || '',
     forwardQuery: body.get('forwardQuery') === '1',
+    // An unticked checkbox submits nothing, so a hidden marker says whether
+    // the form carried the control at all. Without it, any caller posting a
+    // form without the field would silently create a disabled link.
+    enabled: body.get('enabledSet') ? body.get('enabled') === '1' : true,
+    owner: String(body.get('owner') || '').trim(),
     readonly: body.get('readonly') === '1',
     routing: readRouting(body),
     frame: readFrame(body),
@@ -614,6 +687,42 @@ async function createSubmit(ctx) {
   const clash = await getDirectory(ctx.cfg, host, parsed.pathLc);
   if (clash) return newForm(ctx, { error: 'A directory already uses that path.', values });
 
+  // Creating the link in somebody else's name, which goes through exactly
+  // the checks a later transfer would: only an administrator may do it, the
+  // invite policy decides whether that address may be given anything here,
+  // and the recipient must be someone who could have created it themselves.
+  let owner = ctx.session.user;
+  if (values.owner) {
+    if (!ctx.isAdmin) return newForm(ctx, { error: 'Only an administrator can set the owner.', values });
+    let recipientEmail;
+    try {
+      recipientEmail = normalizeEmail(values.owner, ctx.cfg.emailOpts);
+    } catch (err) {
+      return newForm(ctx, { error: err.message, values });
+    }
+    const invite = await inviteAllowed(ctx.cfg, {
+      host,
+      domain,
+      pathLc: parsed.pathLc,
+      emailNorm: recipientEmail.emailNorm,
+    });
+    if (!invite.allowed) return newForm(ctx, { error: invite.reason, values });
+    const invited = await inviteUser(ctx.cfg, {
+      email: recipientEmail.email,
+      emailNorm: recipientEmail.emailNorm,
+      invitedBy: ctx.session.user,
+    });
+    const receive = await canReceiveTransfer(ctx.cfg, {
+      actor: ctx.session.user,
+      recipient: invited.user,
+      domain,
+      host,
+      pathLc: parsed.pathLc,
+    });
+    if (!receive.allowed) return newForm(ctx, { error: receive.reason, values });
+    owner = invited.user;
+  }
+
   const fields = {
     status: clampStatus(values.status, domain.defaultStatus || 302),
     delay: clampDelay(values.delay, domain.defaultDelay || 0),
@@ -621,6 +730,7 @@ async function createSubmit(ctx) {
     activeFrom,
     expiresAt,
     forwardQuery: values.forwardQuery,
+    enabled: values.enabled,
     readonly: canSetReadonly(ctx.cfg, ctx.session.user) ? values.readonly : false,
     routing,
     // Framing is only stored where the person creating the link may use it,
@@ -630,6 +740,21 @@ async function createSubmit(ctx) {
       : {},
     preview: previewBlockedReason(domain) ? emptyPreview() : normalizePreview(values.preview),
   };
+
+  // An uploaded centre image, through exactly the checks the edit screen
+  // applies: the bytes are sniffed, not the name or the declared type.
+  const upload = body.get('image');
+  if (upload && typeof upload !== 'string' && typeof upload.arrayBuffer === 'function' && upload.size > 0) {
+    if (upload.size > MAX_LOGO_BYTES) {
+      return newForm(ctx, {
+        error: `That image is ${Math.ceil(upload.size / 1024)} KB. The limit is ${MAX_LOGO_BYTES / 1024} KB.`,
+        values,
+      });
+    }
+    const made = makeLogo(new Uint8Array(await upload.arrayBuffer()));
+    if (!made.ok) return newForm(ctx, { error: made.error, values });
+    fields.qrLogo = made.logo;
+  }
 
   // Same reasoning as framing: a submitted password only lands where the
   // person creating the link may actually use one.
@@ -648,7 +773,7 @@ async function createSubmit(ctx) {
   // nothing at all.
   if (values.also && values.also.length) {
     const result = await createEverywhere(ctx.cfg, {
-      user: ctx.session.user,
+      user: owner,
       hosts: [host, ...values.also],
       rawPath: values.path,
       fields: { ...fields, target: destination.target },
@@ -671,7 +796,7 @@ async function createSubmit(ctx) {
     return back(linkEditHref(host, parsed.pathLc), 'link.createdMany');
   }
 
-  const link = newLink(host, parsed, destination.target, ctx.session.user, fields);
+  const link = newLink(host, parsed, destination.target, owner, fields);
   await putLink(ctx.cfg, link);
 
   ctx.waitUntil(
@@ -695,27 +820,23 @@ function reservedFor(ctx, host) {
 /* ------------------------------------------------------------------- qr */
 
 /** The QR card on the edit screen: a live preview and the download link. */
-function qrCard(host, link, url) {
+function qrCard(host, link, url, { uploadToken, appName }) {
   const base =
     '/admin/links/qr?host=' + encodeURIComponent(host) + '&path=' + encodeURIComponent(link.pathLc);
+  const uploaded = hasLogo(link);
+  const rawLogo = url.searchParams.get('qrlogo') || (uploaded ? 'custom' : '');
   const current = {
     size: url.searchParams.get('qrsize') || String(DEFAULT_SIZE),
     ecc: url.searchParams.get('qrecc') || 'M',
-    logo: url.searchParams.get('qrlogo') === '1',
+    logo: rawLogo === '1' || (rawLogo === 'custom' && uploaded) ? rawLogo : '',
     scale: url.searchParams.get('qrscale') || String(DEFAULT_LOGO_SCALE),
   };
-  const src =
-    base +
-    '&size=512&ecc=' +
-    encodeURIComponent(current.ecc) +
-    (current.logo ? '&logo=1&logoscale=' + encodeURIComponent(current.scale) : '');
+  const logoQuery = current.logo
+    ? '&logo=' + encodeURIComponent(current.logo) + '&logoscale=' + encodeURIComponent(current.scale)
+    : '';
+  const src = base + '&size=512&ecc=' + encodeURIComponent(current.ecc) + logoQuery;
   const download =
-    base +
-    '&size=' +
-    encodeURIComponent(current.size) +
-    '&ecc=' +
-    encodeURIComponent(current.ecc) +
-    (current.logo ? '&logo=1&logoscale=' + encodeURIComponent(current.scale) : '');
+    base + '&size=' + encodeURIComponent(current.size) + '&ecc=' + encodeURIComponent(current.ecc) + logoQuery;
 
   return `<div class="card">
   <h2>QR code</h2>
@@ -742,10 +863,20 @@ function qrCard(host, link, url) {
         value: current.size,
         options: QR_SIZES.map((n) => ({ value: String(n), label: n + ' px' })),
       })}
-      ${checkbox({ name: 'qrlogo', label: 'Logo in the centre', checked: current.logo })}
+      ${select({
+        name: 'qrlogo',
+        label: 'Centre image',
+        value: current.logo,
+        options: [
+          { value: '', label: 'None' },
+          { value: '1', label: 'The ' + appName + ' mark' },
+          ...(uploaded ? [{ value: 'custom', label: 'The image you uploaded' }] : []),
+        ],
+        note: uploaded ? '' : 'Upload one below to use your own.',
+      })}
       ${select({
         name: 'qrscale',
-        label: 'Logo size',
+        label: 'Image size',
         value: current.scale,
         options: LOGO_SCALES.map((n) => ({ value: String(n), label: Math.round(n * 100) + '% of the code' })),
       })}
@@ -755,6 +886,30 @@ function qrCard(host, link, url) {
       </div>
     </form>
   </div>
+
+  <h3>Your own centre image</h3>
+  <p class="hint">PNG, JPEG, GIF or WebP, up to ${MAX_LOGO_BYTES / 1024}&nbsp;KB. An SVG is a document rather than a picture, so it is not accepted. A square image with a clear margin reads best; whatever it covers has to be reconstructed from the error correction, which is why choosing one raises durability to High.</p>
+  <form method="post" action="/admin/links/qrlogo" enctype="multipart/form-data">
+    ${csrfField(uploadToken)}${hidden('host', host)}${hidden('path', link.pathLc)}
+    <div class="field">
+      <label for="f_qrimage">Image file</label>
+      <input id="f_qrimage" name="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
+    </div>
+    <div class="actions">
+      <button type="submit" class="secondary">Upload</button>
+    </div>
+  </form>
+  ${
+    uploaded
+      ? `<form method="post" action="/admin/links/qrlogo" data-confirm="Remove the uploaded centre image?">
+    ${csrfField(uploadToken)}${hidden('host', host)}${hidden('path', link.pathLc)}${hidden('remove', '1')}
+    <p class="note">Using an uploaded ${esc(link.qrLogo.type.replace('image/', '').toUpperCase())} of ${Math.ceil(
+          (link.qrLogo.bytes || 0) / 1024
+        )}&nbsp;KB.</p>
+    <div class="actions"><button type="submit" class="link">Remove it</button></div>
+  </form>`
+      : ''
+  }
 </div>`;
 }
 
@@ -815,6 +970,7 @@ async function editForm(ctx, { error, info } = {}) {
   const dupToken = await formToken(ctx, 'link.duplicate');
   const passwordToken = await formToken(ctx, 'link.password');
   const moveHostToken = await formToken(ctx, 'link.move');
+  const qrLogoToken = await formToken(ctx, 'link.qrlogo');
   const shortUrl = 'https://' + host + '/' + link.path;
   const mayReadonly = canSetReadonly(cfg, ctx.session.user);
 
@@ -837,6 +993,12 @@ async function editForm(ctx, { error, info } = {}) {
 
   const body = `
 ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}${maskWarning}
+${qrFloat({
+    host,
+    path: link.path,
+    pathField: 'newpath',
+    logo: hasLogo(link) ? 'custom' : '',
+  })}
 <h1>${esc(host)}/${esc(link.path)}</h1>
 <p class="sub">${statusBadges(link) || 'Active'} &middot; created ${esc(fmtTime(link.createdAt))} &middot;
 <span title="Simultaneous arrivals can overwrite one another, so this is a floor rather than an exact count.">${esc(
@@ -974,7 +1136,7 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}${maskWarning}
   }
 </div>
 
-${qrCard(host, link, url)}
+${qrCard(host, link, url, { uploadToken: qrLogoToken, appName: cfg.appName })}
 
 <div class="card">
   <h2>Hits</h2>
@@ -1111,6 +1273,67 @@ async function moveSubmit(ctx) {
     })
   );
   return back(linkEditHref(toHost, result.link.pathLc), 'link.moved2');
+}
+
+/**
+ * Accept the uploaded centre image, or remove the stored one.
+ *
+ * This is the only multipart endpoint here, so it reads the body itself
+ * rather than through readForm, which deliberately refuses anything that
+ * is not a urlencoded form. The declared length is checked before the body
+ * is buffered, and the bytes are sniffed afterwards: see qrlogo.js for why
+ * the format matters rather than the file name.
+ */
+async function qrLogoSubmit(ctx) {
+  // A little headroom over the image limit for the multipart envelope.
+  const body = await readFormWithFiles(ctx.request, { maxBytes: MAX_LOGO_BYTES + 16 * 1024 });
+  if (!body) return back('/admin/links', 'qr.toobig');
+
+  const guard = await checkCsrf(ctx, 'link.qrlogo', body);
+  if (!guard.ok) return back('/admin/links', 'csrf');
+
+  const host = String(body.get('host') || '');
+  const pathLc = String(body.get('path') || '').toLowerCase();
+  const link = await getLink(ctx.cfg, host, pathLc);
+  if (!link) return back('/admin/links', 'notfound');
+
+  const permit = await canManageLink(ctx.cfg, { user: ctx.session.user, link, host });
+  if (!permit.allowed) return denied(ctx, permit.reason);
+
+  ctx.url.searchParams.set('host', host);
+  ctx.url.searchParams.set('path', pathLc);
+
+  if (body.get('remove')) {
+    link.qrLogo = null;
+    await putLink(ctx.cfg, link);
+    return back(linkEditHref(host, pathLc), 'qr.removed');
+  }
+
+  const file = body.get('image');
+  if (!file || typeof file === 'string' || typeof file.arrayBuffer !== 'function') {
+    return editForm(ctx, { error: 'Choose an image file to upload.' });
+  }
+  if (file.size > MAX_LOGO_BYTES) {
+    return editForm(ctx, {
+      error: `That image is ${Math.ceil(file.size / 1024)} KB. The limit is ${MAX_LOGO_BYTES / 1024} KB.`,
+    });
+  }
+  const made = makeLogo(new Uint8Array(await file.arrayBuffer()));
+  if (!made.ok) return editForm(ctx, { error: made.error });
+
+  link.qrLogo = made.logo;
+  await putLink(ctx.cfg, link);
+  ctx.waitUntil(
+    audit(ctx.cfg, {
+      event: EVENTS.linkUpdated,
+      actor: ctx.session.user,
+      host,
+      ip: clientIp(ctx.request),
+      object: pathLc,
+      detail: { qrLogo: made.logo.type, bytes: made.logo.bytes },
+    })
+  );
+  return back(linkEditHref(host, pathLc), 'qr.uploaded');
 }
 
 /** Set, change or clear a link's password. */
@@ -1456,6 +1679,7 @@ export async function adminLinks(ctx, path) {
   if (path === '/admin/links/duplicate' && method === 'POST') return duplicateSubmit(ctx);
   if (path === '/admin/links/qr') return qrSvg(ctx);
   if (path === '/admin/links/password' && method === 'POST') return passwordSubmit(ctx);
+  if (path === '/admin/links/qrlogo' && method === 'POST') return qrLogoSubmit(ctx);
   if (path === '/admin/links/move' && method === 'POST') return moveSubmit(ctx);
   return back('/admin/links');
 }

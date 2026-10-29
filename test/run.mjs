@@ -27,6 +27,7 @@ const suites = [
   'test/frame.test.mjs',
   'test/passkeys.test.mjs',
   'test/rotation.test.mjs',
+  'test/qrlogo.test.mjs',
 ];
 
 let bad = 0;

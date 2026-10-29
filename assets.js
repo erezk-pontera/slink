@@ -11,8 +11,9 @@ import { harden } from './security.js';
 
 export const ASSET_PREFIX = '/__slink';
 
-/** Bumped whenever the asset bodies change; used for immutable caching. */
-export const ASSET_VERSION = '11';
+// ASSET_VERSION is derived from the asset bodies themselves, further down,
+// once they exist. It used to be a number to bump by hand and it was never
+// bumped: see the note there for what that cost.
 
 export const CSS = `
 :root{
@@ -696,6 +697,48 @@ export const JS = `
   }
 })();
 `.trim();
+
+/**
+ * The cache key for the three static assets, derived from the assets.
+ *
+ * This was a number to bump by hand whenever their bodies changed. It was
+ * never once bumped -- it read `11` from the first commit of this
+ * repository to the day this was written -- while the stylesheet under it
+ * was rewritten repeatedly. They are served `immutable` for a year, so
+ * every browser holding a copy kept a stylesheet that no longer matched
+ * the markup, and a CSS fix could be deployed, verified in the file, and
+ * still be invisible to the person who reported the bug. A step that must
+ * be remembered on every change to a file that changes often is a step
+ * that will be missed; this cannot be.
+ *
+ * FNV-1a over the bodies: not a secure digest, and it does not need to be.
+ * The only requirement is that it changes when they change, and that it
+ * does not change when they do not, so `immutable` keeps on meaning it.
+ */
+export function assetVersion(...parts) {
+  let hash = 0x811c9dc5;
+  // The FNV prime, by shifts, so this stays in 32 bits without rounding
+  // through a double on the way.
+  const mix = (code) => {
+    hash ^= code;
+    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+  };
+  for (const part of parts) {
+    // Each body's length goes in ahead of the body. Without it the parts
+    // are one run of characters, and a byte moving across the join between
+    // two of them cancels out: a change to both files that happened to
+    // balance would keep the old version and the old cached copy.
+    const n = part.length;
+    mix(n & 0xff);
+    mix((n >>> 8) & 0xff);
+    mix((n >>> 16) & 0xff);
+    mix((n >>> 24) & 0xff);
+    for (let i = 0; i < n; i++) mix(part.charCodeAt(i));
+  }
+  return hash.toString(36);
+}
+
+export const ASSET_VERSION = assetVersion(CSS, JS, LOGO_SVG);
 
 /**
  * Serve a static asset, or null when the path is not one.

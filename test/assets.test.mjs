@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { Harness } from './harness.js';
-import { CSS, JS, serveAsset, ASSET_VERSION } from '../assets.js';
+import { assetVersion, CSS, JS, serveAsset, ASSET_VERSION } from '../assets.js';
 import { LOGO_SVG } from '../logo.js';
 
 let passed = 0;
@@ -17,6 +17,26 @@ const onDisk = fs.readFileSync(new URL('../logo.svg', import.meta.url), 'utf8');
 ok('logo.js matches logo.svg', LOGO_SVG.trim() === onDisk.trim(),
    `js=${LOGO_SVG.length} svg=${onDisk.length} - regenerate logo.js from logo.svg`);
 ok('logo carries no script', !/<script|javascript:|onload=/i.test(LOGO_SVG));
+
+// The cache key for the assets, which are served immutable for a year.
+//
+// It was a number to bump by hand and was never bumped once, so a browser
+// holding a copy kept a stylesheet that no longer matched the markup: a CSS
+// fix could be deployed, be correct in the file, and still not reach the
+// person who reported it. These check it is derived rather than declared.
+{
+  ok('the version is stable for the same bodies',
+     assetVersion('a', 'b') === assetVersion('a', 'b'));
+  ok('and moves when any body does',
+     assetVersion(CSS, JS) !== assetVersion(CSS + ' ', JS));
+  ok('each body is part of it, not just the first',
+     assetVersion(CSS, JS) !== assetVersion(CSS, JS + ' '));
+  ok('a boundary between bodies is not a place to hide a change',
+     assetVersion('ab', 'c') !== assetVersion('a', 'bc'));
+  ok('the live version is the one the bodies give',
+     ASSET_VERSION === assetVersion(CSS, JS, LOGO_SVG), ASSET_VERSION);
+  ok('and it is no longer the literal that never moved', ASSET_VERSION !== '11');
+}
 
 const direct = serveAsset('/__slink/logo.svg');
 ok('logo route exists', !!direct && direct.status === 200);

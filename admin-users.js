@@ -16,11 +16,13 @@ import { ANY_HOST, EXEMPTIBLE, normalizeExempt } from './interstitial.js';
 import { PROVIDERS } from './mailer.js';
 import {
   disabledMethodsFor,
+  hasOauthSecret,
   normalizeDisabledMethods,
   normalizeOauth,
   oauthMissing,
   oauthReady,
   oauthSettings,
+  sealOauthSecret,
 } from './oauth.js';
 import { DEFAULT_BLOCKED_SCHEMES, normalizeEmail, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
@@ -413,6 +415,8 @@ async function settingsPage(ctx, { error } = {}) {
   // screen must report what is in force, not an empty default that would
   // turn both back on the moment anything else here is saved.
   const signInOff = disabledMethodsFor(cfg, await resolveDomain(cfg, cfg.hubHost));
+  // Whether one is stored, which is all this screen ever learns about it.
+  const secretStored = !!oauthSettings(cfg).secret;
 
   const body = `
 ${flashFrom(url)}${alert('error', error)}
@@ -543,6 +547,22 @@ ${flashFrom(url)}${alert('error', error)}
     ${field({ name: 'oauthLabel', label: 'Button label', value: oauth.label, placeholder: 'Okta' })}
     ${field({ name: 'oauthClientId', label: 'Client ID', value: oauth.clientId })}
     ${field({
+      name: 'oauthClientSecret',
+      label: 'Client secret',
+      type: 'password',
+      value: '',
+      placeholder: secretStored ? 'stored \u2014 leave blank to keep it' : 'not set',
+      attrs: 'autocomplete="off"',
+      note: secretStored
+        ? 'Stored sealed, and never read back onto this screen. Type a new one to replace it.'
+        : 'Sealed under AUTH_SECRET before it is stored, so reading the key-value namespace is not enough to have it. The oauth-secret environment variable is still used when this is empty.',
+    })}
+    ${
+      secretStored
+        ? checkbox({ name: 'oauthClientSecretClear', label: 'Forget the stored client secret' })
+        : ''
+    }
+    ${field({
       name: 'oauthAuthorizeUrl',
       label: 'Authorization endpoint',
       value: oauth.authorizeUrl,
@@ -559,8 +579,8 @@ ${flashFrom(url)}${alert('error', error)}
     <p class="note">The one redirect URI to register with the provider: <code>https://${esc(
       cfg.hubHost
     )}/__slink/oauth/callback</code>. Signing in happens on this host alone and the others arrive through the handshake, so registering any of them would hold a redirect URI open for a route that is not served.</p>
-    <p class="note">The client secret has no field here, and never will: it is the <code>oauth-secret</code> environment variable, set with <code>wrangler secret put oauth-secret</code>, so it is never written to this record or shown on this screen. It is ${
-      cfg.oauthSecret ? 'set.' : '<strong>not set.</strong>'
+    <p class="note">The client secret is sealed under <code>AUTH_SECRET</code> before it is stored and is never read back onto this screen, so rotating <code>AUTH_SECRET</code> without <code>AUTH_SECRET_PREVIOUS</code> strands it exactly as it stands a link password. Leaving it set here as <code>oauth-secret</code> in the environment works too, and the stored one wins. It is ${
+      hasOauthSecret(cfg) ? 'set.' : '<strong>not set.</strong>'
     }${
       // Saying which piece is missing gives away nothing a visitor could use
       // and saves working through four fields and a deploy to find out.
@@ -598,7 +618,21 @@ async function settingsSubmit(ctx) {
   if (!guard.ok) return back('/admin/settings', 'csrf');
 
   const num = (name, fallback, min, max) => intEnv(body.get(name), fallback, min, max);
+  // Blank means "leave it as it is", which is what a write-only field has
+  // to mean: the screen never shows the stored value, so an empty box is
+  // the normal state of a form somebody opened to change something else.
+  // Clearing it is therefore its own checkbox rather than an empty save.
+  const typedSecret = String(body.get('oauthClientSecret') || '');
+  const clearSecret = body.get('oauthClientSecretClear') === '1';
+  const keptSecret = oauthSettings(ctx.cfg).secret || '';
+  const secret = clearSecret
+    ? ''
+    : typedSecret
+      ? await sealOauthSecret(ctx.cfg, typedSecret)
+      : keptSecret;
+
   const oauth = normalizeOauth({
+    secret,
     enabled: body.get('oauthEnabled') === '1',
     label: body.get('oauthLabel'),
     clientId: body.get('oauthClientId'),

@@ -4,5 +4,6 @@ AUTH_SECRET="generate-with-openssl-rand-base64-48"
 turnstile-sitekey="your-existing-widget-sitekey"
 turnstile-secret="your-existing-widget-secret"
 
-# Only needed when single sign-on is switched on in /admin/settings.
+# Single sign-on's client secret. /admin/settings holds one too, sealed, and
+# the stored one wins; this is for keeping it out of the settings record.
 oauth-secret=

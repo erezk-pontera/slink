@@ -166,9 +166,16 @@ section('the sign-in page');
 section('the settings screen names one redirect URI');
 {
   const page = await (await root.req('https://ptra.dev/admin/settings')).text();
-  ok('the hub is named', page.includes('https://ptra.dev/__slink/oauth/callback'));
-  ok('and no other host is', !page.includes('https://ptra.cc/__slink/oauth/callback'),
-     'a host that does not serve the callback was offered for registration');
+  // Every callback URI the screen offers, collected and compared as a set.
+  // Asking whether one URL appears somewhere in the markup answers a
+  // narrower question than the one worth asking: naming a second host is
+  // the mistake, so the count is the assertion, and it holds however many
+  // domains the installation grows.
+  const offered = [...page.matchAll(/https:\/\/([a-z0-9.-]+)\/__slink\/oauth\/callback/g)]
+    .map((m) => m[1]);
+  ok('exactly one redirect URI is offered', offered.length === 1,
+     offered.length ? offered.join(', ') : 'none at all');
+  ok('and it is the hub', offered[0] === 'ptra.dev', String(offered[0]));
 }
 
 /* ------------------------------------------------------ 3. the handshake */

@@ -116,20 +116,32 @@ export function oauthReady(cfg) {
 }
 
 /**
- * Which sign-in methods this host offers to this person.
+ * The sign-in routes this installation switches off.
  *
- * A host may switch off the one-time code, the passkey, or both, once
- * single sign-on is working. That never applies to an administrator: taking
- * away every other route would mean an outage at the identity provider
- * locks the people who could fix it out of their own hub.
+ * One setting for the whole installation, which is what it always
+ * effectively was: signing in happens on the hub and every other host hands
+ * it there, so only the hub's copy of the old per-domain list ever decided
+ * anything. Until the settings screen is saved once, that copy is still what
+ * is read - `domain` here is the host being signed in to - so moving the
+ * control changes where it is edited and not what it currently says.
+ */
+export function disabledMethodsFor(cfg, domain) {
+  const chosen = cfg && cfg.settings && cfg.settings.disabledMethodsSet;
+  const raw = chosen ? cfg.settings.disabledMethods : domain && domain.disabledMethods;
+  return normalizeDisabledMethods(raw);
+}
+
+/**
+ * Which sign-in methods this installation offers to this person.
+ *
+ * It may switch off the one-time code, the passkey, or both, once single
+ * sign-on is working. That never applies to an administrator: taking away
+ * every other route would mean an outage at the identity provider locks the
+ * people who could fix it out of their own hub.
  */
 export function methodsFor(cfg, domain, { isAdmin = false } = {}) {
   const sso = oauthReady(cfg);
-  const disabled = new Set(
-    sso && !isAdmin && Array.isArray(domain && domain.disabledMethods)
-      ? domain.disabledMethods.filter((m) => m !== 'oauth')
-      : []
-  );
+  const disabled = new Set(sso && !isAdmin ? disabledMethodsFor(cfg, domain) : []);
   return {
     oauth: sso,
     otp: !disabled.has('otp'),

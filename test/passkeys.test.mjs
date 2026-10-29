@@ -479,7 +479,13 @@ section('a host may switch them off');
   };
   const noProvider = { hubHost: 'ptra.dev', oauthSecret: 'secret', settings: {} };
   ok('on by default', passkeysEnabled(cfg, {}) === true);
-  ok('a host may turn them off', passkeysEnabled(cfg, { disabledMethods: ['passkey'] }) === false);
+  ok('a stored per-domain block still reads until it is chosen centrally',
+     passkeysEnabled(cfg, { disabledMethods: ['passkey'] }) === false);
+  ok('and the installation-wide setting answers once it is',
+     passkeysEnabled(
+       { ...cfg, settings: { ...cfg.settings, disabledMethods: ['passkey'], disabledMethodsSet: true } },
+       {}
+     ) === false);
   ok('an administrator keeps them',
      passkeysEnabled(cfg, { disabledMethods: ['passkey'] }, { isAdmin: true }) === true);
   ok('turning them off needs a working provider',
@@ -501,23 +507,13 @@ section('a host may switch them off');
     }
     return root.req(HUB + '/admin/settings', { form: { ...form, ...extra } });
   };
-  const setDomain = async (extra) => {
-    const url = HUB + '/admin/domains/edit?host=ptra.dev';
-    const tok = Harness.csrfFor(await (await root.req(url)).text(), '/admin/domains/edit');
-    return root.req(HUB + '/admin/domains/edit', {
-      form: {
-        _csrf: tok, host: 'ptra.dev', defaultStatus: '302', rootCreatePolicy: 'email_domain',
-        enabled: '1', authRequired: '1', allowedAuthDomains: 'pontera.com', ...extra,
-      },
-    });
-  };
   await setProvider({
     oauthEnabled: '1', oauthLabel: 'Example SSO', oauthClientId: 'client-123',
     oauthAuthorizeUrl: 'https://idp.example/authorize',
     oauthTokenUrl: 'https://idp.example/token',
     oauthUserinfoUrl: 'https://idp.example/me',
   });
-  await setDomain({ disable_passkey: '1' });
+  await setProvider({ disablePasskey: '1' });
 
   const guest = peer(root);
   const page = await (await guest.req(HUB + '/admin')).text();
@@ -545,7 +541,7 @@ section('a host may switch them off');
   const allowed = await signInWith(adminBrowser, adminAuth, { from: '/admin?otp=1' });
   ok('an administrator still can', allowed.body.ok === true, JSON.stringify(allowed.body));
 
-  await setDomain({});
+  await setProvider({ disablePasskey: '' });
   const back = await (await peer(root).req(HUB + '/admin')).text();
   ok('turning it back on restores the button', back.includes('data-slink-passkey-login'));
   await setProvider({ oauthEnabled: '' });

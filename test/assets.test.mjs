@@ -102,8 +102,36 @@ ok('CSP permits a same-origin icon', /img-src [^;]*'self'/.test(csp), csp);
 
   // The floating QR only pins itself where there is room beside the column.
   ok('the QR floats rather than taking a band', /\.qrfloat\{[^}]*float:right/.test(CSS));
-  ok('and pins only on a wide screen', /@media \(min-width:14\d\dpx\)\{\s*\.qrfloat\{position:fixed/.test(CSS),
-     (CSS.match(/@media \(min-width:\d+px\)\{\s*\.qrfloat[^}]*\}/) || [''])[0]);
+
+  // Checked as arithmetic rather than as a number somebody has to remember:
+  // the panel hangs off the edge of the window exactly when the breakpoint
+  // is narrower than the column, the panel and the gap between them need.
+  const pin = CSS.match(/@media \(min-width:(\d+)px\)\{\s*\.qrfloat\{position:fixed[^}]*\}/);
+  ok('it pins on a wide screen', !!pin, 'no pinned rule found at all');
+  const wrapMax = Number((CSS.match(/\.wrap\{max-width:(\d+)px/) || [])[1]);
+  const panel = Number((CSS.match(/\.qrfloat\{[^}]*width:(\d+)px/) || [])[1]);
+  const offset = Number((pin && pin[0].match(/left:calc\(50% \+ (\d+)px\)/) || [])[1]);
+  ok('the panel clears the content column', offset >= wrapMax / 2,
+     `offset ${offset} against half a column of ${wrapMax / 2}`);
+  ok('and the breakpoint is wide enough to hold both',
+     Number(pin && pin[1]) >= 2 * (offset + panel),
+     `breakpoint ${pin && pin[1]} needs ${2 * (offset + panel)}`);
+
+  // Measured from the centre, not the edge: vw counts the scrollbar and the
+  // media query does not, so the pair of them cannot be mixed.
+  ok('it is offset from the centre rather than the viewport edge',
+     !!pin && !/vw/.test(pin[0]), pin && pin[0]);
+
+  // Both codes carry class="qr", at two sizes. An unscoped `img.qr` ties
+  // with `.qrfloat img` on specificity, so source order decides, and the
+  // big one drew inside the small panel and hung out over the page. Each
+  // rule names the container it belongs to, so neither can reach the other.
+  const big = CSS.match(/([^{}]*)img\.qr\{[^}]*width:220px/);
+  ok('the 220 code is scoped to its own card', !!big && /\.qrwrap\s*$/.test(big[1]),
+     big ? `selector was "${big[1].trim()}img.qr"` : 'no 220px rule found');
+  const panelImg = CSS.match(/\.qrfloat img\{[^}]*width:(\d+)px/);
+  ok('and the panel code is smaller than the panel', !!panelImg && !!panel &&
+     Number(panelImg[1]) <= panel, `${panelImg && panelImg[1]} inside ${panel}`);
 }
 
 // Copy and duplicate must not read as the same glyph.

@@ -243,14 +243,19 @@ OAuth 2.0 Authorization Code with PKCE (S256). **One provider for the whole
 installation**, configured in `/admin/settings` — not per domain. Signing in
 happens on the hub and every other host arrives through the handshake above,
 so a provider enabled on one domain and not another was a distinction
-without a difference. What *is* per domain is whether that host also offers
-the emailed code and passkeys, which stays on the domain screen.
+without a difference. Whether the emailed code and passkeys are also
+offered is set in the same place and for the same reason: only the hub's
+copy of that switch ever decided anything, because the hub is where signing
+in happens.
 
 The client secret is the `oauth-secret` environment variable and is sent only
 in a token-exchange request body, never in a URL. Endpoints must be HTTPS and
 are refused if they resolve to a private address, because they are fetched
-with that secret attached. The redirect URI is
-`https://<host>/__slink/oauth/callback`, registered once per host.
+with that secret attached. There is one redirect URI to register,
+`https://<hub>/__slink/oauth/callback`, because both legs of the handshake
+are served on the hub alone: signing in happens there and every other host
+arrives through the single-sign-on handshake above. Registering the other
+hosts would hold a redirect URI open for a route they do not serve.
 
 **The provider says who, never what.** Letting somebody through its sign-in
 establishes an address and nothing else: they become an ordinary account
@@ -294,8 +299,8 @@ Set in `wrangler.toml` under `[vars]`:
 
 | Variable | Meaning |
 | --- | --- |
-| `DOMAINS` | Hosts the worker serves, comma separated |
-| `HUB_HOST` | The host carrying `/admin`, `/login` and `/logout` |
+| `DOMAINS` | Hosts the worker serves, comma separated. Read in the form a Host header arrives in: lowercased, any port dropped, a leading `www.` removed, duplicates collapsed, so `www.ptra.dev` and `ptra.dev` are one host and either spelling works |
+| `HUB_HOST` | The host carrying `/admin`, `/login` and `/logout`. Required, and must be one of `DOMAINS`: the worker answers for those only, so a management host outside them is one the service never serves. Either mistake is reported by `/health` and refused on every page rather than left to find |
 | `APP_NAME` | Name shown in the UI and in emails (default `Shrink Link`) |
 | `FOOTER_TEXT` | The line at the bottom of every page, such as a copyright notice. Plain text, escaped; unset means no line |
 | `ADMIN` | Root administrator addresses, comma separated |
@@ -470,8 +475,14 @@ fragment all keep their case, because it belongs to somebody else's service
 and no part of it is ours to normalise. What is still applied is the
 encoding a `Location` header needs: a space becomes `%20`, a non-ASCII host
 is punycoded, a default port is dropped and `..` segments are resolved.
-`javascript:`, `data:`, `vbscript:`, `blob:` and `file:` are always refused
-whatever case they are typed in; more can be blocked in settings.
+`javascript:`, `data:`, `vbscript:`, `blob:` and `file:` are refused,
+whatever case they are typed in, and so is anything else on the blocked
+list in settings. Those five are where that list starts rather than a bar
+above it, so an installation that genuinely needs one can take it off —
+knowing what it reopens: the countdown page puts the destination in a link
+the visitor clicks, and `javascript:` there runs on the short link's own
+domain. A settings record written before the list worked this way is read
+as the five it meant at the time, until the screen is saved once.
 
 **The incoming query string** is dropped unless the link opts in with
 *Append the incoming query string to the destination*. With it on, a

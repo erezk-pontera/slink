@@ -65,9 +65,15 @@ nav.main a[aria-current=page]{background:var(--bg);color:var(--ink);font-weight:
 .hostpick select{width:auto;min-width:7.5rem;padding:5px 8px;font-size:13px;border-radius:7px}
 .hostpick .nojs{padding:5px 10px;font-size:13px}
 .js .hostpick .nojs{display:none}
-/* The QR that follows the shortcut field. Pinned beside the column where
-   the screen is wide enough for it; floated into the corner of the content
-   otherwise, rather than taking a full-width band of its own. */
+/* The QR that follows the shortcut field. Floated into the corner of the
+   content, rather than taking a full-width band of its own; pinned out in
+   the margin beside the column where there is genuinely room for it.
+
+   The pinned branch is offset from the centre with a percentage rather
+   than from the edge with vw. A fixed element's percentages and the media
+   query below both resolve against the viewport without its scrollbar,
+   where vw counts the scrollbar in: the two disagreeing by that much is
+   what used to leave the panel hanging over the edge of the window. */
 .qrfloat{display:block;float:right;width:174px;margin:0 0 14px 18px;padding:12px;
   border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);
   box-shadow:var(--shadow);text-align:center}
@@ -76,8 +82,12 @@ nav.main a[aria-current=page]{background:var(--bg);color:var(--ink);font-weight:
 .qrfloat[hidden],.qrfloat img[hidden]{display:none}
 .qrfloat img{display:block;width:150px;height:150px;margin:0 auto;border-radius:6px}
 .qrfloat .note{margin:8px 0 0;word-break:break-all}
-@media (min-width:1430px){
-  .qrfloat{position:fixed;float:none;top:96px;right:calc(50vw - 520px - 190px);margin:0;z-index:5}
+/* Half the 1040 column is 520, plus 16 of gap is where the panel starts,
+   plus its own 174 is 710 either side of the centre: 1420 is the width at
+   which it first fits at all. The breakpoint keeps a margin over that,
+   because a panel that only just fits is the one that stops fitting. */
+@media (min-width:1500px){
+  .qrfloat{position:fixed;float:none;top:96px;left:calc(50% + 536px);margin:0;z-index:5}
 }
 @media (max-width:620px){
   .qrfloat{float:none;width:auto;max-width:210px;margin:0 auto 14px}
@@ -104,7 +114,13 @@ nav.main a[aria-current=page]{background:var(--bg);color:var(--ink);font-weight:
 .chart rect:hover{opacity:1}
 .qrwrap{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
 .qrwrap form{flex:1 1 260px;min-width:0}
-img.qr{flex:none;width:220px;height:220px;border:1px solid var(--line);border-radius:8px;background:#fff}
+/* The big code on the QR card. Scoped to that card, because the floating
+   panel uses the same class at 150: an unscoped img.qr has exactly the
+   specificity of .qrfloat img, so whichever came last in this file won.
+   This one did, and the panel's code drew at 220 inside a 174 box - out
+   over the edge of its own card, and off the side of the page. */
+.qrwrap img.qr{flex:none;width:220px;height:220px;
+  border:1px solid var(--line);border-radius:8px;background:#fff}
 details.group{border-top:1px solid var(--line);padding:10px 0 2px}
 details.group:first-of-type{border-top:0}
 details.group>summary{cursor:pointer;font-weight:600;padding:4px 0;list-style:revert}
@@ -141,6 +157,16 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .field .note{font-size:12px;color:var(--muted);margin:5px 0 0}
 .row{display:flex;gap:12px;flex-wrap:wrap}
 .row>*{flex:1 1 180px;min-width:0}
+/* One domain to copy a link onto: the tick, and the directory on that
+   domain to put it in. Beside each other where there is room, stacked
+   where there is not, and the tick centred against the select rather
+   than against its label. */
+.alsodomain{display:grid;grid-template-columns:minmax(9rem,1fr) 2fr;
+  gap:2px 16px;align-items:center;margin:0 0 12px}
+.alsodomain .check,.alsodomain .field{margin:0}
+@media (max-width:620px){
+  .alsodomain{grid-template-columns:1fr;gap:6px}
+}
 .check{display:flex;align-items:flex-start;gap:8px;margin:0 0 9px;font-size:14px}
 .check input{margin-top:3px;flex:none}
 .check label{margin:0;font-weight:400}

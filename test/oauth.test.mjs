@@ -240,8 +240,14 @@ section('the other methods are named rather than hidden behind a parameter');
   ok('and where the three endpoints come from',
      page.includes('.well-known/openid-configuration') && page.includes('authorization_endpoint'));
   ok('and which token auth method is sent', page.includes('client_secret_post'));
-  ok('and the initiate-login URI, for a provider tile',
-     page.includes('https://ptra.dev/__slink/oauth/start'));
+  // Compared as a host rather than looked for as a URL: a URL can sit
+  // inside a longer one, and the question here is which host the screen
+  // tells somebody to register.
+  const starts = [...page.matchAll(/https:\/\/([a-z0-9.-]+)\/__slink\/oauth\/start/g)]
+    .map((m) => m[1]);
+  ok('the initiate-login URI is given, for a provider tile', starts.length >= 1,
+     'none offered');
+  ok('and it is the hub', starts.every((h) => h === 'ptra.dev'), starts.join(', '));
 
   await setProvider({ disableOtp: '1', disablePasskey: '1' });
   const only = await (await peer(root).req('https://ptra.dev/admin', { cookies: false })).text();

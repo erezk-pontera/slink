@@ -197,7 +197,8 @@ section('the endpoint');
   ok('is private to the viewer', (r.headers.get('Cache-Control') || '').includes('private'));
 
   const body = await r.text();
-  ok('encodes the short link', body.includes('https://ptra.cc/qr-test'));
+  const encoded = (body.match(/aria-label="([^"]*)"/) || [])[1];
+  ok('encodes the short link', encoded === 'https://ptra.cc/qr-test', String(encoded));
 
   const unknown = await root.req('https://ptra.dev/admin/links/qr?host=evil.example&path=x');
   ok('an unknown host is refused', unknown.status === 303, String(unknown.status));

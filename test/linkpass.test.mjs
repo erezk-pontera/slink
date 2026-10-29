@@ -427,8 +427,9 @@ section('a copy of a link is a copy of all of it');
   });
   const moved = await (await root.req(editHref('ptra.dev', 'moved-orig'))).text();
   ok('a move carries the password', moved.includes('orig-pw'));
+  const tip = (moved.match(/<p class="target-big">([^<]*)<\/p>/) || [])[1];
   ok('and the share tip follows to the new domain',
-     moved.includes('https://ptra.dev/moved-orig#ptrap=orig-pw'));
+     tip === 'https://ptra.dev/moved-orig#ptrap=orig-pw', String(tip));
 
   // Duplicating fills the create form with everything but the shortcut.
   const dt = Harness.csrfFor(await (await root.req(editHref('ptra.dev', 'moved-orig'))).text(),

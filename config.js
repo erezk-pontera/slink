@@ -7,7 +7,7 @@
  */
 
 import { K, Store } from './kv.js';
-import { DEFAULT_BLOCKED_SCHEMES, parseDestination } from './paths.js';
+import { canonicalHost, DEFAULT_BLOCKED_SCHEMES, parseDestination } from './paths.js';
 import { boolEnv, intEnv, isSafeKey, listEnv, now } from './util.js';
 
 /** Read an env value under either the hyphenated or the SCREAMING_SNAKE name. */
@@ -142,7 +142,7 @@ export class Config {
      * mean an installation that deploys cleanly and then offers its
      * administration on a domain nobody named; problems() refuses instead.
      */
-    this.hubHost = String(envVar(env, 'HUB_HOST') || '').toLowerCase().replace(/^www\./, '');
+    this.hubHost = canonicalHost(envVar(env, 'HUB_HOST'));
     this.appName = String(envVar(env, 'APP_NAME') || 'Shrink Link');
     /**
      * The line at the bottom of every page: a copyright notice, a company
@@ -150,7 +150,24 @@ export class Config {
      * anything else, and left out entirely when it is not set.
      */
     this.footerText = String(envVar(env, 'FOOTER_TEXT') || '');
-    this.knownHosts = listEnv(envVar(env, 'DOMAINS'), ['ptra.cc', 'ptra.dev']);
+    /**
+     * The hosts this worker answers for, put through the same canonical
+     * form an incoming Host header is: lowercased, any port dropped, a
+     * leading `www.` removed.
+     *
+     * The two are compared directly on every request, so an entry carrying
+     * either would have matched nothing at all - an installation that
+     * deploys cleanly, passes its checks and serves nobody. Duplicates
+     * collapse on the way through, since `ptra.dev` and `www.ptra.dev` are
+     * one host here and always were.
+     */
+    this.knownHosts = [
+      ...new Set(
+        listEnv(envVar(env, 'DOMAINS'), ['ptra.cc', 'ptra.dev'])
+          .map(canonicalHost)
+          .filter(Boolean)
+      ),
+    ];
 
     this.rootAdmins = listEnv(envVar(env, 'ADMIN'));
     this.defaultAllowedDomains = listEnv(envVar(env, 'DEFAULT_ALLOWED_DOMAINS'));

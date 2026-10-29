@@ -299,7 +299,7 @@ Set in `wrangler.toml` under `[vars]`:
 
 | Variable | Meaning |
 | --- | --- |
-| `DOMAINS` | Hosts the worker serves, comma separated |
+| `DOMAINS` | Hosts the worker serves, comma separated. Read in the form a Host header arrives in: lowercased, any port dropped, a leading `www.` removed, duplicates collapsed, so `www.ptra.dev` and `ptra.dev` are one host and either spelling works |
 | `HUB_HOST` | The host carrying `/admin`, `/login` and `/logout`. Required, and must be one of `DOMAINS`: the worker answers for those only, so a management host outside them is one the service never serves. Either mistake is reported by `/health` and refused on every page rather than left to find |
 | `APP_NAME` | Name shown in the UI and in emails (default `Shrink Link`) |
 | `FOOTER_TEXT` | The line at the bottom of every page, such as a copyright notice. Plain text, escaped; unset means no line |

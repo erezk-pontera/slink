@@ -1,4 +1,6 @@
 import { Harness } from './harness.js';
+import { makeEnv } from './fakekv.js';
+import { loadConfig } from '../config.js';
 
 let passed = 0;
 let failed = 0;
@@ -134,6 +136,46 @@ section('the sign-in form appears only at /admin on the hub');
   ok('gated hub link bounces to /admin',
      gated.status === 303 && (gated.headers.get('Location') || '').startsWith('/admin?next='),
      gated.status + ' ' + gated.headers.get('Location'));
+}
+
+/* ------------------------------------------- the hosts it answers for */
+section('DOMAINS is read in the same form a Host header arrives in');
+{
+  // An incoming host is canonicalised before it is matched, so an entry
+  // here that is not in that form matches nothing: the installation
+  // deploys cleanly, passes its checks, and serves nobody.
+  const hosts = async (DOMAINS, extra = {}) =>
+    (await loadConfig(makeEnv({ DOMAINS, ...extra }))).knownHosts;
+
+  ok('a www. prefix is stripped', (await hosts('www.ptra.dev')).includes('ptra.dev'),
+     (await hosts('www.ptra.dev')).join(', '));
+  ok('a port is dropped', (await hosts('ptra.dev:8787')).includes('ptra.dev'),
+     (await hosts('ptra.dev:8787')).join(', '));
+  ok('case is flattened', (await hosts('PTRA.DEV')).includes('ptra.dev'),
+     (await hosts('PTRA.DEV')).join(', '));
+
+  // The apex and the www form are one host, so naming both is not two.
+  const both = await hosts('ptra.dev,www.ptra.dev');
+  ok('the apex and its www are one entry', both.length === 1 && both[0] === 'ptra.dev',
+     both.join(', '));
+
+  // The point of the whole thing: this pairing used to serve nobody.
+  const wwwHub = await loadConfig(makeEnv({ DOMAINS: 'ptra.cc,www.ptra.dev', HUB_HOST: 'www.ptra.dev' }));
+  ok('a www. management host still matches its domain',
+     wwwHub.hubHost === 'ptra.dev' && wwwHub.knownHosts.includes('ptra.dev'),
+     wwwHub.hubHost + ' in [' + wwwHub.knownHosts.join(', ') + ']');
+  ok('and the deployment is not held back for it',
+     !wwwHub.problems().some((p) => p.includes('HUB_HOST')), wwwHub.problems().join(' '));
+
+  // A management host that genuinely is not served is still refused.
+  const stray = await loadConfig(makeEnv({ DOMAINS: 'ptra.cc', HUB_HOST: 'ptra.dev' }));
+  ok('a management host outside DOMAINS is still reported',
+     stray.problems().some((p) => p.includes('HUB_HOST is not one of DOMAINS')),
+     stray.problems().join(' '));
+  const none = await loadConfig(makeEnv({ HUB_HOST: '' }));
+  ok('and so is one that is not set at all',
+     none.problems().some((p) => p.includes('HUB_HOST is not configured')),
+     none.problems().join(' '));
 }
 
 console.log(`\nrouting: ${passed} passed, ${failed} failed`);

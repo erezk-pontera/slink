@@ -427,12 +427,22 @@ section('a GET changes nothing');
 
 section('what an identity provider says is not taken on trust');
 {
-  const dom = 'https://ptra.dev/admin/domains/edit?host=ptra.dev';
-  const dt = Harness.csrfFor(await (await admin.req(dom)).text(), '/admin/domains/edit');
-  await admin.req('https://ptra.dev/admin/domains/edit', {
+  // The provider is a system setting. Post the whole settings form, as a
+  // browser would, so nothing else on it is cleared.
+  const page = await (await admin.req('https://ptra.dev/admin/settings')).text();
+  const form = { _csrf: Harness.csrfFor(page, '/admin/settings') };
+  for (const m of page.matchAll(/<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/g)) {
+    if (m[1] === '_csrf') continue;
+    if (/type="checkbox"/.test(m[0]) && !/\schecked/.test(m[0])) continue;
+    form[m[1]] = m[2];
+  }
+  for (const m of page.matchAll(/<select[^>]*name="([^"]+)"[\s\S]*?<\/select>/g)) {
+    const sel = m[0].match(/<option value="([^"]*)"[^>]*selected/);
+    if (sel) form[m[1]] = sel[1];
+  }
+  await admin.req('https://ptra.dev/admin/settings', {
     form: {
-      _csrf: dt, host: 'ptra.dev', defaultStatus: '302', rootCreatePolicy: 'email_domain',
-      enabled: '1', authRequired: '1', allowedAuthDomains: 'pontera.com',
+      ...form,
       oauthEnabled: '1', oauthClientId: 'c',
       oauthAuthorizeUrl: 'https://idp.example/authorize',
       oauthTokenUrl: 'https://idp.example/token',

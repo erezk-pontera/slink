@@ -202,6 +202,29 @@ dependencies: a small CBOR decoder (`cbor.js`), the verification layer
 hub's own pages use WebAuthn while still refusing to delegate it to an
 embedded cross-origin page.
 
+### Single sign-on
+
+OAuth 2.0 Authorization Code with PKCE (S256). **One provider for the whole
+installation**, configured in `/admin/settings` — not per domain. Signing in
+happens on the hub and every other host arrives through the handshake above,
+so a provider enabled on one domain and not another was a distinction
+without a difference. What *is* per domain is whether that host also offers
+the emailed code and passkeys, which stays on the domain screen.
+
+The client secret is the `oauth-secret` environment variable and is sent only
+in a token-exchange request body, never in a URL. Endpoints must be HTTPS and
+are refused if they resolve to a private address, because they are fetched
+with that secret attached. The redirect URI is
+`https://<host>/__slink/oauth/callback`, registered once per host.
+
+**The provider says who, never what.** Letting somebody through its sign-in
+establishes an address and nothing else: they become an ordinary account
+here. No role, group or privilege is read from the provider, and the
+provider's own "verified" flag is not consulted either — whether that
+address may sign in is decided on this side by the host's allowed sign-in
+domains, and what it may do is decided by its own record. Making somebody an
+administrator is done in `/admin/users` and nowhere else.
+
 ---
 
 ## Turnstile

@@ -31,6 +31,17 @@ export const DEFAULTS = {
   interstitialDefaultDelay: 0,
   defaultStatus: 302,
   blockedSchemes: [],
+  /** The identity provider, one for the whole installation. See oauth.js. */
+  oauth: {
+    enabled: false,
+    label: 'Single sign-on',
+    clientId: '',
+    authorizeUrl: '',
+    tokenUrl: '',
+    userinfoUrl: '',
+    scope: 'openid email profile',
+    emailField: 'email',
+  },
   geo: {
     blockTor: true,
     blockUnknown: true,

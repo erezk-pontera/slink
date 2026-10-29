@@ -249,27 +249,77 @@ section('the other methods are named rather than hidden behind a parameter');
      'none offered');
   ok('and it is the hub', starts.every((h) => h === 'ptra.dev'), starts.join(', '));
 
+  const NAMED = 'Administrator additional sign-in methods';
+
   await setProvider({ disableOtp: '1', disablePasskey: '1' });
   const only = await (await peer(root).req('https://ptra.dev/admin', { cookies: false })).text();
   ok('with both off the code form is gone', !only.includes('name="email"'));
-  ok('but the way to it is named', only.includes('Other sign-in methods'));
+  ok('but the way to it is named', only.includes(NAMED));
   ok('and points at the exemption', only.includes('/admin?otp=1'));
-  ok('naming the provider it is a fallback for', only.includes('Example SSO cannot be reached'));
 
   // Following it is the same page the parameter always reached.
   const taken = await (await peer(root).req('https://ptra.dev/admin?otp=1', { cookies: false })).text();
   ok('following it offers the code', taken.includes('name="email"'));
   ok('and the passkey button', taken.includes('data-slink-passkey-login'));
-  ok('and does not offer itself again', !taken.includes('Other sign-in methods'));
+  ok('and does not offer itself again', !taken.includes(NAMED));
 
   // Where a route is still open to everyone there is nothing to point at.
   await setProvider({ disableOtp: '1', disablePasskey: '' });
   const partly = await (await peer(root).req('https://ptra.dev/admin', { cookies: false })).text();
-  ok('one route left open needs no link', !partly.includes('Other sign-in methods'));
+  ok('one route left open needs no link', !partly.includes(NAMED));
 
   await setProvider({ disableOtp: '', disablePasskey: '' });
   const open = await (await peer(root).req('https://ptra.dev/admin', { cookies: false })).text();
-  ok('and neither does none switched off', !open.includes('Other sign-in methods'));
+  ok('and neither does none switched off', !open.includes(NAMED));
+}
+
+/* ------------------------------- 2d. one line between each pair of routes */
+section('the rules between the sign-in routes');
+{
+  // Every rule reads "or", so a second one directly under the first says
+  // nothing and looks like a fault - which is how this was reported. The
+  // passkey block carries its own, because it is revealed by script and a
+  // rule left behind by a button that never appears is the other half of
+  // the same bug.
+  const rules = (page) => (page.match(/class="divider"/g) || []).length;
+  const shown = (page) => {
+    const n = (page.includes('/__slink/oauth/start') ? 1 : 0) +
+      (page.includes('data-slink-passkey-login') ? 1 : 0) +
+      (page.includes('name="email"') ? 1 : 0);
+    return n;
+  };
+
+  for (const [what, extra, where] of [
+    ['all three', { disableOtp: '', disablePasskey: '' }, '/admin'],
+    ['code off', { disableOtp: '1', disablePasskey: '' }, '/admin'],
+    ['passkey off', { disableOtp: '', disablePasskey: '1' }, '/admin'],
+    ['both off', { disableOtp: '1', disablePasskey: '1' }, '/admin'],
+    ['both off, exempt', { disableOtp: '1', disablePasskey: '1' }, '/admin?otp=1'],
+  ]) {
+    await setProvider(extra);
+    const page = await (await peer(root).req('https://ptra.dev' + where, { cookies: false })).text();
+    // One fewer line than there are routes: between each pair and nowhere
+    // else. The named route out counts as one of them.
+    const routes = shown(page) + (page.includes('Administrator additional') ? 1 : 0);
+    ok('one rule between each pair with ' + what, rules(page) === routes - 1,
+       rules(page) + ' rules for ' + routes + ' routes');
+    // The count is not enough on its own: two rules with the routes all
+    // above them is the right number in the wrong place, and is exactly
+    // the pair of "or" lines under one another that was reported. A block
+    // closing between them changes nothing on screen, so it is allowed
+    // through here - the first of the two sat inside the passkey block.
+    ok('and none of them directly under another with ' + what,
+       !/<p class="divider"><span>or<\/span><\/p>(?:\s|<\/div>)*<p class="divider">/.test(page));
+  }
+
+  // Which of the two is inside the block decides what a browser without
+  // the script is shown: the rule above the button goes when the button
+  // does, leaving single sign-on, one rule, and the code form.
+  await setProvider({ disableOtp: '', disablePasskey: '' });
+  const nojs = await (await peer(root).req('https://ptra.dev/admin', { cookies: false })).text();
+  ok('the hidden block opens with its own rule',
+     /data-slink-passkey-login[\s\S]*?hidden>\s*<p class="divider">/.test(nojs));
+  ok('so one of the two is left when it stays hidden', rules(nojs) === 2, rules(nojs) + ' rules');
 }
 
 /* ------------------------------------------------------ 3. the handshake */

@@ -301,20 +301,32 @@ export function loginPage({
   // With the code switched off, single sign-on is the only way in and the
   // page should not present a form that cannot succeed.
   const rule = '<p class="divider"><span>or</span></p>';
+  // Between single sign-on and the code form. That boundary is there
+  // whether or not the passkey block appears, so the rule for it is too.
   const divider = methods.oauth && methods.otp ? rule : '';
 
   // The whole passkey block stays hidden until the script has confirmed
-  // this browser can use one, its own divider included, so a visitor
-  // without JavaScript is never shown a stray rule above a control that
-  // was never going to appear.
+  // this browser can use one, and the rule that sets it apart is inside
+  // it, so the rule is hidden with it: a visitor without JavaScript is
+  // never shown a stray line above a control that was never going to
+  // appear.
+  //
+  // Exactly one rule, above the button where single sign-on sits directly
+  // over it and below the button where nothing does, which leaves the code
+  // form underneath to be separated instead. Putting it below in both
+  // cases is what stacked two of them, one under the other, on a page
+  // offering all three - and left none at all between single sign-on and
+  // the passkey button where the code was switched off.
   const passkey =
     methods.passkey && passkeyCsrf
       ? `<div data-slink-passkey-login data-token="${esc(passkeyCsrf)}"
        data-next="${esc(next || '/admin')}" hidden>
-    <div class="sso">
+    ${methods.oauth ? rule : ''}<div class="sso">
       <button type="button" class="btn secondary" data-slink-passkey-go>Sign in with a passkey</button>
     </div>
-    <p class="hint" data-slink-passkey-msg role="status"></p>${methods.otp ? rule : ''}
+    <p class="hint" data-slink-passkey-msg role="status"></p>${
+      !methods.oauth && methods.otp ? rule : ''
+    }
   </div>`
       : '';
   const byEmail = methods.otp
@@ -346,12 +358,10 @@ export function loginPage({
   // the code itself goes nowhere for somebody who is not one.
   const adminOnly =
     methods.oauth && !methods.otp && !methods.passkey
-      ? `<p class="divider"><span>or</span></p>
-  <p class="sub">Administrators keep the emailed code and passkeys for when
-  ${esc(ssoLabel)} cannot be reached.
-  <a href="${esc(
+      ? `${rule}
+  <p class="sub"><a href="${esc(
     '/admin?otp=1' + (next && next !== '/admin' ? '&next=' + encodeURIComponent(next) : '')
-  )}">Other sign-in methods</a>.</p>`
+  )}">Administrator additional sign-in methods</a></p>`
       : '';
 
   const body = `

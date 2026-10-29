@@ -195,12 +195,9 @@ export async function handleRedirect(ctx) {
   const behaviour = resolveLink(policy, link, exempt);
 
   const incoming = stripOwnParams(url.search);
-  // Which destination this particular visitor gets: their device first, then
-  // any country rule inside that slot, falling back to the default.
-  const picked = resolveTarget(link, {
-    device: deviceClass(ctx.request),
-    country: (ctx.request.cf && ctx.request.cf.country) || '',
-  });
+  // Which destination this particular visitor gets: their device slot,
+  // falling back to the default.
+  const picked = resolveTarget(link, { device: deviceClass(ctx.request) });
   const chosen = picked.url;
   const target = link.forwardQuery ? applyQuery(chosen, incoming) : chosen;
 

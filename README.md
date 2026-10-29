@@ -430,17 +430,17 @@ changed destination takes effect at once.
 ## Where a visitor ends up
 
 A link always has one mandatory destination, and may carry four more: Android
-phone, iPhone, Android tablet and iPad. Any of those five slots, including
-the default, may also carry country rules.
+phone, iPhone, Android tablet and iPad.
 
 Resolution is deliberately simple:
 
 1. Pick the slot for the visitor's device. A slot left blank is skipped, so
    configuring only "Android phone" is normal and everything else falls
    through.
-2. Inside that slot, the first country rule that matches wins.
-3. Otherwise the slot's own URL.
-4. Otherwise the same two steps against the default slot.
+2. Otherwise the default slot.
+
+Destinations used to be able to branch on the visitor's country as well.
+That is gone. The sign-in geography gate is a separate thing and stays.
 
 Device class comes from `Sec-CH-UA-Mobile` and `Sec-CH-UA-Platform` where the
 browser sends them, which Chromium does by default and which beats reading
@@ -448,10 +448,9 @@ the user-agent; Safari sends neither, so the user-agent is the fallback. One
 honest limitation: an iPad on iPadOS 13 or later presents itself as a Mac, so
 it is seen as a desktop unless the visitor asked for the mobile site.
 
-Country rules are edited one per line, `IL,US https://example.com/local`.
 Every URL in the table goes through the same validation as the main
-destination, so a device or country branch cannot smuggle in a scheme the
-main one forbids.
+destination, so a device branch cannot smuggle in a scheme the main one
+forbids.
 
 **Duplicating** a link copies everything except the shortcut and opens the
 create form. It needs the same standing as editing the original, since the
@@ -470,8 +469,10 @@ then comes back here rather than leaving for the destination, and the
 continue flag cannot be used to turn a framed link into a plain redirect.
 The frame is sandboxed, carries no referrer, and the page's
 `frame-src` names the destination's origin and nothing else. A destination
-that refuses to be framed shows the warning and a direct link instead, so
-the feature is best treated as a convenience rather than a guarantee.
+that refuses to be framed simply shows nothing: the visitor's page carries
+no banner, because the warning belongs beside the checkbox that turns
+framing on, where the person who can act on it will see it. Treat the
+feature as a convenience rather than a guarantee, and test each destination.
 
 **A destination cannot carry a password.** `https://user:secret@host/` is
 refused: it would be stored in the clear, shown on the edit screen, written

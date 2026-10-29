@@ -46,6 +46,43 @@ section('both dates are offered');
 }
 
 /* ------------------------------------------------------ 2. the window */
+section('a schedule carries a time, read as UTC');
+{
+  // A bare date still works: a start runs from the beginning of the day and
+  // an expiry to the end of it.
+  await create({ path: 'sched-day', target: 'example.com/d', activeFrom: '2026-01-02', expires: '2026-01-03' });
+  const dayForm = await (await root.req('https://ptra.dev/admin/links/edit?host=ptra.cc&path=sched-day')).text();
+  ok('a bare start reads as midnight UTC', dayForm.includes('value="2026-01-02T00:00"'),
+     (dayForm.match(/name="activeFrom"[^>]*value="[^"]*"/) || [''])[0]);
+  ok('a bare expiry reads as the end of the day', dayForm.includes('value="2026-01-03T23:59"'),
+     (dayForm.match(/name="expires"[^>]*value="[^"]*"/) || [''])[0]);
+
+  // And a time is kept exactly, in UTC.
+  await create({
+    path: 'sched-time', target: 'example.com/t',
+    activeFrom: '2026-06-01T09:30', expires: '2026-06-02T17:45',
+  });
+  const form = await (await root.req('https://ptra.dev/admin/links/edit?host=ptra.cc&path=sched-time')).text();
+  ok('the start time survives', form.includes('value="2026-06-01T09:30"'));
+  ok('the expiry time survives', form.includes('value="2026-06-02T17:45"'));
+
+  // The fields are real pickers, labelled and explained as UTC.
+  ok('both are date-and-time pickers',
+     (form.match(/type="datetime-local"/g) || []).length >= 2,
+     String((form.match(/type="datetime-local"/g) || []).length));
+  ok('the labels say UTC', form.includes('Starts (UTC)') && form.includes('Expires (UTC)'));
+  ok('and a tooltip explains it', /class="tip"[^>]*title="Entered and shown in UTC/.test(form));
+
+  const create_ = await (await root.req('https://ptra.dev/admin/links/new')).text();
+  ok('the create form matches', create_.includes('Starts (UTC, optional)') &&
+     create_.includes('Expires (UTC, optional)'));
+
+  // A half-hour-offset zone is where a local reading would show up.
+  const outside = await guest.req('https://ptra.cc/sched-time', { country: 'IN' });
+  ok('the window is not read in the visitor\u2019s zone', outside.status === 302 || outside.status === 200,
+     String(outside.status));
+}
+
 section('the window must make sense');
 {
   const bad = await create({
@@ -54,7 +91,7 @@ section('the window must make sense');
   ok('a start after the expiry is refused', (await bad.text()).includes('must come before'));
 
   const nonsense = await create({ path: 'sched-x', target: 'example.com/x', activeFrom: 'soon' });
-  ok('an unparseable start date is refused', (await nonsense.text()).includes('Start must be a date'));
+  ok('an unparseable start is refused', (await nonsense.text()).includes('Start must be a UTC date and time'));
 
   const fine = await create({
     path: 'sched-ok', target: 'example.com/ok', activeFrom: '2026-01-01', expires: '2027-01-01',

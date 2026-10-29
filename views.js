@@ -110,9 +110,10 @@ export function field({
   required = false,
   attrs = '',
   autocomplete,
+  tooltip = '',
 }) {
   return `<div class="field">
-  <label for="f_${esc(name)}">${esc(label)}</label>
+  <label for="f_${esc(name)}">${esc(label)}${tooltip ? hint(tooltip) : ''}</label>
   <input id="f_${esc(name)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}"
     ${placeholder ? `placeholder="${esc(placeholder)}"` : ''}
     ${required ? 'required' : ''}
@@ -147,13 +148,24 @@ export function select({ name, label, value, options, note = '' }) {
 </div>`;
 }
 
-export function checkbox({ name, label, checked = false, note = '', disabled = false }) {
+export function checkbox({ name, label, checked = false, note = '', disabled = false, tooltip = '' }) {
   return `<div class="check">
   <input id="f_${esc(name)}" name="${esc(name)}" type="checkbox" value="1"${checked ? ' checked' : ''}${
     disabled ? ' disabled' : ''
   }>
   <label for="f_${esc(name)}">${esc(label)}${note ? ` <span class="note">${esc(note)}</span>` : ''}</label>
+  ${tooltip ? hint(tooltip) : ''}
 </div>`;
+}
+
+/**
+ * A hover-and-focus tooltip marker.
+ *
+ * `title` is what a mouse gets; `aria-label` and `tabindex` are what a
+ * keyboard and a screen reader get, so the text is not mouse-only.
+ */
+export function hint(text) {
+  return `<span class="tip" tabindex="0" role="note" title="${esc(text)}" aria-label="${esc(text)}">?</span>`;
 }
 
 /** Status pill for a link or directory row. */
@@ -348,13 +360,6 @@ export function framePage({ cfg, host, link, url: target }) {
 <link rel="stylesheet" href="${ASSET_PREFIX}/app.css?v=${ASSET_VERSION}">
 <link rel="icon" type="image/svg+xml" href="${ASSET_PREFIX}/logo.svg?v=${ASSET_VERSION}">
 </head><body class="framed">
-<noscript><p class="framefail">This page shows another site in a frame. <a href="${esc(
-    target
-  )}" rel="noreferrer">Open it directly</a>.</p></noscript>
-<div class="framefail" id="slink-frame-note">
-  If nothing appears, the destination does not allow being framed.
-  <a href="${esc(target)}" rel="noreferrer">Open it directly</a>.
-</div>
 <iframe class="slink-frame" src="${esc(target)}" title="${esc(title)}"
   referrerpolicy="no-referrer" loading="eager"
   sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"></iframe>

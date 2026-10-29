@@ -49,6 +49,10 @@ nav.main a[aria-current=page]{background:var(--bg);color:var(--ink);font-weight:
 .hostpick select{width:auto;min-width:9.5rem;padding:5px 8px;font-size:13px;border-radius:7px}
 .hostpick .nojs{padding:5px 10px;font-size:13px}
 .js .hostpick .nojs{display:none}
+.tip{display:inline-flex;align-items:center;justify-content:center;flex:none;
+  width:16px;height:16px;margin-left:6px;border:1px solid var(--line);border-radius:50%;
+  font-size:11px;line-height:1;color:var(--muted);cursor:help;user-select:none}
+.tip:hover,.tip:focus{color:var(--ink);border-color:var(--muted);outline:none}
 .visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
   clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .badge{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid var(--line);
@@ -81,8 +85,6 @@ details.group[open]>summary{margin-bottom:6px}
   font-size:1.05em;margin:14px 0;padding:12px;border:1px solid var(--line);border-radius:8px;
   background:color-mix(in srgb,var(--line) 18%,transparent)}
 body.framed{margin:0;padding:0;height:100vh;overflow:hidden;display:flex;flex-direction:column}
-.framefail{flex:none;margin:0;padding:8px 14px;font-size:.9em;color:var(--muted);
-  background:var(--bg);border-bottom:1px solid var(--line)}
 .slink-frame{flex:1 1 auto;width:100%;border:0;display:block}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:var(--shadow);padding:18px;margin:0 0 16px}

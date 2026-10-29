@@ -1,0 +1,46 @@
+# The gate that was missing: every push and every pull request runs the
+# same two commands a contributor runs locally.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# A newer push to the same branch makes an older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: check and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` rather than `npm install`, so the lockfile is what is
+      # tested and a drifting dependency fails here instead of silently
+      # changing what ran.
+      - run: npm ci
+
+      - name: Syntax-check every module
+        run: npm run check
+
+      - name: Run the suite
+        run: npm test
+
+      # Catches what the suite cannot: a module that parses and passes but
+      # will not bundle for the Workers runtime. A dry run uploads nothing
+      # and needs no credentials.
+      - name: Bundle for Workers
+        run: npx wrangler deploy --dry-run

@@ -138,31 +138,16 @@ function countdownControls(behaviour, link) {
 
 
 /**
- * Country rules are edited as one line each, `IL,US https://example.com/x`,
- * which keeps a five-slot form manageable and needs no JavaScript to add or
- * remove rows.
+ * Said beside each framing checkbox rather than on the visitor's page.
+ * Many sites refuse to be framed and there is nothing this end can do, so
+ * the person who sets it is the one who needs to know.
  */
-function rulesToText(rules) {
-  return (rules || []).map((r) => r.countries.join(',') + ' ' + r.url).join('\n');
-}
+const FRAME_HINT =
+  'Keeps the visitor on this domain with the destination shown inside the page. ' +
+  'Many sites refuse to be framed (X-Frame-Options, or a frame-ancestors policy) ' +
+  'and show nothing at all. Test this destination before sharing the link.';
 
-function textToRules(text) {
-  return String(text || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const gap = line.search(/\s/);
-      if (gap < 0) return null;
-      return {
-        countries: line.slice(0, gap).split(',').map((c) => c.trim().toUpperCase()).filter(Boolean),
-        url: line.slice(gap + 1).trim(),
-      };
-    })
-    .filter((r) => r && r.url && r.countries.length);
-}
-
-/** The five destination slots, with their optional country rules. */
+/** The five destination slots. */
 function routingFields(routing, { frame, mayFrame = false } = {}) {
   const r = normalizeRouting(routing);
   const frames = normalizeFrame(frame);
@@ -180,30 +165,19 @@ function routingFields(routing, { frame, mayFrame = false } = {}) {
               placeholder: 'leave blank to use the main destination',
             })
       }
-      ${textarea({
-        name: 'rules__' + key,
-        label: 'Country rules (optional)',
-        value: rulesToText(r[key].rules),
-        placeholder: 'IL,US https://example.com/local',
-        note: 'One per line: comma-separated two-letter codes, a space, then the destination. The first match wins; anything else falls through.',
-      })}
       ${
         mayFrame
           ? checkbox({
               name: 'frame__' + key,
               label: 'Show in a frame instead of sending the visitor there',
               checked: frames[key] === true,
+              tooltip: FRAME_HINT,
             })
           : ''
       }
     </fieldset>`;
   };
-  return (
-    ALL_SLOTS.map(slot).join('') +
-    (mayFrame
-      ? `<p class="note">Framing keeps the visitor on this domain. Many sites refuse to be framed &mdash; they send <code>X-Frame-Options</code> or a <code>frame-ancestors</code> policy &mdash; and there is nothing this end can do about that. <strong>Test every framed destination before you share the link.</strong></p>`
-      : '')
-  );
+  return ALL_SLOTS.map(slot).join('');
 }
 
 /** Read the per-slot frame flags back out of a submitted form. */
@@ -216,27 +190,18 @@ function readFrame(body) {
 /** Read the five slots back out of a submitted form. */
 function readRouting(body) {
   const out = {};
-  for (const key of ALL_SLOTS) {
-    out[key] = {
-      url: String(body.get('url__' + key) || '').trim(),
-      rules: textToRules(body.get('rules__' + key)),
-    };
-  }
+  for (const key of ALL_SLOTS) out[key] = { url: String(body.get('url__' + key) || '').trim() };
   return out;
 }
 
 /**
- * Validate and canonicalise every URL in a routing table, so a device or
- * country branch cannot smuggle in a scheme the main destination forbids.
+ * Validate and canonicalise every URL in a routing table, so a device
+ * branch cannot smuggle in a scheme the main destination forbids.
  */
 function cleanRouting(raw, opts) {
   const r = normalizeRouting(raw);
   for (const key of ALL_SLOTS) {
     if (r[key].url) r[key].url = parseDestination(r[key].url, opts).target;
-    r[key].rules = r[key].rules.map((rule) => ({
-      countries: rule.countries,
-      url: parseDestination(rule.url, opts).target,
-    }));
   }
   return r;
 }
@@ -428,8 +393,22 @@ ${alert('error', error)}${alert('ok', info)}
       })}
     </div>
     <div class="row">
-      ${field({ name: 'activeFrom', label: 'Starts (optional)', type: 'text', value: values.activeFrom || '', placeholder: 'YYYY-MM-DD', note: 'Before this date the link is not live.' })}
-      ${field({ name: 'expires', label: 'Expires (optional)', type: 'text', value: values.expires || '', placeholder: 'YYYY-MM-DD', note: 'Leave blank for no expiry.' })}
+      ${field({
+        name: 'activeFrom',
+        label: 'Starts (UTC, optional)',
+        type: 'datetime-local',
+        value: values.activeFrom || '',
+        tooltip: UTC_HINT,
+        note: 'Before this the link is not live.',
+      })}
+      ${field({
+        name: 'expires',
+        label: 'Expires (UTC, optional)',
+        type: 'datetime-local',
+        value: values.expires || '',
+        tooltip: UTC_HINT,
+        note: 'After this it stops resolving.',
+      })}
       ${textarea({ name: 'note', label: 'Note (optional)', value: values.note || '' })}
     </div>
     ${checkbox({ name: 'forwardQuery', label: 'Append the incoming query string to the destination', checked: !!values.forwardQuery })}
@@ -498,23 +477,44 @@ ${alert('error', error)}${alert('ok', info)}
 }
 
 /** Parse an optional YYYY-MM-DD expiry into a unix timestamp. */
-function parseExpiry(raw) {
+/**
+ * A schedule field, read as UTC.
+ *
+ * `datetime-local` gives `YYYY-MM-DDTHH:MM`, which a browser renders in the
+ * viewer's own zone but submits without one. Appending `Z` is what makes
+ * the value mean UTC rather than wherever the person happens to be: the
+ * label and the tooltip both say so, because a link that goes live at
+ * "09:00" has to mean the same instant to everybody who edits it.
+ *
+ * A bare date is still accepted, so a link stored before the time was
+ * added, or typed by hand, keeps working: a start runs from the beginning
+ * of that day and an expiry to the end of it.
+ */
+function parseMoment(raw, { field: fieldName, endOfDay }) {
   const value = String(raw || '').trim();
   if (!value) return 0;
-  const ts = Date.parse(value.length === 10 ? value + 'T23:59:59Z' : value);
-  if (!Number.isFinite(ts)) throw new ValidationError('Expiry must be a date such as 2026-12-31.', 'expires');
+  const label = fieldName === 'expires' ? 'Expiry' : 'Start';
+  if (!/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?$/.test(value)) {
+    throw new ValidationError(
+      label + ' must be a UTC date and time, such as 2026-12-31 18:30.',
+      fieldName
+    );
+  }
+  const [datePart, timePart] = value.split(/[T ]/);
+  const time = timePart ? (timePart.length === 5 ? timePart + ':00' : timePart) : endOfDay ? '23:59:59' : '00:00:00';
+  const ts = Date.parse(datePart + 'T' + time + 'Z');
+  if (!Number.isFinite(ts)) {
+    throw new ValidationError(label + ' is not a real date and time.', fieldName);
+  }
   return Math.floor(ts / 1000);
 }
 
-/** A start date runs from the beginning of that day, where an expiry runs to the end of it. */
+function parseExpiry(raw) {
+  return parseMoment(raw, { field: 'expires', endOfDay: true });
+}
+
 function parseActiveFrom(raw) {
-  const value = String(raw || '').trim();
-  if (!value) return 0;
-  const ts = Date.parse(value.length === 10 ? value + 'T00:00:00Z' : value);
-  if (!Number.isFinite(ts)) {
-    throw new ValidationError('Start must be a date such as 2026-12-31.', 'activeFrom');
-  }
-  return Math.floor(ts / 1000);
+  return parseMoment(raw, { field: 'activeFrom', endOfDay: false });
 }
 
 /** A link cannot stop being live before it starts. */
@@ -524,10 +524,15 @@ function checkWindow(activeFrom, expiresAt) {
   }
 }
 
-function expiryInput(expiresAt) {
-  if (!expiresAt) return '';
-  return new Date(expiresAt * 1000).toISOString().slice(0, 10);
+/** The stored instant as the `YYYY-MM-DDTHH:MM` a datetime-local wants, in UTC. */
+function expiryInput(at) {
+  if (!at) return '';
+  return new Date(at * 1000).toISOString().slice(0, 16);
 }
+
+const UTC_HINT =
+  'Entered and shown in UTC, not your local time, so the link means the same ' +
+  'instant to everyone who edits it. Leave blank for none.';
 
 async function createSubmit(ctx) {
   const body = await readForm(ctx.request);
@@ -854,8 +859,22 @@ ${flashFrom(url)}${alert('error', error)}${alert('ok', info)}${maskWarning}
     ${select({ name: 'status', label: 'Redirect code', value: link.status, options: STATUS_OPTIONS })}
     ${countdownControls(behaviour, link)}
     <div class="row">
-      ${field({ name: 'activeFrom', label: 'Starts', type: 'text', value: expiryInput(link.activeFrom), placeholder: 'YYYY-MM-DD', note: 'Before this date the link is not live.' })}
-      ${field({ name: 'expires', label: 'Expires', type: 'text', value: expiryInput(link.expiresAt), placeholder: 'YYYY-MM-DD' })}
+      ${field({
+        name: 'activeFrom',
+        label: 'Starts (UTC)',
+        type: 'datetime-local',
+        value: expiryInput(link.activeFrom),
+        tooltip: UTC_HINT,
+        note: 'Before this the link is not live.',
+      })}
+      ${field({
+        name: 'expires',
+        label: 'Expires (UTC)',
+        type: 'datetime-local',
+        value: expiryInput(link.expiresAt),
+        tooltip: UTC_HINT,
+        note: 'After this it stops resolving.',
+      })}
       ${textarea({ name: 'note', label: 'Note', value: link.note || '' })}
     </div>
     ${checkbox({ name: 'enabled', label: 'Enabled', checked: link.enabled !== false })}

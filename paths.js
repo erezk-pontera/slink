@@ -13,11 +13,21 @@ export const MAX_SEGMENTS = 8;
 export const MAX_DESTINATION = 2048;
 
 /**
- * Schemes that are never allowed as a destination, whatever the configuration
- * says. They execute in the origin of whatever page renders the link, so the
- * delay interstitial would otherwise become a stored-XSS sink.
+ * The schemes an installation refuses as a destination until it says
+ * otherwise.
+ *
+ * These are the dangerous ones. The countdown page renders the destination
+ * into the `href` of its "Go now" button, and `javascript:` there runs in the
+ * origin of the short link itself, which makes a stored link a stored-XSS
+ * sink. They are the starting value of the `blockedSchemes` setting rather
+ * than an absolute bar, so an installation that genuinely needs one can take
+ * it off the list — and reopens that path by doing so.
+ *
+ * This is also the default argument below, so a caller that forgets to pass
+ * the configured list gets the safe set rather than no list at all. An
+ * explicit empty array is still honoured: that is an administrator saying so.
  */
-export const HARD_BLOCKED_SCHEMES = ['javascript', 'data', 'vbscript', 'blob', 'file'];
+export const DEFAULT_BLOCKED_SCHEMES = ['javascript', 'data', 'vbscript', 'blob', 'file'];
 
 /** Reserved first segments on the admin host; never usable as a shortcut. */
 export const RESERVED_PATHS = [
@@ -213,7 +223,7 @@ export function destinationUserinfo(target) {
  * assumption about any part of it - host included - is that it is theirs
  * exactly as given.
  */
-export function parseDestination(raw, { blockedSchemes = [] } = {}) {
+export function parseDestination(raw, { blockedSchemes = DEFAULT_BLOCKED_SCHEMES } = {}) {
   const value = String(raw ?? '').trim();
   if (!value) throw new ValidationError('Destination is required.', 'target');
   if (value.length > MAX_DESTINATION) throw new ValidationError('Destination is too long.', 'target');
@@ -233,12 +243,9 @@ export function parseDestination(raw, { blockedSchemes = [] } = {}) {
   // lowercase, but `out` itself is left alone: what gets stored is what was
   // typed.
   const scheme = out.slice(0, out.indexOf(':')).toLowerCase();
-  if (HARD_BLOCKED_SCHEMES.includes(scheme)) {
+  const blocked = (blockedSchemes || []).map((s) => String(s).toLowerCase().replace(/:$/, ''));
+  if (blocked.includes(scheme)) {
     throw new ValidationError('That destination scheme is not allowed.', 'target');
-  }
-  const extra = (blockedSchemes || []).map((s) => String(s).toLowerCase().replace(/:$/, ''));
-  if (extra.includes(scheme)) {
-    throw new ValidationError('That destination scheme is blocked by policy.', 'target');
   }
 
   // For hierarchical URLs, round-trip through URL so a malformed authority is

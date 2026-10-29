@@ -10,11 +10,18 @@ import { audit, EVENTS, listAudit, purgeAudit } from './audit.js';
 import { checkCsrf, destroyAllSessions } from './auth.js';
 import { saveSettings } from './config.js';
 import { listUserGrants } from './directories.js';
+import { resolveDomain } from './domains.js';
 import { clientIp } from './geo.js';
 import { ANY_HOST, EXEMPTIBLE, normalizeExempt } from './interstitial.js';
 import { PROVIDERS } from './mailer.js';
-import { normalizeOauth, oauthReady, oauthSettings } from './oauth.js';
-import { HARD_BLOCKED_SCHEMES, normalizeEmail, ValidationError } from './paths.js';
+import {
+  disabledMethodsFor,
+  normalizeDisabledMethods,
+  normalizeOauth,
+  oauthReady,
+  oauthSettings,
+} from './oauth.js';
+import { DEFAULT_BLOCKED_SCHEMES, normalizeEmail, ValidationError } from './paths.js';
 import { requireAdmin } from './permissions.js';
 import { canImpersonate, mintImpersonation } from './impersonate.js';
 import {
@@ -400,6 +407,11 @@ async function settingsPage(ctx, { error } = {}) {
   const geo = s.geo || {};
   const limits = s.rateLimits || {};
   const oauth = oauthSettings(cfg);
+  // Until this screen has been saved once the switches still live on the hub
+  // domain's record, so that is what the boxes have to show: opening the
+  // screen must report what is in force, not an empty default that would
+  // turn both back on the moment anything else here is saved.
+  const signInOff = disabledMethodsFor(cfg, await resolveDomain(cfg, cfg.hubHost));
 
   const body = `
 ${flashFrom(url)}${alert('error', error)}
@@ -482,9 +494,14 @@ ${flashFrom(url)}${alert('error', error)}
     <h2>Links</h2>
     ${field({
       name: 'blockedSchemes',
-      label: 'Additional blocked destination schemes',
+      label: 'Blocked destination schemes',
       value: (s.blockedSchemes || []).join(', '),
-      note: 'Always blocked regardless: ' + HARD_BLOCKED_SCHEMES.join(', ') + '.',
+      note:
+        'Such as: ' +
+        DEFAULT_BLOCKED_SCHEMES.join(', ') +
+        '. For example, adding data will block data:. Clearing one allows it ' +
+        'again — the countdown page puts the destination in a link the ' +
+        'visitor clicks, so javascript: there runs on this domain.',
     })}
     ${checkbox({ name: 'countClicks', label: 'Count hits on each link', checked: s.countClicks !== false, note: '(approximate)' })}
     ${field({
@@ -497,8 +514,21 @@ ${flashFrom(url)}${alert('error', error)}
     })}
 
     <h2>Single sign-on</h2>
-    <p class="hint">One provider for the whole installation. Signing in happens on the hub and every other host comes through the handshake, so this is not a per-domain thing. Each domain still chooses, on its own screen, whether it also offers the emailed code and passkeys.</p>
+    <p class="hint">One provider for the whole installation. Signing in happens on the hub and every other host comes through the handshake, so this is not a per-domain thing.</p>
     ${checkbox({ name: 'oauthEnabled', label: 'Offer single sign-on', checked: !!oauth.enabled })}
+
+    <h3>The other sign-in methods</h3>
+    <p class="hint">Which remaining routes this installation offers, once the provider above works; they cannot all be taken away before it does. One setting for every host, for the same reason single sign-on is. An administrator always keeps every route, so an outage at the provider cannot lock out the people who would fix it.</p>
+    ${checkbox({
+      name: 'disableOtp',
+      label: 'Turn off the emailed code',
+      checked: signInOff.includes('otp'),
+    })}
+    ${checkbox({
+      name: 'disablePasskey',
+      label: 'Turn off passkeys',
+      checked: signInOff.includes('passkey'),
+    })}
     ${
       // Seven provider fields that mean nothing until somebody is wiring a
       // provider up. Folded away, and opened on its own once it is on or
@@ -599,7 +629,18 @@ async function settingsSubmit(ctx) {
     ignoreEmailPlus: body.get('ignoreEmailPlus') === '1',
     countClicks: body.get('countClicks') === '1',
     auditRetentionDays: num('auditRetentionDays', s.auditRetentionDays, 1, 3650),
+    disabledMethods: normalizeDisabledMethods([
+      body.get('disableOtp') === '1' ? 'otp' : '',
+      body.get('disablePasskey') === '1' ? 'passkey' : '',
+    ]),
+    // From here the installation-wide list is the one that counts, and
+    // the copy left on each domain record stops being read.
+    disabledMethodsSet: true,
     blockedSchemes: listEnv(body.get('blockedSchemes')),
+    // Saving this screen is the installation choosing the list for
+    // itself, so from here on it is taken literally — an empty one
+    // included. See blockedSchemesSet in config.js.
+    blockedSchemesSet: true,
     oauth,
     geo: {
       blockTor: body.get('geoBlockTor') === '1',

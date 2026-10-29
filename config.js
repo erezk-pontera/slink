@@ -7,7 +7,7 @@
  */
 
 import { K, Store } from './kv.js';
-import { parseDestination } from './paths.js';
+import { DEFAULT_BLOCKED_SCHEMES, parseDestination } from './paths.js';
 import { boolEnv, intEnv, isSafeKey, listEnv, now } from './util.js';
 
 /** Read an env value under either the hyphenated or the SCREAMING_SNAKE name. */
@@ -30,7 +30,37 @@ export const DEFAULTS = {
   auditRetentionDays: 180,
   interstitialDefaultDelay: 0,
   defaultStatus: 302,
-  blockedSchemes: [],
+  /**
+   * Destination schemes this installation refuses. Editable, and starts at
+   * the dangerous set; see DEFAULT_BLOCKED_SCHEMES in paths.js for what
+   * taking one off the list reopens.
+   */
+  blockedSchemes: [...DEFAULT_BLOCKED_SCHEMES],
+  /**
+   * Whether the list above has been chosen under the current rules.
+   *
+   * These five used to be refused by paths.js whatever the list said, so a
+   * record saved before that changed can carry an empty list while meaning
+   * "the five, and nothing else". Taking that literally would quietly unblock
+   * them on an installation already running, so until the settings screen is
+   * saved once they are added back; see loadConfig.
+   */
+  blockedSchemesSet: false,
+  /**
+   * Sign-in routes switched off for the whole installation, from
+   * oauth.js METHODS. Single sign-on itself can never be one of them.
+   */
+  disabledMethods: [],
+  /**
+   * Whether the list above has been chosen here rather than per domain.
+   *
+   * These switches used to live on each domain's own screen. Until this
+   * screen is saved once, methodsFor still reads the domain record it was
+   * given, which on the hub - the only host that signs anybody in - is the
+   * setting that was already governing the installation. Nothing changes
+   * at the moment of deploy; saving the screen is what moves it.
+   */
+  disabledMethodsSet: false,
   /** The identity provider, one for the whole installation. See oauth.js. */
   oauth: {
     enabled: false,
@@ -105,7 +135,14 @@ export class Config {
     this.turnstileSecret = envVar(env, 'turnstile-secret', 'TURNSTILE_SECRET');
     this.oauthSecret = envVar(env, 'oauth-secret', 'OAUTH_SECRET');
 
-    this.hubHost = String(envVar(env, 'HUB_HOST') || 'ptra.dev').toLowerCase().replace(/^www\./, '');
+    /**
+     * The domain this installation is managed from: the one carrying /admin,
+     * /login and /logout, the one passkeys are bound to, and the one the
+     * other hosts hand sign-in to. There is no default. Guessing one would
+     * mean an installation that deploys cleanly and then offers its
+     * administration on a domain nobody named; problems() refuses instead.
+     */
+    this.hubHost = String(envVar(env, 'HUB_HOST') || '').toLowerCase().replace(/^www\./, '');
     this.appName = String(envVar(env, 'APP_NAME') || 'Shrink Link');
     /**
      * The line at the bottom of every page: a copyright notice, a company
@@ -171,6 +208,15 @@ export class Config {
     // sign-on, so its absence is reported by the domain screen rather than
     // held against the whole installation here.
     if (this.rootAdmins.length === 0) out.push('ADMIN is not configured.');
+    // A management domain that is not served is the same as none at all: the
+    // worker answers for DOMAINS only, so /admin would be on a host that
+    // never reaches this code. A typo here is otherwise silent, and silent
+    // means an installation with no way in.
+    if (!this.hubHost) {
+      out.push('HUB_HOST is not configured.');
+    } else if (!this.knownHosts.includes(this.hubHost)) {
+      out.push('HUB_HOST is not one of DOMAINS.');
+    }
     return out;
   }
 }
@@ -197,6 +243,20 @@ export async function loadConfig(env) {
     sessionPermanent: boolEnv(envVar(env, 'SESSION_PERMANENT'), DEFAULTS.sessionPermanent),
   };
   const settings = mergeSettings(mergeSettings(DEFAULTS, envDefaults), stored || {});
+
+  // A settings record written before the hard block became an editable list
+  // says nothing about these five, because back then the list did not govern
+  // them. Reading its silence as consent would unblock `javascript:` on an
+  // installation that never asked for it, so they are put back until the
+  // screen is saved once under the current rules.
+  if (!settings.blockedSchemesSet) {
+    const have = new Set((settings.blockedSchemes || []).map((s) => String(s).toLowerCase()));
+    settings.blockedSchemes = [
+      ...DEFAULT_BLOCKED_SCHEMES.filter((s) => !have.has(s)),
+      ...(settings.blockedSchemes || []),
+    ];
+  }
+
   return new Config(env, settings);
 }
 

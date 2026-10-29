@@ -47,17 +47,6 @@ const root = new Harness();
 await root.signIn('root@pontera.com');
 
 /** The per-host switches, which stay on the domain screen. */
-async function setDomain(extra) {
-  const url = 'https://ptra.dev/admin/domains/edit?host=ptra.dev';
-  const tok = Harness.csrfFor(await (await root.req(url)).text(), '/admin/domains/edit');
-  return root.req('https://ptra.dev/admin/domains/edit', {
-    form: {
-      _csrf: tok, host: 'ptra.dev', defaultStatus: '302', rootCreatePolicy: 'email_domain',
-      enabled: '1', authRequired: '1', allowedAuthDomains: 'pontera.com', ...extra,
-    },
-  });
-}
-
 /**
  * The provider itself, which is one setting for the installation. Posting
  * the whole settings form, as a browser would, so nothing else is cleared.
@@ -134,9 +123,20 @@ section('configuration');
      methodsFor(withProvider(), { disabledMethods: ['otp'] }, { isAdmin: true }).otp === true);
   ok('switching the code off needs a working provider',
      methodsFor({ oauthSecret: 's', settings: {} }, { disabledMethods: ['otp'] }).otp === true);
-  ok('the switch is still per host',
+  ok('until it is chosen centrally the domain record is what is read',
      methodsFor(withProvider(), { disabledMethods: [] }).otp === true &&
      methodsFor(withProvider(), { disabledMethods: ['otp'] }).otp === false);
+  // Once the settings screen has been saved it answers for every host, and
+  // whatever a domain record still carries stops being consulted.
+  const central = (list) => ({
+    oauthSecret: 's',
+    settings: { ...withProvider().settings, disabledMethods: list, disabledMethodsSet: true },
+  });
+  ok('once it is, the setting answers for every host',
+     methodsFor(central(['otp']), {}).otp === false &&
+     methodsFor(central(['otp']), { disabledMethods: [] }).otp === false);
+  ok('and a leftover per-domain block is ignored',
+     methodsFor(central([]), { disabledMethods: ['otp'] }).otp === true);
 }
 
 /* -------------------------------------------------------- 2. the page */
@@ -152,14 +152,14 @@ section('the sign-in page');
   ok('the code form is still offered', after.includes('name="email"'));
   ok('with a divider between them', after.includes('class="divider"'));
 
-  await setDomain({ disable_otp: '1' });
+  await setProvider({ disableOtp: '1' });
   const only = await (await root.req('https://ptra.dev/admin', { cookies: false })).text();
   ok('turning the code off removes the form', !only.includes('name="email"'));
   ok('the button remains', only.includes('/__slink/oauth/start'));
   ok('an administrator can still reach the code',
      (await (await root.req('https://ptra.dev/admin?otp=1', { cookies: false })).text()).includes('name="email"'));
 
-  await setDomain({});
+  await setProvider({ disableOtp: '' });
 }
 
 /* ------------------------------------------------------ 3. the handshake */
@@ -305,7 +305,7 @@ section('turning the code off is enforced where the address is known');
     form: { _csrf: ptok, u: 'pat@pontera.com', isAdmin: '1', allDirectories: '1' },
   });
 
-  await setDomain({ disable_otp: '1' });
+  await setProvider({ disableOtp: '1' });
 
   const tryOtp = async (email) => {
     const h = peer(root);
@@ -332,7 +332,7 @@ section('turning the code off is enforced where the address is known');
   ok('the two outcomes are indistinguishable', ordinary.status === admin.status,
      ordinary.status + ' vs ' + admin.status);
 
-  await setDomain(PROVIDER);
+  await setProvider({ disableOtp: '' });
   const restored = await tryOtp('ola@pontera.com');
   ok('re-enabling the code restores it for everyone', restored.sent);
 }

@@ -35,11 +35,7 @@ import {
   triValue,
 } from './capabilities.js';
 import { INVITE_MODES, normalizeInvitePolicy } from './invites.js';
-import {
-  METHODS,
-  normalizeDisabledMethods,
-  oauthReady,
-} from './oauth.js';
+import { oauthReady } from './oauth.js';
 import { K } from './kv.js';
 import { canonicalHost, parseDestination, ValidationError } from './paths.js';
 import { noteDelete, noteWrite, pendingUnder } from './pending.js';
@@ -165,7 +161,6 @@ async function editForm(ctx, { error } = {}) {
   const missingPolicy = normalizeMissingPolicy(domain.dirMissingPolicy);
   const invitePolicy = normalizeInvitePolicy(domain.invitePolicy);
   const caps = normalizeCapabilities(domain.capabilities);
-  const disabledMethods = normalizeDisabledMethods(domain.disabledMethods);
 
   const body = `
 ${flashFrom(url)}${alert('error', error)}
@@ -242,19 +237,6 @@ ${routed ? '' : alert('error', 'This host is not in the DOMAINS variable, so the
         note: CAPABILITIES[key].hint,
       })
     ).join('')}
-
-    <h2>Sign-in methods</h2>
-    <p class="hint">Single sign-on is one provider for the whole installation, set in <a href="/admin/settings">Settings</a>; signing in happens on the hub and the other hosts come through the handshake. These switches are per host, and only available once that provider works. An administrator always keeps every route, so an outage at the provider cannot lock out the people who would fix it.</p>
-    ${checkbox({
-      name: 'disable_otp',
-      label: 'Turn off the emailed code',
-      checked: disabledMethods.includes('otp'),
-    })}
-    ${checkbox({
-      name: 'disable_passkey',
-      label: 'Turn off passkeys',
-      checked: disabledMethods.includes('passkey'),
-    })}
 
     <h2>Who may be given access</h2>
     <p class="hint">Applies when a link or directory changes hands, and when someone is granted access to a directory. The baseline is always whoever could sign in to this host anyway.</p>
@@ -360,11 +342,11 @@ async function editSubmit(ctx) {
   domain.rootRedirect = rootRedirect;
   domain.notFoundUrl = notFoundUrl;
   domain.capabilities = readCapabilityForm(body, 'cap_');
-  // Single sign-on is a system setting now; a stored per-domain block is
-  // left where it is and simply never read.
-  domain.disabledMethods = normalizeDisabledMethods(
-    METHODS.filter((m) => body.get('disable_' + m) === '1')
-  );
+  // Which sign-in methods are offered is a system setting, edited in
+  // /admin/settings. Whatever this record still carries is left exactly as
+  // it is: until that screen is saved once it is what the hub reads, so
+  // writing an empty list from a form that no longer has the controls would
+  // switch both methods back on.
 
   const inviteMode = String(body.get('inviteMode') || 'off');
   domain.invitePolicy = normalizeInvitePolicy({

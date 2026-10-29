@@ -10,6 +10,10 @@ import {
   isPrivateHost,
   methodsFor,
   normalizeDisabledMethods,
+  hasOauthSecret,
+  oauthClientSecret,
+  oauthMissing,
+  sealOauthSecret,
   normalizeOauth,
   oauthReady,
   oauthSettings,
@@ -112,6 +116,24 @@ section('configuration');
   }
   ok('the host check is exported for reuse', isPrivateHost('10.1.2.3') && !isPrivateHost('example.com'));
 
+  // Which piece is still missing, by name. "Not usable yet" on its own
+  // leaves somebody to work through four fields and a deploy to find out
+  // which, and the secret is set by a command rather than on the screen,
+  // so it is the one most easily believed to be done.
+  const full = {
+    clientId: 'c', authorizeUrl: 'https://i/a', tokenUrl: 'https://i/t', userinfoUrl: 'https://i/u',
+  };
+  ok('nothing missing reads as nothing',
+     oauthMissing({ oauthSecret: 's' }, full).length === 0);
+  ok('a secret set by command is named when absent',
+     oauthMissing({ oauthSecret: '' }, full).join() === 'the client secret');
+  ok('and an empty one counts as absent',
+     oauthMissing({}, full).includes('the client secret'));
+  ok('each field is named on its own',
+     oauthMissing({ oauthSecret: 's' }, { ...full, tokenUrl: '' }).join() === 'the token endpoint');
+  ok('several are named together',
+     oauthMissing({ oauthSecret: '' }, { ...full, clientId: '' }).length === 2);
+
   ok('single sign-on cannot be disabled', !normalizeDisabledMethods(['oauth', 'otp']).includes('oauth'));
   ok('an unknown method is dropped', normalizeDisabledMethods(['nonsense']).length === 0);
 
@@ -160,6 +182,38 @@ section('the sign-in page');
      (await (await root.req('https://ptra.dev/admin?otp=1', { cookies: false })).text()).includes('name="email"'));
 
   await setProvider({ disableOtp: '' });
+}
+
+/* ------------------------------------------- 2a. the client secret */
+section('the client secret is stored sealed and never read back');
+{
+  const base = { authSecret: 'k'.repeat(40), authSecretPrevious: '', settings: { oauth: {} } };
+  const sealed = await sealOauthSecret(base, 'okta-shhh');
+  ok('sealing does not keep the plaintext', !String(sealed).includes('okta-shhh'), String(sealed));
+
+  const stored = { ...base, settings: { oauth: { secret: sealed } } };
+  ok('it opens to what was typed', (await oauthClientSecret(stored)) === 'okta-shhh');
+  ok('and is seen without opening it', hasOauthSecret(stored));
+  ok('nothing stored and no variable is nothing', !hasOauthSecret(base));
+  ok('the variable alone is enough', hasOauthSecret({ ...base, oauthSecret: 'from-env' }));
+  ok('the stored one wins over the variable',
+     (await oauthClientSecret({ ...stored, oauthSecret: 'from-env' })) === 'okta-shhh');
+  ok('and the variable is what is left when it is cleared',
+     (await oauthClientSecret({ ...base, oauthSecret: 'from-env' })) === 'from-env');
+  ok('an empty value seals to nothing', (await sealOauthSecret(base, '')) === '');
+
+  // A rotation strands it exactly as it strands a link password, and the
+  // previous key is what carries it over.
+  const rotated = { ...stored, authSecret: 'j'.repeat(40) };
+  ok('a rotated key alone cannot open it', (await oauthClientSecret(rotated)) === '');
+  ok('the previous key carries it over',
+     (await oauthClientSecret({ ...rotated, authSecretPrevious: 'k'.repeat(40) })) === 'okta-shhh');
+
+  // The screen is write-only: it shows whether one is held, never which.
+  const page = await (await root.req('https://ptra.dev/admin/settings')).text();
+  ok('the field is offered', page.includes('name="oauthClientSecret"'));
+  ok('and holds no value', !/name="oauthClientSecret"[^>]*value="[^"]+"/.test(page),
+     (page.match(/<input[^>]*name="oauthClientSecret"[^>]*>/) || [''])[0]);
 }
 
 /* --------------------------------------- 2b. what to give the provider */

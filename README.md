@@ -261,8 +261,15 @@ offered is set in the same place and for the same reason: only the hub's
 copy of that switch ever decided anything, because the hub is where signing
 in happens.
 
-The client secret is the `oauth-secret` environment variable and is sent only
-in a token-exchange request body, never in a URL. Endpoints must be HTTPS and
+The client secret is set in `/admin/settings`, or as the `oauth-secret`
+environment variable for an installation that would rather it never reached
+the stored settings at all; where both exist the stored one wins. The stored
+one is sealed under `AUTH_SECRET` before it is written, so reading the KV
+namespace is not enough to have it, and it is never read back onto the
+screen — the field shows whether one is held and replaces it, and a
+checkbox beside it forgets it. Rotating `AUTH_SECRET` without
+`AUTH_SECRET_PREVIOUS` strands it exactly as it strands a link password.
+Either way it is sent only in a token-exchange request body, never in a URL. Endpoints must be HTTPS and
 are refused if they resolve to a private address, because they are fetched
 with that secret attached. There is one redirect URI to register,
 `https://<hub>/__slink/oauth/callback`, because both legs of the handshake
@@ -333,6 +340,7 @@ Secrets, set with `wrangler secret put` (never in the config file):
 | --- | --- |
 | `AUTH_SECRET` | Master key for sessions, CSRF, SSO and OTP hashes. At least 32 characters. |
 | `turnstile-secret` | The existing widget's secret |
+| `oauth-secret` | The identity provider's client secret, for installations that would rather keep it out of the stored settings. `/admin/settings` holds one too, sealed, and the stored one wins; single sign-on needs one of the two |
 
 With both `IGNORE_EMAIL_DOT` and `IGNORE_EMAIL_PLUS` on, `A.A+weekly@CC.com`
 and `aa@cc.com` are the same account. The address first used to sign in is
@@ -352,6 +360,7 @@ npm install
 #    your shell history or in a process list.
 wrangler secret put AUTH_SECRET          # e.g. openssl rand -base64 48
 wrangler secret put turnstile-secret     # the existing widget's secret
+wrangler secret put oauth-secret         # only if single sign-on is used
 
 # 2. Put the widget's sitekey into wrangler.toml under [vars], and check that
 #    ADMIN and DEFAULT_ALLOWED_DOMAINS are right.

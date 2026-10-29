@@ -35,7 +35,6 @@ import {
   triValue,
 } from './capabilities.js';
 import { INVITE_MODES, normalizeInvitePolicy } from './invites.js';
-import { oauthReady } from './oauth.js';
 import { K } from './kv.js';
 import { canonicalHost, parseDestination, ValidationError } from './paths.js';
 import { noteDelete, noteWrite, pendingUnder } from './pending.js';

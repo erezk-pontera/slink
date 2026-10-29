@@ -221,9 +221,10 @@ export class Config {
     }
     if (!this.turnstileSiteKey) out.push('turnstile-sitekey is not configured.');
     if (!this.turnstileSecret) out.push('turnstile-secret is not configured.');
-    // oauth-secret is only needed where a host actually offers single
-    // sign-on, so its absence is reported by the domain screen rather than
-    // held against the whole installation here.
+    // oauth-secret is only needed where single sign-on is switched on, so
+    // its absence is not held against the whole installation here. The
+    // settings screen names it as missing beside the provider it belongs
+    // to, which is where somebody setting it up is looking.
     if (this.rootAdmins.length === 0) out.push('ADMIN is not configured.');
     // A management domain that is not served is the same as none at all: the
     // worker answers for DOMAINS only, so /admin would be on a host that

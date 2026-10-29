@@ -11,7 +11,11 @@
  * is refused outright.
  */
 
+import { open as openSealed, seal } from './crypt.js';
 import { b64urlEncode, randomId, sha256Bytes } from './util.js';
+
+/** Keeps a sealed client secret from opening as anything else. */
+const SECRET_PURPOSE = 'oauth-client-secret';
 
 /** Sign-in methods a host can offer. */
 export const METHODS = ['otp', 'passkey', 'oauth'];
@@ -93,7 +97,49 @@ export function normalizeOauth(raw) {
     userinfoUrl: url(o.userinfoUrl),
     scope: String(o.scope || 'openid email profile').slice(0, 300),
     emailField: String(o.emailField || 'email').slice(0, 60),
+    // Sealed by the settings screen and opaque here, carried from one
+    // normalize to the next so saving an unrelated field cannot drop it.
+    secret: String(o.secret || ''),
   });
+}
+
+/**
+ * Is a client secret configured at all?
+ *
+ * Apart from reading it, because the pages that ask - the sign-in page,
+ * the settings screen - only need to know whether single sign-on can work,
+ * and opening the sealed value costs a decryption they have no use for.
+ */
+export function hasOauthSecret(cfg) {
+  const o = oauthSettings(cfg);
+  if (o.secret) return true;
+  return !!(cfg.oauthSecret && String(cfg.oauthSecret).length);
+}
+
+/**
+ * The client secret itself, for the one place that sends it.
+ *
+ * The settings record wins over the environment, as every other runtime
+ * setting does. It is stored sealed rather than as typed, so reading the KV
+ * namespace is not enough to have it - AUTH_SECRET is, which is the same
+ * bar as a link password, and means AUTH_SECRET_PREVIOUS covers a rotation
+ * here too.
+ */
+export async function oauthClientSecret(cfg) {
+  const o = oauthSettings(cfg);
+  if (o.secret) {
+    const opened = await openSealed(cfg.authSecret, SECRET_PURPOSE, o.secret, {
+      also: cfg.authSecretPrevious ? [cfg.authSecretPrevious] : [],
+    });
+    if (opened) return opened;
+  }
+  return cfg.oauthSecret ? String(cfg.oauthSecret) : '';
+}
+
+/** Seal a client secret for storage. An empty value clears it. */
+export async function sealOauthSecret(cfg, raw) {
+  const value = String(raw || '');
+  return value ? seal(cfg.authSecret, SECRET_PURPOSE, value) : '';
 }
 
 /** Is the provider configured well enough to be offered? */
@@ -108,11 +154,31 @@ export function oauthSettings(cfg) {
   return normalizeOauth(cfg && cfg.settings && cfg.settings.oauth);
 }
 
+/**
+ * What single sign-on is still waiting for, in words.
+ *
+ * oauthReady answers yes or no, which is the right answer for the sign-in
+ * page and the wrong one for the screen where somebody is setting this up:
+ * four fields and a secret set by a separate command, and no indication of
+ * which one they have not done yet. None of these names is a secret, and
+ * the values are not shown.
+ */
+export function oauthMissing(cfg, raw) {
+  const o = raw && typeof raw === 'object' ? raw : oauthSettings(cfg);
+  const out = [];
+  if (!o.clientId) out.push('the client ID');
+  if (!o.authorizeUrl) out.push('the authorization endpoint');
+  if (!o.tokenUrl) out.push('the token endpoint');
+  if (!o.userinfoUrl) out.push('the userinfo endpoint');
+  if (!hasOauthSecret(cfg)) out.push('the client secret');
+  return out;
+}
+
 export function oauthReady(cfg) {
   const o = oauthSettings(cfg);
   if (!o.enabled) return false;
   if (!o.clientId || !o.authorizeUrl || !o.tokenUrl || !o.userinfoUrl) return false;
-  return !!(cfg.oauthSecret && String(cfg.oauthSecret).length);
+  return hasOauthSecret(cfg);
 }
 
 /**
@@ -202,8 +268,9 @@ export async function exchangeCode(cfg, { code, verifier, origin }) {
     code_verifier: verifier,
   });
   // The secret goes in the body rather than the URL so it cannot end up in
-  // a log line on the provider's side.
-  if (cfg.oauthSecret) body.set('client_secret', cfg.oauthSecret);
+  // a log line on the provider's side. This is the only place it is opened.
+  const secret = await oauthClientSecret(cfg);
+  if (secret) body.set('client_secret', secret);
 
   const res = await fetch(o.tokenUrl, {
     method: 'POST',
